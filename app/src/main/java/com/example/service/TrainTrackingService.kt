@@ -15,7 +15,12 @@ class TrainTrackingService : Service() {
     const val ACTION_START_OR_UPDATE = "com.example.action.START_OR_UPDATE_TRACKING"
     const val ACTION_STOP = "com.example.action.STOP_TRACKING"
     const val EXTRA_TITLE = "extra_title"
-    const val EXTRA_CONTENT = "extra_content"
+    const val EXTRA_CUR_LABEL = "extra_cur_label"
+    const val EXTRA_CUR_STATION = "extra_cur_station"
+    const val EXTRA_NXT_LABEL = "extra_nxt_label"
+    const val EXTRA_NXT_STATION = "extra_nxt_station"
+    const val EXTRA_DST_LABEL = "extra_dst_label"
+    const val EXTRA_DST_STATION = "extra_dst_station"
     const val EXTRA_STOP_LABEL = "extra_stop_label"
 
     @Volatile
@@ -35,17 +40,23 @@ class TrainTrackingService : Service() {
 
     fun startOrUpdate(
       context: Context,
-      title: String,
-      content: String,
-      stopLabel: String = "Stop",
+      info: TrackingNotificationContent,
     ) {
-      if (!hasLocationPermission(context)) return
+      if (!hasLocationPermission(context)) {
+        TrainNotificationHelper.postFallbackTrackingNotification(context, info)
+        return
+      }
       try {
         val intent = Intent(context, TrainTrackingService::class.java).apply {
           action = ACTION_START_OR_UPDATE
-          putExtra(EXTRA_TITLE, title)
-          putExtra(EXTRA_CONTENT, content)
-          putExtra(EXTRA_STOP_LABEL, stopLabel)
+          putExtra(EXTRA_TITLE, info.title)
+          putExtra(EXTRA_CUR_LABEL, info.currentLabel)
+          putExtra(EXTRA_CUR_STATION, info.currentStation)
+          putExtra(EXTRA_NXT_LABEL, info.nextLabel)
+          putExtra(EXTRA_NXT_STATION, info.nextStation)
+          putExtra(EXTRA_DST_LABEL, info.destLabel)
+          putExtra(EXTRA_DST_STATION, info.destStation)
+          putExtra(EXTRA_STOP_LABEL, info.stopLabel)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
           context.startForegroundService(intent)
@@ -53,11 +64,12 @@ class TrainTrackingService : Service() {
           context.startService(intent)
         }
       } catch (_: Throwable) {
-        // Safely ignore if OS restricts background FGS start
+        TrainNotificationHelper.postFallbackTrackingNotification(context, info)
       }
     }
 
     fun stop(context: Context) {
+      TrainNotificationHelper.cancelTrackingNotification(context)
       try {
         val intent = Intent(context, TrainTrackingService::class.java)
         context.stopService(intent)
@@ -75,6 +87,7 @@ class TrainTrackingService : Service() {
         stopForeground(STOP_FOREGROUND_REMOVE)
       } catch (_: Throwable) {
       }
+      TrainNotificationHelper.cancelTrackingNotification(this)
       stopSelf()
       return START_NOT_STICKY
     }
@@ -84,11 +97,17 @@ class TrainTrackingService : Service() {
       return START_NOT_STICKY
     }
 
-    val title = intent?.getStringExtra(EXTRA_TITLE) ?: "Smart Train Tracker"
-    val content = intent?.getStringExtra(EXTRA_CONTENT) ?: "Tracking live train position..."
-    val stopLabel = intent?.getStringExtra(EXTRA_STOP_LABEL) ?: "Stop"
-    val notification =
-      TrainNotificationHelper.buildTrackingNotification(this, title, content, stopLabel)
+    val info = TrackingNotificationContent(
+      title = intent?.getStringExtra(EXTRA_TITLE) ?: "Smart Train Tracker",
+      currentLabel = intent?.getStringExtra(EXTRA_CUR_LABEL) ?: "Current",
+      currentStation = intent?.getStringExtra(EXTRA_CUR_STATION) ?: "—",
+      nextLabel = intent?.getStringExtra(EXTRA_NXT_LABEL) ?: "Next",
+      nextStation = intent?.getStringExtra(EXTRA_NXT_STATION) ?: "—",
+      destLabel = intent?.getStringExtra(EXTRA_DST_LABEL) ?: "Destination",
+      destStation = intent?.getStringExtra(EXTRA_DST_STATION) ?: "—",
+      stopLabel = intent?.getStringExtra(EXTRA_STOP_LABEL) ?: "Stop",
+    )
+    val notification = TrainNotificationHelper.buildTrackingNotification(this, info)
 
     try {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {

@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="2dp">
+
+    <TextView
+        android:id="@+id/notif_train_title"
+        style="@style/TextAppearance.Compat.Notification.Title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:textSize="14sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/notif_row_current"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="5dp"
+        android:background="@drawable/notif_pill_current"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:paddingHorizontal="8dp"
+        android:paddingVertical="4dp"
+        android:textColor="#0D47A1"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/notif_row_next"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:background="@drawable/notif_pill_next"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:paddingHorizontal="8dp"
+        android:paddingVertical="4dp"
+        android:textColor="#BF360C"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/notif_row_dest"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:background="@drawable/notif_pill_dest"
+        android:ellipsize="end"
+        android:maxLines="1"
+        android:paddingHorizontal="8dp"
+        android:paddingVertical="4dp"
+        android:textColor="#6A1B9A"
+        android:textSize="12sp"
+        android:textStyle="bold" />
+</LinearLayout>

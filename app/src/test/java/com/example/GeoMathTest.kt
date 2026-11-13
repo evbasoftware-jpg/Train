@@ -27,6 +27,21 @@ class GeoMathTest {
   }
 
   @Test
+  fun filterStationSuggestions_ranksExactCodeFirstEvenBehindSubstrings() {
+    val db = listOf(
+      StationDbEntry("CHAMPAPUKUR", "CQR", 22.6, 88.8),
+      StationDbEntry("CHAMPA", "CPH", 22.0, 82.6),
+      StationDbEntry("RAMPURHAT", "RPH", 24.1, 87.7),
+      StationDbEntry("SAMPURNA", "SMP", 23.0, 87.0),
+      StationDbEntry("AHMADPUR JN", "AMP", 23.8, 87.7),
+    )
+    val results = GeoMath.filterStationSuggestions("amp", db, limit = 2)
+    assertEquals("AMP", results.first().code)
+    assertEquals("AHMADPUR JN", results.first().name)
+    assertEquals("AHMADPUR JN", GeoMath.resolveStation("amp", db)?.name)
+  }
+
+  @Test
   fun verification_detectsMovingInsideTrainAndStationaryBounds() {
     val train = LocatedTrain(
       lat = 22.5700,

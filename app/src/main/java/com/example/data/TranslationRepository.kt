@@ -24,7 +24,7 @@ class TranslationRepository(private val cacheDir: File?) {
     }
 
     return withContext(Dispatchers.IO) {
-      val cacheFile = cacheDir?.let { File(it, "lang_${langCode.replace("/", "_")}.json") }
+      val cacheFile = cacheDir?.let { File(it, "lang_v2_${langCode.replace("/", "_")}.json") }
       val english = stringsForCode("en")
       val keys = buildTranslatableMap(english)
 
@@ -85,17 +85,17 @@ class TranslationRepository(private val cacheDir: File?) {
       "mapFullscreenBtn" to en.mapFullscreenBtn,
       "mapExitFullscreenBtn" to en.mapExitFullscreenBtn,
       "mapCenterBtn" to en.mapCenterBtn,
-      "backgroundTrackingTitle" to en.backgroundTrackingTitle,
-      "backgroundTrackingDesc" to en.backgroundTrackingDesc,
+      "notifCurrentLabel" to en.notifCurrentLabel,
+      "notifNextLabel" to en.notifNextLabel,
+      "notifDestinationLabel" to en.notifDestinationLabel,
+      "announceCurrentNextTemplate" to en.announceCurrentNextTemplate,
+      "announceCurrentOnlyTemplate" to en.announceCurrentOnlyTemplate,
       "distanceMovementTitle" to en.distanceMovementTitle,
       "searchingLiveTemplate" to en.searchingLiveTemplate,
       "retryingSignal" to en.retryingSignal,
-      "trackingStopped" to en.trackingStopped,
       "apiTimeoutStopped" to en.apiTimeoutStopped,
       "otherUserGpsMsg" to en.otherUserGpsMsg,
       "gpsVerifiedInsideMsg" to en.gpsVerifiedInsideMsg,
-      "trainLocSetFromUserGps" to en.trainLocSetFromUserGps,
-      "offsetTemplate" to en.offsetTemplate,
       "gpsSlowNetworkFallback" to en.gpsSlowNetworkFallback,
       "gpsLowAccuracyTemplate" to en.gpsLowAccuracyTemplate,
       "gpsPermissionDenied" to en.gpsPermissionDenied,
@@ -163,17 +163,17 @@ class TranslationRepository(private val cacheDir: File?) {
     mapFullscreenBtn = m["mapFullscreenBtn"] ?: base.mapFullscreenBtn,
     mapExitFullscreenBtn = m["mapExitFullscreenBtn"] ?: base.mapExitFullscreenBtn,
     mapCenterBtn = m["mapCenterBtn"] ?: base.mapCenterBtn,
-    backgroundTrackingTitle = m["backgroundTrackingTitle"] ?: base.backgroundTrackingTitle,
-    backgroundTrackingDesc = m["backgroundTrackingDesc"] ?: base.backgroundTrackingDesc,
+    notifCurrentLabel = m["notifCurrentLabel"] ?: base.notifCurrentLabel,
+    notifNextLabel = m["notifNextLabel"] ?: base.notifNextLabel,
+    notifDestinationLabel = m["notifDestinationLabel"] ?: base.notifDestinationLabel,
+    announceCurrentNextTemplate = m["announceCurrentNextTemplate"] ?: base.announceCurrentNextTemplate,
+    announceCurrentOnlyTemplate = m["announceCurrentOnlyTemplate"] ?: base.announceCurrentOnlyTemplate,
     distanceMovementTitle = m["distanceMovementTitle"] ?: base.distanceMovementTitle,
     searchingLiveTemplate = m["searchingLiveTemplate"] ?: base.searchingLiveTemplate,
     retryingSignal = m["retryingSignal"] ?: base.retryingSignal,
-    trackingStopped = m["trackingStopped"] ?: base.trackingStopped,
     apiTimeoutStopped = m["apiTimeoutStopped"] ?: base.apiTimeoutStopped,
     otherUserGpsMsg = m["otherUserGpsMsg"] ?: base.otherUserGpsMsg,
     gpsVerifiedInsideMsg = m["gpsVerifiedInsideMsg"] ?: base.gpsVerifiedInsideMsg,
-    trainLocSetFromUserGps = m["trainLocSetFromUserGps"] ?: base.trainLocSetFromUserGps,
-    offsetTemplate = m["offsetTemplate"] ?: base.offsetTemplate,
     gpsSlowNetworkFallback = m["gpsSlowNetworkFallback"] ?: base.gpsSlowNetworkFallback,
     gpsLowAccuracyTemplate = m["gpsLowAccuracyTemplate"] ?: base.gpsLowAccuracyTemplate,
     gpsPermissionDenied = m["gpsPermissionDenied"] ?: base.gpsPermissionDenied,

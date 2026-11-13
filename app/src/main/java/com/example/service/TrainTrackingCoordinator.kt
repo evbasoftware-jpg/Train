@@ -23,7 +23,6 @@ import com.example.model.StatusBanner
 import com.example.model.TrackerUiState
 import com.example.model.stringsForCode
 import com.example.util.GeoMath
-import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -58,12 +57,13 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   private val preferences = TrackerPreferences(appContext)
   private val translationRepository = TranslationRepository(appContext.cacheDir)
   private val locationClient = LocationClient(appContext)
+  private val voiceAnnouncer = VoiceAnnouncer(appContext)
   val tileLoader = OsmTileLoader(appContext.cacheDir)
 
   private val _uiState = MutableStateFlow(TrackerUiState())
   val uiState: StateFlow<TrackerUiState> = _uiState.asStateFlow()
 
-  private var stationDb: List<StationDbEntry> = emptyList()
+  private var stationDb: List<StationDbEntry> = TrainRepository.CORE_STATIONS
   private var savedRoute: List<RouteStation> = emptyList()
   private val gpsHistory = ArrayList<GpsSample>(24)
 
@@ -77,12 +77,13 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   private var lastAutoStartedTrainNo = ""
   private var lastBetweenPair: Pair<String, String>? = null
   private var lastPublishTimeMillis = 0L
+  private var lastAnnouncedStopKey = ""
   private var startToken = 0
   private var loadedLanguageCode = "bn"
 
   init {
     TrainTrackingService.onStopRequestedFromNotification = {
-      stopTracking(showBanner = true)
+      stopTracking()
     }
 
     scope.launch {
@@ -92,7 +93,6 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
             favoriteTrains = saved.favoriteTrains,
             recentTrains = saved.recentTrains,
             recentRoutes = saved.recentRoutes,
-            backgroundTrackingEnabled = saved.backgroundTrackingEnabled,
           )
         }
         if (saved.languageCode != loadedLanguageCode) {
@@ -105,25 +105,25 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       val cached = repository.loadCachedStationsDb()
       if (cached.isNotEmpty()) {
         stationDb = cached
-        _uiState.update { state ->
-          state.copy(
-            stationDbLoaded = true,
-            fromSuggestions = GeoMath.filterStationSuggestions(state.fromInput, cached),
-            toSuggestions = GeoMath.filterStationSuggestions(state.toInput, cached),
-          )
-        }
+        refreshStationMatches()
       }
       val fresh = repository.fetchStationsDb(forceRefreshIfStale = true)
       if (fresh.isNotEmpty()) {
         stationDb = fresh
-        _uiState.update { state ->
-          state.copy(
-            stationDbLoaded = true,
-            fromSuggestions = GeoMath.filterStationSuggestions(state.fromInput, fresh),
-            toSuggestions = GeoMath.filterStationSuggestions(state.toInput, fresh),
-          )
-        }
+        refreshStationMatches()
       }
+    }
+  }
+
+  private fun refreshStationMatches() {
+    _uiState.update { state ->
+      state.copy(
+        stationDbLoaded = true,
+        fromResolvedStation = GeoMath.resolveStation(state.fromInput, stationDb),
+        toResolvedStation = GeoMath.resolveStation(state.toInput, stationDb),
+        fromSuggestions = GeoMath.filterStationSuggestions(state.fromInput, stationDb, limit = 8),
+        toSuggestions = GeoMath.filterStationSuggestions(state.toInput, stationDb, limit = 8),
+      )
     }
   }
 
@@ -159,8 +159,8 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
           state
         }
       }
-      if (_uiState.value.running && _uiState.value.backgroundTrackingEnabled) {
-        updateForegroundServiceNotification()
+      if (_uiState.value.running) {
+        updateTrackingNotification()
       }
     }
   }
@@ -175,7 +175,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     }
     if (granted && _uiState.value.running) {
       if (gpsJob == null) startGpsCollection()
-      if (_uiState.value.backgroundTrackingEnabled) updateForegroundServiceNotification()
+      updateTrackingNotification()
     } else if (!granted && wasGranted != granted && _uiState.value.running) {
       _uiState.update {
         it.copy(statusBanner = StatusBanner(currentStrings().gpsPermissionDenied, BannerType.BAD))
@@ -193,9 +193,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     if (granted) {
       if (_uiState.value.running) {
         startGpsCollection()
-        if (_uiState.value.backgroundTrackingEnabled) {
-          updateForegroundServiceNotification()
-        }
+        updateTrackingNotification()
       }
     } else {
       _uiState.update {
@@ -210,29 +208,8 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
 
   fun onNotificationPermissionHandled() {
     _uiState.update { it.copy(needsNotificationPermissionPrompt = false) }
-    if (_uiState.value.running && _uiState.value.backgroundTrackingEnabled) {
-      updateForegroundServiceNotification()
-    }
-  }
-
-  fun setBackgroundTrackingEnabled(enabled: Boolean) {
-    val hasLoc = TrainTrackingService.hasLocationPermission(appContext)
-    _uiState.update { state ->
-      state.copy(
-        backgroundTrackingEnabled = enabled,
-        needsNotificationPermissionPrompt =
-          enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU,
-        needsLocationPermissionPrompt =
-          if (enabled && !hasLoc) true else state.needsLocationPermissionPrompt,
-      )
-    }
-    scope.launch {
-      preferences.saveBackgroundTracking(enabled)
-    }
-    if (enabled && _uiState.value.running && hasLoc) {
-      updateForegroundServiceNotification()
-    } else if (!enabled) {
-      TrainTrackingService.stop(appContext)
+    if (_uiState.value.running) {
+      updateTrackingNotification()
     }
   }
 
@@ -246,7 +223,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   }
 
   fun onQuickTrainSelected(entry: SavedTrainEntry) {
-    onSelectTrainBetween(entry.trainNumber)
+    onSelectTrainBetween(entry.trainNumber, entry.trainName)
   }
 
   fun onRecentRouteSelected(pair: SavedRoutePair) {
@@ -254,6 +231,8 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       it.copy(
         fromInput = pair.fromInput,
         toInput = pair.toInput,
+        fromResolvedStation = GeoMath.resolveStation(pair.fromInput, stationDb),
+        toResolvedStation = GeoMath.resolveStation(pair.toInput, stationDb),
         fromSuggestions = emptyList(),
         toSuggestions = emptyList(),
       )
@@ -263,13 +242,27 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
 
   fun onFromInputChanged(value: String) {
     val suggestions = GeoMath.filterStationSuggestions(value, stationDb, limit = 8)
-    _uiState.update { it.copy(fromInput = value, fromSuggestions = suggestions) }
+    val resolved = GeoMath.resolveStation(value, stationDb)
+    _uiState.update {
+      it.copy(
+        fromInput = value,
+        fromResolvedStation = resolved,
+        fromSuggestions = suggestions,
+      )
+    }
     maybeSearchBetween()
   }
 
   fun onToInputChanged(value: String) {
     val suggestions = GeoMath.filterStationSuggestions(value, stationDb, limit = 8)
-    _uiState.update { it.copy(toInput = value, toSuggestions = suggestions) }
+    val resolved = GeoMath.resolveStation(value, stationDb)
+    _uiState.update {
+      it.copy(
+        toInput = value,
+        toResolvedStation = resolved,
+        toSuggestions = suggestions,
+      )
+    }
     maybeSearchBetween()
   }
 
@@ -277,9 +270,17 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     val formatted = "${entry.name} (${entry.code})"
     _uiState.update { state ->
       if (isFrom) {
-        state.copy(fromInput = formatted, fromSuggestions = emptyList())
+        state.copy(
+          fromInput = formatted,
+          fromResolvedStation = entry,
+          fromSuggestions = emptyList(),
+        )
       } else {
-        state.copy(toInput = formatted, toSuggestions = emptyList())
+        state.copy(
+          toInput = formatted,
+          toResolvedStation = entry,
+          toSuggestions = emptyList(),
+        )
       }
     }
     maybeSearchBetween(force = true)
@@ -290,6 +291,8 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       state.copy(
         fromInput = state.toInput,
         toInput = state.fromInput,
+        fromResolvedStation = state.toResolvedStation,
+        toResolvedStation = state.fromResolvedStation,
         fromSuggestions = emptyList(),
         toSuggestions = emptyList(),
       )
@@ -350,7 +353,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     }
   }
 
-  fun onSelectTrainBetween(trainNumber: String) {
+  fun onSelectTrainBetween(trainNumber: String, initialTrainName: String? = null) {
     val clean = trainNumber.filter { it.isDigit() }.take(5)
     if (clean.isEmpty()) return
     autoStartDebounceJob?.cancel()
@@ -358,12 +361,13 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     _uiState.update {
       it.copy(
         trainNoInput = clean,
+        trainName = initialTrainName?.takeIf { n -> n.isNotBlank() } ?: it.trainName,
         fromSuggestions = emptyList(),
         toSuggestions = emptyList(),
       )
     }
     if (clean.length >= 4) {
-      startTracking()
+      startTracking(prefilledTrainName = initialTrainName)
     }
   }
 
@@ -382,7 +386,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     }
   }
 
-  fun startTracking() {
+  fun startTracking(prefilledTrainName: String? = null) {
     val trainNo = _uiState.value.trainNoInput.trim()
     if (!Regex("""^\d{4,5}$""").matches(trainNo)) return
 
@@ -391,14 +395,16 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     savedRoute = emptyList()
     gpsHistory.clear()
     lastPublishTimeMillis = 0L
+    lastAnnouncedStopKey = ""
 
     val s = currentStrings()
     val hasLoc = TrainTrackingService.hasLocationPermission(appContext)
+    val needsNotifPrompt = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
     _uiState.update {
       it.copy(
         running = true,
         insideTrain = false,
-        trainName = null,
+        trainName = prefilledTrainName?.takeIf { n -> n.isNotBlank() },
         rawSource = null,
         route = emptyList(),
         locatedTrain = null,
@@ -410,21 +416,21 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         movementStats = MovementStats(0.0, 0.0),
         verification = null,
         lowAccuracyMeters = null,
-        resultBanner = null,
         statusBanner = StatusBanner(s.searchingLiveTrain(trainNo), BannerType.INFO),
         needsLocationPermissionPrompt = !hasLoc,
+        needsNotificationPermissionPrompt = needsNotifPrompt,
       )
     }
 
     scope.launch {
-      preferences.addRecentTrain(SavedTrainEntry(trainNo, ""))
+      preferences.addRecentTrain(SavedTrainEntry(trainNo, prefilledTrainName ?: ""))
     }
+
+    // Automatically activate live notification as soon as a train is selected
+    updateTrackingNotification()
 
     if (hasLoc) {
       startGpsCollection()
-      if (_uiState.value.backgroundTrackingEnabled) {
-        updateForegroundServiceNotification()
-      }
     }
 
     scope.launch {
@@ -454,9 +460,11 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     stopTimerJob = null
   }
 
-  fun stopTracking(showBanner: Boolean = true) {
+  fun stopTracking() {
     cancelTrackingJobs()
     gpsHistory.clear()
+    lastAnnouncedStopKey = ""
+    voiceAnnouncer.stop()
     TrainTrackingService.stop(appContext)
 
     _uiState.update { state ->
@@ -466,11 +474,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         latestUserGps = null,
         verification = null,
         lowAccuracyMeters = null,
-        statusBanner = if (showBanner) {
-          StatusBanner(currentStrings().trackingStopped, BannerType.INFO)
-        } else {
-          state.statusBanner
-        },
+        statusBanner = null,
       )
     }
   }
@@ -575,7 +579,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     stopTimerJob = scope.launch {
       delay(MAX_API)
       if (token == startToken && _uiState.value.running && !_uiState.value.insideTrain) {
-        stopTracking(showBanner = false)
+        stopTracking()
         _uiState.update {
           it.copy(statusBanner = StatusBanner(currentStrings().apiTimeoutStopped, BannerType.INFO))
         }
@@ -622,10 +626,11 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
 
     _uiState.update { state ->
       val shouldAutoCenter = previousTrain == null
-      val nextStatus = if (previousTrain != null && payload.source == "gps" && !state.insideTrain) {
-        StatusBanner(currentStrings().otherUserGpsMsg, BannerType.OK)
-      } else {
-        state.statusBanner
+      val nextStatus = when {
+        previousTrain != null && payload.source == "gps" && !state.insideTrain ->
+          StatusBanner(currentStrings().otherUserGpsMsg, BannerType.OK)
+        state.statusBanner?.type == BannerType.INFO -> null
+        else -> state.statusBanner
       }
       state.copy(
         trainName = payload.trainName ?: state.trainName,
@@ -639,7 +644,8 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
 
     verifyAndSync()
     checkStationAlarmProximity()
-    updateForegroundServiceNotification()
+    updateTrackingNotification()
+    announceStoppageIfChanged()
   }
 
   private fun startGpsCollection() {
@@ -668,7 +674,8 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
             }
             verifyAndSync()
             checkStationAlarmProximity()
-            updateForegroundServiceNotification()
+            updateTrackingNotification()
+            announceStoppageIfChanged()
           }
           LocationEvent.SlowSignalFallback -> {
             _uiState.update {
@@ -737,54 +744,56 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
           } else {
             it.statusBanner
           },
-          resultBanner = StatusBanner(strings.trainLocSetFromUserGps, BannerType.OK),
         )
       }
     } else {
-      val crossM = String.format(
-        Locale.US,
-        "%.1f",
-        (metrics.crossTrackKm * 1000.0).takeIf { it.isFinite() } ?: 0.0,
-      )
-      val alongM = String.format(
-        Locale.US,
-        "%.1f",
-        (metrics.alongTrackKm * 1000.0).takeIf { it.isFinite() } ?: 0.0,
-      )
-      _uiState.update {
-        it.copy(
-          verification = metrics,
-          resultBanner = StatusBanner(strings.offsetResult(crossM, alongM), BannerType.INFO),
-        )
-      }
+      _uiState.update { it.copy(verification = metrics) }
     }
   }
 
-  private fun updateForegroundServiceNotification() {
+  private fun announceStoppageIfChanged() {
     val state = _uiState.value
-    if (!state.running || !state.backgroundTrackingEnabled) return
-    if (!TrainTrackingService.hasLocationPermission(appContext)) return
+    if (!state.running) return
+    val loc = state.locatedTrain ?: return
+    val curStation = loc.name.trim()
+    if (curStation.isBlank() || curStation == currentStrings().unknownStation) return
+    val nxtStation = loc.next.trim()
+    val stopKey = "${state.trainNoInput}|$curStation|$nxtStation"
+    if (stopKey == lastAnnouncedStopKey) return
+    lastAnnouncedStopKey = stopKey
+
+    val spokenText = currentStrings().announceStop(curStation, nxtStation)
+    voiceAnnouncer.announce(spokenText, state.languageCode)
+  }
+
+  private fun updateTrackingNotification() {
+    val state = _uiState.value
+    if (!state.running) return
+    val strings = currentStrings()
     val trainNo = state.trainNoInput.trim()
-    val name = state.trainName?.let { "$trainNo • $it" } ?: "🚆 $trainNo"
+    val title = state.trainName?.let { "🚆 $trainNo • $it" } ?: "🚆 $trainNo"
     val loc = state.locatedTrain
-    val content = if (loc != null) {
-      val rawSpeed = if (state.insideTrain && state.movementStats.speedKmh > 0) {
-        state.movementStats.speedKmh
-      } else {
-        loc.speedKmh
-      }
-      val safeSpeed = rawSpeed.takeIf { it.isFinite() } ?: 0.0
-      val nextText = if (loc.next.isNotBlank()) " → ${loc.next}" else ""
-      "${loc.name}$nextText • ${String.format(Locale.US, "%.0f", safeSpeed)} km/h"
-    } else {
-      currentStrings().searchingLiveTrain(trainNo)
-    }
-    TrainTrackingService.startOrUpdate(
-      context = appContext,
-      title = name,
-      content = content,
-      stopLabel = currentStrings().stopTrackingBtn,
+
+    val currentStation = loc?.name?.takeIf { it.isNotBlank() } ?: strings.waitingLabel
+    val nextStation = loc?.next?.takeIf { it.isNotBlank() } ?: "—"
+    val destinationStation = state.route.lastOrNull()?.let { st ->
+      st.stationName.ifBlank { st.stationCode }
+    }?.takeIf { it.isNotBlank() }
+      ?: state.toResolvedStation?.name
+      ?: state.toInput.trim().takeIf { it.isNotBlank() }
+      ?: "—"
+
+    val info = TrackingNotificationContent(
+      title = title,
+      currentLabel = strings.notifCurrentLabel,
+      currentStation = currentStation,
+      nextLabel = strings.notifNextLabel,
+      nextStation = nextStation,
+      destLabel = strings.notifDestinationLabel,
+      destStation = destinationStation,
+      stopLabel = strings.stopTrackingBtn,
     )
+    TrainTrackingService.startOrUpdate(appContext, info)
   }
 
   fun setMapSizePreset(preset: MapSizePreset) {
@@ -797,11 +806,5 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
 
   fun triggerRecenterMap() {
     _uiState.update { it.copy(recenterSignal = it.recenterSignal + 1) }
-  }
-
-  fun onHostViewModelCleared() {
-    if (!_uiState.value.backgroundTrackingEnabled) {
-      stopTracking(showBanner = false)
-    }
   }
 }

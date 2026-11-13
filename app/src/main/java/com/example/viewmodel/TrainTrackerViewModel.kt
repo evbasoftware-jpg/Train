@@ -29,9 +29,6 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
 
   fun onNotificationPermissionHandled() = coordinator.onNotificationPermissionHandled()
 
-  fun setBackgroundTrackingEnabled(enabled: Boolean) =
-    coordinator.setBackgroundTrackingEnabled(enabled)
-
   fun toggleFavoriteCurrentTrain() = coordinator.toggleFavoriteCurrentTrain()
 
   fun onQuickTrainSelected(entry: SavedTrainEntry) = coordinator.onQuickTrainSelected(entry)
@@ -47,13 +44,14 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
 
   fun swapStations() = coordinator.swapStations()
 
-  fun onSelectTrainBetween(trainNumber: String) = coordinator.onSelectTrainBetween(trainNumber)
+  fun onSelectTrainBetween(trainNumber: String, trainName: String? = null) =
+    coordinator.onSelectTrainBetween(trainNumber, trainName)
 
   fun onTrainNoChanged(raw: String) = coordinator.onTrainNoChanged(raw)
 
   fun startTracking() = coordinator.startTracking()
 
-  fun stopTracking(showBanner: Boolean = true) = coordinator.stopTracking(showBanner)
+  fun stopTracking() = coordinator.stopTracking()
 
   fun onStationNodeClicked(index: Int) = coordinator.onStationNodeClicked(index)
 
@@ -68,9 +66,4 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
   fun setMapFullscreen(fullscreen: Boolean) = coordinator.setMapFullscreen(fullscreen)
 
   fun triggerRecenterMap() = coordinator.triggerRecenterMap()
-
-  override fun onCleared() {
-    super.onCleared()
-    coordinator.onHostViewModelCleared()
-  }
 }

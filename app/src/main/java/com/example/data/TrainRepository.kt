@@ -32,10 +32,83 @@ class TrainRepository(private val cacheDir: File? = null) {
       "https://script.google.com/macros/s/AKfycbxpHggaA7sNDXrwcyNid4Yy-Mfm3nLe8M0VGgplD4XHHc7Ul9LTWDJtpjj4C_4MFGopBQ/exec"
     const val STATIONS_CDN_URL =
       "https://cdn.jsdelivr.net/gh/datameet/railways/stations.json"
+    const val STATIONS_RAW_FALLBACK_URL =
+      "https://raw.githubusercontent.com/datameet/railways/master/stations.json"
     const val TRAIN_CDN_BASE =
       "https://raw.githubusercontent.com/datameet/railways/master/trains/"
     private const val STATION_CACHE_FILE = "stations_cache.json"
     private const val STATION_CACHE_MAX_AGE_MS = 7L * 24 * 60 * 60 * 1000L
+
+    val CORE_STATIONS: List<StationDbEntry> = listOf(
+      StationDbEntry("AHMADPUR JN", "AMP", 23.8359, 87.7033),
+      StationDbEntry("BOLPUR S NIKTN", "BHP", 23.6683, 87.6908),
+      StationDbEntry("SAINTHIA", "SNT", 23.9453, 87.6806),
+      StationDbEntry("RAMPURHAT", "RPH", 24.1707, 87.7817),
+      StationDbEntry("BARDDHAMAN JN", "BWN", 23.2504, 87.8705),
+      StationDbEntry("HOWRAH JN", "HWH", 22.5839, 88.3426),
+      StationDbEntry("SEALDAH", "SDAH", 22.5678, 88.3705),
+      StationDbEntry("KOLKATA", "KOAA", 22.6012, 88.3834),
+      StationDbEntry("SHALIMAR", "SHM", 22.5567, 88.3168),
+      StationDbEntry("SANTRAGACHI JN", "SRC", 22.5819, 88.2844),
+      StationDbEntry("KHARAGPUR JN", "KGP", 22.3396, 87.3250),
+      StationDbEntry("BANDEL JN", "BDC", 22.9242, 88.3788),
+      StationDbEntry("NAIHATI JN", "NH", 22.8935, 88.4209),
+      StationDbEntry("DANKUNI", "DKAE", 22.6716, 88.2932),
+      StationDbEntry("MALDA TOWN", "MLDT", 25.0096, 88.1333),
+      StationDbEntry("NEW FARAKKA JN", "NFK", 24.8035, 87.8938),
+      StationDbEntry("NEW JALPAIGURI", "NJP", 26.6828, 88.4430),
+      StationDbEntry("SILIGURI JN", "SGUJ", 26.7310, 88.4282),
+      StationDbEntry("GUWAHATI", "GHY", 26.1820, 91.7510),
+      StationDbEntry("ASANSOL JN", "ASN", 23.6914, 86.9762),
+      StationDbEntry("DURGAPUR", "DGR", 23.4956, 87.3119),
+      StationDbEntry("MADHUPUR JN", "MDP", 24.2583, 86.6458),
+      StationDbEntry("JASIDIH JN", "JSME", 24.5130, 86.6479),
+      StationDbEntry("PATNA JN", "PNBE", 25.6033, 85.1372),
+      StationDbEntry("GAYA JN", "GAYA", 24.8041, 84.9999),
+      StationDbEntry("DHANBAD JN", "DHN", 23.7908, 86.4290),
+      StationDbEntry("TATANAGAR JN", "TATA", 22.7689, 86.1972),
+      StationDbEntry("RANCHI", "RNC", 23.3502, 85.3358),
+      StationDbEntry("BHUBANESWAR", "BBS", 20.2669, 85.8434),
+      StationDbEntry("PURI", "PURI", 19.8077, 85.8390),
+      StationDbEntry("VISAKHAPATNAM", "VSKP", 17.7219, 83.2899),
+      StationDbEntry("VIJAYAWADA JN", "BZA", 16.5186, 80.6200),
+      StationDbEntry("MGR CHENNAI CTL", "MAS", 13.0827, 80.2755),
+      StationDbEntry("KSR BENGALURU", "SBC", 12.9781, 77.5697),
+      StationDbEntry("SECUNDERABAD JN", "SC", 17.4344, 78.5013),
+      StationDbEntry("PUNE JN", "PUNE", 18.5289, 73.8744),
+      StationDbEntry("MUMBAI CSMT", "CSMT", 18.9398, 72.8355),
+      StationDbEntry("LOKMANYA TILAK T", "LTT", 19.0700, 72.8914),
+      StationDbEntry("MUMBAI CENTRAL", "MMCT", 18.9712, 72.8195),
+      StationDbEntry("AHMEDABAD JN", "ADI", 23.0268, 72.6008),
+      StationDbEntry("SURAT", "ST", 21.2049, 72.8408),
+      StationDbEntry("JAIPUR", "JP", 26.9196, 75.7878),
+      StationDbEntry("BHOPAL JN", "BPL", 23.2683, 77.4136),
+      StationDbEntry("NAGPUR", "NGP", 21.1502, 79.0888),
+      StationDbEntry("PRAYAGRAJ JN", "PRYJ", 25.4460, 81.8339),
+      StationDbEntry("VARANASI JN", "BSB", 25.3270, 82.9866),
+      StationDbEntry("LUCKNOW NR", "LKO", 26.8318, 80.9209),
+      StationDbEntry("KANPUR CENTRAL", "CNB", 26.4539, 80.3512),
+      StationDbEntry("NEW DELHI", "NDLS", 28.6429, 77.2191),
+      StationDbEntry("ANAND VIHAR TRM", "ANVT", 28.6502, 77.3150),
+      StationDbEntry("H NIZAMUDDIN", "NZM", 28.5887, 77.2535),
+      StationDbEntry("AMRITSAR JN", "ASR", 31.6331, 74.8672),
+      StationDbEntry("THIRUVANANTHAPURAM CTL", "TVC", 8.4875, 76.9525),
+      StationDbEntry("MURARAI", "MRR", 24.4557, 87.8569),
+      StationDbEntry("NALHATI JN", "NHT", 24.2943, 87.8266),
+      StationDbEntry("TARAPITH ROAD", "TPF", 24.1322, 87.7740),
+      StationDbEntry("MALLARPUR", "MLV", 24.0837, 87.7294),
+      StationDbEntry("PRANTIK", "PNE", 23.6939, 87.7191),
+      StationDbEntry("GUSKARA", "GKH", 23.4956, 87.7438),
+      StationDbEntry("KATWA", "KWAE", 23.6431, 88.1281),
+      StationDbEntry("AZIMGANJ JN", "AZ", 24.2367, 88.2484),
+      StationDbEntry("BERHAMPORE CRT", "BPC", 24.1038, 88.2572),
+      StationDbEntry("KRISHNANAGAR CTY JN", "KNJ", 23.4013, 88.4998),
+      StationDbEntry("RANAGHAT JN", "RHA", 23.1753, 88.5677),
+      StationDbEntry("SURI", "SURI", 23.9102, 87.5269),
+      StationDbEntry("SIURI", "SURI", 23.9102, 87.5269),
+      StationDbEntry("ANDAL JN", "UDL", 23.5836, 87.1932),
+      StationDbEntry("PANAGARH", "PAN", 23.4526, 87.4342),
+    )
   }
 
   private val client = OkHttpClient.Builder()
@@ -49,13 +122,17 @@ class TrainRepository(private val cacheDir: File? = null) {
   private val textPlainJson = "text/plain;charset=utf-8".toMediaType()
 
   suspend fun loadCachedStationsDb(): List<StationDbEntry> = withContext(Dispatchers.IO) {
-    val file = cacheDir?.let { File(it, STATION_CACHE_FILE) } ?: return@withContext emptyList()
-    if (!file.exists()) return@withContext emptyList()
-    return@withContext try {
-      parseStationsGeoJson(file.readText())
-    } catch (_: Exception) {
+    val file = cacheDir?.let { File(it, STATION_CACHE_FILE) }
+    val cached = if (file != null && file.exists()) {
+      try {
+        parseStationsGeoJson(file.readText())
+      } catch (_: Exception) {
+        emptyList()
+      }
+    } else {
       emptyList()
     }
+    mergeWithCoreStations(cached)
   }
 
   suspend fun fetchStationsDb(forceRefreshIfStale: Boolean = true): List<StationDbEntry> =
@@ -69,29 +146,47 @@ class TrainRepository(private val cacheDir: File? = null) {
           } catch (_: Exception) {
             emptyList()
           }
-          if (cached.isNotEmpty()) return@withContext cached
+          if (cached.isNotEmpty()) return@withContext mergeWithCoreStations(cached)
         }
       }
 
-      try {
-        val req = Request.Builder().url(STATIONS_CDN_URL).get().build()
-        client.newCall(req).execute().use { resp ->
-          if (!resp.isSuccessful) return@withContext loadCachedStationsDb()
-          val body = resp.body?.string() ?: return@withContext loadCachedStationsDb()
-          val parsed = parseStationsGeoJson(body)
-          if (parsed.isNotEmpty() && file != null) {
-            try {
-              file.parentFile?.mkdirs()
-              file.writeText(body)
-            } catch (_: Exception) {
+      for (url in listOf(STATIONS_CDN_URL, STATIONS_RAW_FALLBACK_URL)) {
+        try {
+          val req = Request.Builder().url(url).get().build()
+          client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) continue
+            val body = resp.body?.string() ?: continue
+            val parsed = parseStationsGeoJson(body)
+            if (parsed.isNotEmpty()) {
+              if (file != null) {
+                try {
+                  file.parentFile?.mkdirs()
+                  file.writeText(body)
+                } catch (_: Exception) {
+                }
+              }
+              return@withContext mergeWithCoreStations(parsed)
             }
           }
-          parsed.ifEmpty { loadCachedStationsDb() }
+        } catch (_: Exception) {
         }
-      } catch (_: Exception) {
-        loadCachedStationsDb()
+      }
+      loadCachedStationsDb()
+    }
+
+  private fun mergeWithCoreStations(remote: List<StationDbEntry>): List<StationDbEntry> {
+    if (remote.isEmpty()) return CORE_STATIONS
+    val existingCodes = HashSet<String>(remote.size + CORE_STATIONS.size)
+    remote.forEach { existingCodes.add(it.code.uppercase(Locale.US)) }
+    val merged = ArrayList<StationDbEntry>(remote.size + CORE_STATIONS.size)
+    merged.addAll(remote)
+    CORE_STATIONS.forEach { seed ->
+      if (!existingCodes.contains(seed.code.uppercase(Locale.US))) {
+        merged.add(seed)
       }
     }
+    return merged
+  }
 
   private fun parseStationsGeoJson(rawJson: String): List<StationDbEntry> {
     val root = JSONObject(rawJson)

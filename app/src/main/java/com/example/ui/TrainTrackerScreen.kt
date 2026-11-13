@@ -71,7 +71,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -236,6 +235,8 @@ fun TrainTrackerScreen(
             SearchAndControlPanel(
               fromInput = state.fromInput,
               toInput = state.toInput,
+              fromResolvedStation = state.fromResolvedStation,
+              toResolvedStation = state.toResolvedStation,
               fromSuggestions = state.fromSuggestions,
               toSuggestions = state.toSuggestions,
               betweenLoading = state.betweenLoading,
@@ -249,7 +250,6 @@ fun TrainTrackerScreen(
               recentTrains = state.recentTrains,
               recentRoutes = state.recentRoutes,
               running = state.running,
-              backgroundTrackingEnabled = state.backgroundTrackingEnabled,
               isWideLayout = isWideLayout,
               strings = strings,
               onFromChanged = viewModel::onFromInputChanged,
@@ -259,9 +259,9 @@ fun TrainTrackerScreen(
                 viewModel.onStationSelected(isFrom, entry)
               },
               onSwapStations = viewModel::swapStations,
-              onSelectBetweenTrain = { trainNo ->
+              onSelectBetweenTrain = { trainNo, trainName ->
                 focusManager.clearFocus()
-                viewModel.onSelectTrainBetween(trainNo)
+                viewModel.onSelectTrainBetween(trainNo, trainName)
               },
               onTrainNoChanged = viewModel::onTrainNoChanged,
               onToggleFavorite = viewModel::toggleFavoriteCurrentTrain,
@@ -277,7 +277,7 @@ fun TrainTrackerScreen(
                 focusManager.clearFocus()
                 viewModel.startTracking()
               },
-              onStopTracking = { viewModel.stopTracking(showBanner = true) },
+              onStopTracking = { viewModel.stopTracking() },
               onOpenNtes = {
                 try {
                   val intent = Intent(
@@ -288,7 +288,6 @@ fun TrainTrackerScreen(
                 } catch (_: Throwable) {
                 }
               },
-              onToggleBackgroundTracking = viewModel::setBackgroundTrackingEnabled,
             )
 
             // Destination Alarm Banner
@@ -299,13 +298,6 @@ fun TrainTrackerScreen(
                 strings = strings,
                 onDismiss = viewModel::dismissStationAlarm,
               )
-            }
-
-            // Verification Result Banner
-            AnimatedVisibility(visible = state.resultBanner != null) {
-              state.resultBanner?.let { banner ->
-                StatusBannerBox(banner = banner, testTag = "result_banner")
-              }
             }
 
             // Live Fetch / GPS Status Banner
@@ -363,6 +355,8 @@ fun TrainTrackerScreen(
             ) {
               OsmMapSection(
                 tileLoader = viewModel.tileLoader,
+                trainNo = state.trainNoInput,
+                trainName = state.trainName,
                 route = state.route,
                 locatedTrain = state.locatedTrain,
                 latestUserGps = state.latestUserGps,
@@ -675,6 +669,8 @@ private fun LanguagePickerDialog(
 private fun SearchAndControlPanel(
   fromInput: String,
   toInput: String,
+  fromResolvedStation: StationDbEntry?,
+  toResolvedStation: StationDbEntry?,
   fromSuggestions: List<StationDbEntry>,
   toSuggestions: List<StationDbEntry>,
   betweenLoading: Boolean,
@@ -686,14 +682,13 @@ private fun SearchAndControlPanel(
   recentTrains: List<SavedTrainEntry>,
   recentRoutes: List<SavedRoutePair>,
   running: Boolean,
-  backgroundTrackingEnabled: Boolean,
   isWideLayout: Boolean,
   strings: LocalizedStrings,
   onFromChanged: (String) -> Unit,
   onToChanged: (String) -> Unit,
   onStationSelected: (Boolean, StationDbEntry) -> Unit,
   onSwapStations: () -> Unit,
-  onSelectBetweenTrain: (String) -> Unit,
+  onSelectBetweenTrain: (String, String) -> Unit,
   onTrainNoChanged: (String) -> Unit,
   onToggleFavorite: () -> Unit,
   onQuickTrainClick: (SavedTrainEntry) -> Unit,
@@ -701,7 +696,6 @@ private fun SearchAndControlPanel(
   onStartTracking: () -> Unit,
   onStopTracking: () -> Unit,
   onOpenNtes: () -> Unit,
-  onToggleBackgroundTracking: (Boolean) -> Unit,
 ) {
   Card(
     modifier = Modifier.fillMaxWidth(),
@@ -723,6 +717,7 @@ private fun SearchAndControlPanel(
             label = strings.fromStationLabel,
             placeholder = strings.stationPlaceholder,
             value = fromInput,
+            resolvedStation = fromResolvedStation,
             suggestions = fromSuggestions,
             onValueChange = onFromChanged,
             onSuggestionClick = { onStationSelected(true, it) },
@@ -746,6 +741,7 @@ private fun SearchAndControlPanel(
             label = strings.toStationLabel,
             placeholder = strings.stationPlaceholder,
             value = toInput,
+            resolvedStation = toResolvedStation,
             suggestions = toSuggestions,
             onValueChange = onToChanged,
             onSuggestionClick = { onStationSelected(false, it) },
@@ -758,6 +754,7 @@ private fun SearchAndControlPanel(
           label = strings.fromStationLabel,
           placeholder = strings.stationPlaceholder,
           value = fromInput,
+          resolvedStation = fromResolvedStation,
           suggestions = fromSuggestions,
           onValueChange = onFromChanged,
           onSuggestionClick = { onStationSelected(true, it) },
@@ -791,6 +788,7 @@ private fun SearchAndControlPanel(
           label = strings.toStationLabel,
           placeholder = strings.stationPlaceholder,
           value = toInput,
+          resolvedStation = toResolvedStation,
           suggestions = toSuggestions,
           onValueChange = onToChanged,
           onSuggestionClick = { onStationSelected(false, it) },
@@ -869,7 +867,7 @@ private fun SearchAndControlPanel(
               item.trainNumber.contains(trainNoInput)
             val safeDist = item.distanceKm.takeIf { it.isFinite() } ?: 0.0
             Surface(
-              onClick = { onSelectBetweenTrain(item.trainNumber) },
+              onClick = { onSelectBetweenTrain(item.trainNumber, item.trainName) },
               shape = RoundedCornerShape(10.dp),
               color = if (isSelectedTrain) {
                 MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
@@ -1054,56 +1052,6 @@ private fun SearchAndControlPanel(
           )
         }
       }
-
-      // Screen-off Notification Live Tracking Toggle
-      Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = if (backgroundTrackingEnabled) {
-          MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-        } else {
-          MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
-        },
-        modifier = Modifier
-          .fillMaxWidth()
-          .border(
-            1.dp,
-            if (backgroundTrackingEnabled) CobaltPrimary.copy(alpha = 0.45f) else MaterialTheme.colorScheme.outline,
-            RoundedCornerShape(12.dp),
-          )
-          .testTag("background_tracking_card"),
-      ) {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-          Icon(
-            imageVector = Icons.Filled.NotificationsActive,
-            contentDescription = null,
-            tint = CobaltPrimary,
-            modifier = Modifier.size(22.dp),
-          )
-          Column(modifier = Modifier.weight(1f)) {
-            Text(
-              text = strings.backgroundTrackingTitle,
-              style = MaterialTheme.typography.titleSmall,
-              color = MaterialTheme.colorScheme.onSurface,
-            )
-            Text(
-              text = strings.backgroundTrackingDesc,
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
-          Switch(
-            checked = backgroundTrackingEnabled,
-            onCheckedChange = onToggleBackgroundTracking,
-            modifier = Modifier.testTag("background_tracking_switch"),
-          )
-        }
-      }
     }
   }
 }
@@ -1222,6 +1170,7 @@ private fun StationInputWithSuggestions(
   label: String,
   placeholder: String,
   value: String,
+  resolvedStation: StationDbEntry?,
   suggestions: List<StationDbEntry>,
   onValueChange: (String) -> Unit,
   onSuggestionClick: (StationDbEntry) -> Unit,
@@ -1247,6 +1196,23 @@ private fun StationInputWithSuggestions(
         .fillMaxWidth()
         .testTag(testTag),
     )
+
+    if (resolvedStation != null && value.isNotBlank()) {
+      Surface(
+        onClick = { onSuggestionClick(resolvedStation) },
+        shape = RoundedCornerShape(8.dp),
+        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+        modifier = Modifier.padding(top = 4.dp),
+      ) {
+        Text(
+          text = "🚉 ${resolvedStation.name} (${resolvedStation.code})",
+          fontSize = 12.sp,
+          fontWeight = FontWeight.Bold,
+          color = CobaltPrimary,
+          modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+        )
+      }
+    }
 
     AnimatedVisibility(visible = suggestions.isNotEmpty()) {
       Surface(

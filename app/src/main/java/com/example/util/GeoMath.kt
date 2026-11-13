@@ -57,16 +57,54 @@ object GeoMath {
     return upper
   }
 
+  fun resolveStation(query: String, stationDb: List<StationDbEntry>): StationDbEntry? {
+    val v = query.trim()
+    if (v.isEmpty() || stationDb.isEmpty()) return null
+    val parenMatch = PAREN_CODE_REGEX.find(v)
+    if (parenMatch != null) {
+      val code = parenMatch.groupValues[1].trim().uppercase(Locale.US)
+      stationDb.firstOrNull { it.code.equals(code, ignoreCase = true) }?.let { return it }
+    }
+    val upper = v.uppercase(Locale.US)
+    return stationDb.firstOrNull { it.code.equals(upper, ignoreCase = true) }
+      ?: stationDb.firstOrNull { it.name.equals(v, ignoreCase = true) }
+  }
+
   fun filterStationSuggestions(
     query: String,
     stationDb: List<StationDbEntry>,
     limit: Int = 15,
   ): List<StationDbEntry> {
     val valUpper = query.trim().uppercase(Locale.US)
-    if (valUpper.length < 2) return emptyList()
+    if (valUpper.isEmpty()) return emptyList()
+    if (valUpper.length == 1) {
+      return stationDb.asSequence()
+        .filter { it.code.equals(valUpper, ignoreCase = true) }
+        .take(limit)
+        .toList()
+    }
     return stationDb.asSequence()
-      .filter { it.code.contains(valUpper) || it.name.uppercase(Locale.US).contains(valUpper) }
+      .mapNotNull { entry ->
+        val codeUpper = entry.code.uppercase(Locale.US)
+        val nameUpper = entry.name.uppercase(Locale.US)
+        val tier = when {
+          codeUpper == valUpper -> 0
+          codeUpper.startsWith(valUpper) -> 1
+          nameUpper.startsWith(valUpper) -> 2
+          nameUpper.split(' ', '-', '.').any { it.startsWith(valUpper) } -> 3
+          codeUpper.contains(valUpper) -> 4
+          nameUpper.contains(valUpper) -> 5
+          else -> return@mapNotNull null
+        }
+        tier to entry
+      }
+      .sortedWith(
+        compareBy<Pair<Int, StationDbEntry>> { it.first }
+          .thenBy { it.second.name.length }
+          .thenBy { it.second.name },
+      )
       .take(limit)
+      .map { it.second }
       .toList()
   }
 

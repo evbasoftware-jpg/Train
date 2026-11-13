@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -102,6 +103,8 @@ import kotlin.math.tan
 @Composable
 fun OsmMapSection(
   tileLoader: OsmTileLoader,
+  trainNo: String,
+  trainName: String?,
   route: List<RouteStation>,
   locatedTrain: LocatedTrain?,
   latestUserGps: GpsSample?,
@@ -218,6 +221,8 @@ fun OsmMapSection(
       if (!isFullscreen) {
         InteractiveOsmCanvas(
           tileLoader = tileLoader,
+          trainNo = trainNo,
+          trainName = trainName,
           route = route,
           locatedTrain = locatedTrain,
           latestUserGps = latestUserGps,
@@ -256,6 +261,8 @@ fun OsmMapSection(
         Box(modifier = Modifier.fillMaxSize()) {
           InteractiveOsmCanvas(
             tileLoader = tileLoader,
+            trainNo = trainNo,
+            trainName = trainName,
             route = route,
             locatedTrain = locatedTrain,
             latestUserGps = latestUserGps,
@@ -341,6 +348,8 @@ private fun MapActionChip(
 @Composable
 private fun InteractiveOsmCanvas(
   tileLoader: OsmTileLoader,
+  trainNo: String,
+  trainName: String?,
   route: List<RouteStation>,
   locatedTrain: LocatedTrain?,
   latestUserGps: GpsSample?,
@@ -743,15 +752,54 @@ private fun InteractiveOsmCanvas(
         }
       }
 
-      // Train Marker
+      // Train Marker + Train Name & Number Label
       if (locatedTrain != null) {
         val tPt = latLonToScreen(locatedTrain.lat, locatedTrain.lon)
         if (tPt.x in -40f..(width + 40f) && tPt.y in -40f..(height + 40f)) {
+          val trainLabel = buildString {
+            append("🚆 ")
+            if (trainNo.isNotBlank()) append(trainNo)
+            if (!trainName.isNullOrBlank()) {
+              if (trainNo.isNotBlank()) append(" • ")
+              append(trainName)
+            }
+          }.trim()
+
+          if (trainLabel.isNotBlank()) {
+            Surface(
+              modifier = Modifier
+                .offset {
+                  IntOffset(
+                    (tPt.x.roundToInt() - with(density) { 86.dp.roundToPx() })
+                      .coerceIn(6, (width.roundToInt() - with(density) { 180.dp.roundToPx() }).coerceAtLeast(6)),
+                    (tPt.y.roundToInt() - with(density) { 46.dp.roundToPx() }).coerceAtLeast(6),
+                  )
+                }
+                .widthIn(max = 210.dp),
+              shape = RoundedCornerShape(10.dp),
+              color = CobaltPrimary,
+              shadowElevation = 5.dp,
+            ) {
+              Text(
+                text = trainLabel,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                  .border(1.5.dp, Color.White, RoundedCornerShape(10.dp))
+                  .padding(horizontal = 8.dp, vertical = 3.dp),
+              )
+            }
+          }
+
           val badgeSizePx = with(density) { 38.dp.roundToPx() }
           Surface(
             onClick = {
-              selectedMarkerInfo =
-                "🚆 ${locatedTrain.name} (${String.format(Locale.US, "%.1f", locatedTrain.speedKmh)} km/h)"
+              val spd = locatedTrain.speedKmh.takeIf { it.isFinite() } ?: 0.0
+              val titlePart = trainLabel.ifBlank { "🚆 ${locatedTrain.name}" }
+              selectedMarkerInfo = "$titlePart • ${locatedTrain.name} (${String.format(Locale.US, "%.1f", spd)} km/h)"
             },
             modifier = Modifier
               .offset {
