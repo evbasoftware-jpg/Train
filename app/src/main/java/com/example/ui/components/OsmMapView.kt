@@ -551,9 +551,16 @@ private fun InteractiveOsmCanvas(
         val uPt = latLonToScreen(latestUserGps.lat, latestUserGps.lon)
         val metersPerTilePx =
           156543.03392 * cos(Math.toRadians(latestUserGps.lat)) / 2.0.pow(zoom)
-        val accuracyRadiusPx = (latestUserGps.accuracy / metersPerTilePx)
-          .toFloat()
-          .coerceIn(14.dp.toPx(), 160.dp.toPx())
+        val rawAccPx = if (metersPerTilePx > 0.0 && latestUserGps.accuracy.isFinite()) {
+          (latestUserGps.accuracy / metersPerTilePx).toFloat()
+        } else {
+          14.dp.toPx()
+        }
+        val accuracyRadiusPx = if (rawAccPx.isFinite()) {
+          rawAccPx.coerceIn(14.dp.toPx(), 160.dp.toPx())
+        } else {
+          14.dp.toPx()
+        }
 
         drawCircle(
           color = Color(0x221565C0),
@@ -687,7 +694,7 @@ private fun InteractiveOsmCanvas(
             shadowElevation = 4.dp,
           ) {
             Text(
-              text = "📏 ${String.format(Locale.US, "%.2f", distanceKm)} km",
+              text = "📏 ${String.format(Locale.US, "%.2f", distanceKm.takeIf { it.isFinite() } ?: 0.0)} km",
               fontFamily = JetBrainsMonoFontFamily,
               fontSize = 11.sp,
               fontWeight = FontWeight.Bold,

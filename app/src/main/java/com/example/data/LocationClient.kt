@@ -1,12 +1,15 @@
 package com.example.data
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
 import android.location.Location
 import android.location.LocationListener
 import android.location.LocationManager
 import android.os.Bundle
 import android.os.Looper
+import androidx.core.content.ContextCompat
 import com.example.model.GpsSample
 import com.google.android.gms.location.LocationCallback
 import com.google.android.gms.location.LocationRequest
@@ -31,6 +34,21 @@ class LocationClient(context: Context) {
 
   @SuppressLint("MissingPermission")
   fun observeLocationUpdates(): Flow<LocationEvent> = callbackFlow {
+    val hasFine = ContextCompat.checkSelfPermission(
+      appContext,
+      Manifest.permission.ACCESS_FINE_LOCATION,
+    ) == PackageManager.PERMISSION_GRANTED
+    val hasCoarse = ContextCompat.checkSelfPermission(
+      appContext,
+      Manifest.permission.ACCESS_COARSE_LOCATION,
+    ) == PackageManager.PERMISSION_GRANTED
+
+    if (!hasFine && !hasCoarse) {
+      trySend(LocationEvent.UnavailableOrDisabled)
+      close()
+      return@callbackFlow
+    }
+
     var receivedAnyFix = false
 
     fun emitLocation(location: Location) {
@@ -77,9 +95,9 @@ class LocationClient(context: Context) {
         .setMaxUpdateDelayMillis(10_000L)
         .build()
 
-      fusedClient.lastLocation.addOnSuccessListener { last ->
-        if (last != null) emitLocation(last)
-      }
+      fusedClient.lastLocation
+        .addOnSuccessListener { last -> if (last != null) emitLocation(last) }
+        .addOnFailureListener { }
 
       fusedClient.requestLocationUpdates(request, fusedCallback, Looper.getMainLooper())
         .addOnFailureListener {
@@ -88,11 +106,10 @@ class LocationClient(context: Context) {
           }
         }
       fusedStarted = true
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
       fusedStarted = false
     }
 
-    // Also attach LocationManager GPS/Network fallback so emulators without GMS work smoothly
     var lmStarted = false
     try {
       if (locationManager != null) {
@@ -122,7 +139,7 @@ class LocationClient(context: Context) {
           lmStarted = true
         }
       }
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
       if (!fusedStarted && !lmStarted) {
         trySend(LocationEvent.UnavailableOrDisabled)
       }
@@ -132,13 +149,13 @@ class LocationClient(context: Context) {
       if (fusedStarted) {
         try {
           fusedClient.removeLocationUpdates(fusedCallback)
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
       }
       if (lmStarted) {
         try {
           locationManager?.removeUpdates(platformListener)
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
         }
       }
     }

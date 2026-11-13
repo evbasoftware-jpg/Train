@@ -33,7 +33,7 @@ object TrainNotificationHelper {
         "Live Train Tracking",
         NotificationManager.IMPORTANCE_LOW,
       ).apply {
-        description = "Shows ongoing live train location and next station"
+        description = "Tracks live train location even when the screen is off"
       }
 
       val alarmChannel = NotificationChannel(
@@ -55,6 +55,7 @@ object TrainNotificationHelper {
     context: Context,
     title: String,
     content: String,
+    stopLabel: String = "Stop",
   ): Notification {
     ensureChannels(context)
 
@@ -79,13 +80,14 @@ object TrainNotificationHelper {
     )
 
     return NotificationCompat.Builder(context, TRACKING_CHANNEL_ID)
-      .setSmallIcon(R.drawable.ic_launcher_foreground)
+      .setSmallIcon(R.drawable.ic_stat_train)
       .setContentTitle(title)
       .setContentText(content)
+      .setStyle(NotificationCompat.BigTextStyle().bigText(content))
       .setOngoing(true)
       .setOnlyAlertOnce(true)
       .setContentIntent(openPendingIntent)
-      .addAction(0, "Stop", stopPendingIntent)
+      .addAction(0, stopLabel, stopPendingIntent)
       .build()
   }
 
@@ -116,7 +118,7 @@ object TrainNotificationHelper {
     )
 
     val notification = NotificationCompat.Builder(context, ALARM_CHANNEL_ID)
-      .setSmallIcon(R.drawable.ic_launcher_foreground)
+      .setSmallIcon(R.drawable.ic_stat_train)
       .setContentTitle(title)
       .setContentText(message)
       .setStyle(NotificationCompat.BigTextStyle().bigText(message))
@@ -125,7 +127,10 @@ object TrainNotificationHelper {
       .setContentIntent(openPendingIntent)
       .build()
 
-    NotificationManagerCompat.from(context).notify(ALARM_NOTIFICATION_ID, notification)
+    try {
+      NotificationManagerCompat.from(context).notify(ALARM_NOTIFICATION_ID, notification)
+    } catch (_: SecurityException) {
+    }
   }
 
   @Suppress("DEPRECATION")
@@ -143,7 +148,7 @@ object TrainNotificationHelper {
           vibrator?.vibrate(pattern, -1)
         }
       }
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
     }
   }
 }

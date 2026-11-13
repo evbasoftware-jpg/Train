@@ -7,7 +7,6 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import com.example.model.AppLanguage
 import com.example.model.SavedRoutePair
 import com.example.model.SavedTrainEntry
 import kotlinx.coroutines.flow.Flow
@@ -20,7 +19,7 @@ private val Context.trackerDataStore: DataStore<Preferences> by preferencesDataS
 )
 
 data class PersistedPrefs(
-  val language: AppLanguage = AppLanguage.BN,
+  val languageCode: String = "bn",
   val favoriteTrains: List<SavedTrainEntry> = emptyList(),
   val recentTrains: List<SavedTrainEntry> = emptyList(),
   val recentRoutes: List<SavedRoutePair> = emptyList(),
@@ -37,10 +36,8 @@ class TrackerPreferences(private val context: Context) {
   }
 
   val prefsFlow: Flow<PersistedPrefs> = context.trackerDataStore.data.map { prefs ->
-    val langCode = prefs[KEY_LANGUAGE] ?: AppLanguage.BN.code
-    val lang = AppLanguage.entries.firstOrNull { it.code == langCode } ?: AppLanguage.BN
     PersistedPrefs(
-      language = lang,
+      languageCode = prefs[KEY_LANGUAGE] ?: "bn",
       favoriteTrains = decodeTrainList(prefs[KEY_FAVORITES]),
       recentTrains = decodeTrainList(prefs[KEY_RECENTS]),
       recentRoutes = decodeRouteList(prefs[KEY_RECENT_ROUTES]),
@@ -48,8 +45,8 @@ class TrackerPreferences(private val context: Context) {
     )
   }
 
-  suspend fun saveLanguage(language: AppLanguage) {
-    context.trackerDataStore.edit { it[KEY_LANGUAGE] = language.code }
+  suspend fun saveLanguageCode(languageCode: String) {
+    context.trackerDataStore.edit { it[KEY_LANGUAGE] = languageCode }
   }
 
   suspend fun saveBackgroundTracking(enabled: Boolean) {
@@ -70,7 +67,7 @@ class TrackerPreferences(private val context: Context) {
   }
 
   suspend fun addRecentTrain(entry: SavedTrainEntry) {
-    if (entry.trainNumber.length != 5) return
+    if (entry.trainNumber.length < 4) return
     context.trackerDataStore.edit { prefs ->
       val current = decodeTrainList(prefs[KEY_RECENTS]).toMutableList()
       val existingName = current.firstOrNull { it.trainNumber == entry.trainNumber }?.trainName
@@ -79,7 +76,6 @@ class TrackerPreferences(private val context: Context) {
       current.add(0, SavedTrainEntry(entry.trainNumber, resolvedName))
       prefs[KEY_RECENTS] = encodeTrainList(current.take(6))
 
-      // Also update favorite name if already favorited
       val favs = decodeTrainList(prefs[KEY_FAVORITES]).toMutableList()
       val favIdx = favs.indexOfFirst { it.trainNumber == entry.trainNumber }
       if (favIdx >= 0 && resolvedName.isNotBlank() && favs[favIdx].trainName.isBlank()) {

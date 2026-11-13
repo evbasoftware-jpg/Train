@@ -5,7 +5,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
-import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -22,17 +21,18 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -41,18 +41,18 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DirectionsRailway
 import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.GpsFixed
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
-import androidx.compose.material.icons.filled.Map
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Route
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Stop
@@ -63,16 +63,10 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
-import androidx.compose.material3.NavigationRail
-import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -83,14 +77,17 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
@@ -100,27 +97,22 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.example.model.AppLanguage
 import com.example.model.BannerType
+import com.example.model.GoogleLanguages
 import com.example.model.LocalizedStrings
 import com.example.model.SavedRoutePair
 import com.example.model.SavedTrainEntry
 import com.example.model.StationAlarmState
 import com.example.model.StationDbEntry
 import com.example.model.StatusBanner
-import com.example.model.TrackerTab
-import com.example.model.TrackerUiState
 import com.example.model.TrainBetweenItem
-import com.example.model.stringsFor
-import com.example.ui.components.ConfidenceScoreCard
-import com.example.ui.components.GpsSamplesCard
 import com.example.ui.components.MovementDistanceCard
 import com.example.ui.components.OsmMapSection
 import com.example.ui.components.RouteTimelineCard
 import com.example.ui.components.TrainLiveCard
-import com.example.ui.components.UserGpsCard
 import com.example.ui.theme.CobaltDark
 import com.example.ui.theme.CobaltPrimary
 import com.example.ui.theme.HeaderIndigo
@@ -135,6 +127,8 @@ import com.example.ui.theme.VerifiedEmeraldContainer
 import com.example.ui.theme.VerifiedEmeraldDark
 import com.example.viewmodel.TrainTrackerViewModel
 import java.util.Locale
+import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 @Composable
 fun TrainTrackerScreen(
@@ -142,9 +136,13 @@ fun TrainTrackerScreen(
   modifier: Modifier = Modifier,
 ) {
   val state by viewModel.uiState.collectAsStateWithLifecycle()
-  val strings = stringsFor(state.language)
+  val strings = state.strings
   val context = LocalContext.current
   val focusManager = LocalFocusManager.current
+  val mainScrollState = rememberScrollState()
+  val coroutineScope = rememberCoroutineScope()
+  var mapSectionOffsetPx by remember { mutableIntStateOf(0) }
+  var languageDialogOpen by remember { mutableStateOf(false) }
 
   val locationPermissionLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestMultiplePermissions(),
@@ -201,521 +199,229 @@ fun TrainTrackerScreen(
     }
   }
 
-  BackHandler(enabled = state.activeTab != TrackerTab.LIVE_ROUTE) {
-    viewModel.setActiveTab(TrackerTab.LIVE_ROUTE)
-  }
-
   BoxWithConstraints(modifier = modifier.fillMaxSize()) {
-    val isWideLayout = maxWidth >= 640.dp
+    val isWideLayout = maxWidth >= 680.dp
 
     Scaffold(
       modifier = Modifier.fillMaxSize(),
       containerColor = MaterialTheme.colorScheme.background,
       contentWindowInsets = WindowInsets(0, 0, 0, 0),
-      bottomBar = {
-        if (!isWideLayout) {
-          NavigationBar(
-            windowInsets = WindowInsets.navigationBars,
-            containerColor = MaterialTheme.colorScheme.surface,
-          ) {
-            TrackerTab.entries.forEach { tab ->
-              NavigationBarItem(
-                selected = state.activeTab == tab,
-                onClick = { viewModel.setActiveTab(tab) },
-                icon = {
-                  Icon(
-                    imageVector = tabIcon(tab),
-                    contentDescription = tabLabel(tab, strings),
-                  )
-                },
-                label = {
-                  Text(
-                    text = tabLabel(tab, strings),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                  )
-                },
-                modifier = Modifier.testTag("bottom_tab_${tab.name.lowercase()}"),
-              )
-            }
-          }
-        }
-      },
     ) { innerPadding ->
-      Row(
+      Box(
         modifier = Modifier
           .fillMaxSize()
           .padding(innerPadding),
+        contentAlignment = Alignment.TopCenter,
       ) {
-        if (isWideLayout) {
-          NavigationRail(
-            containerColor = MaterialTheme.colorScheme.surface,
-            modifier = Modifier
-              .fillMaxHeight()
-              .statusBarsPadding(),
-          ) {
-            Spacer(modifier = Modifier.height(12.dp))
-            TrackerTab.entries.forEach { tab ->
-              NavigationRailItem(
-                selected = state.activeTab == tab,
-                onClick = { viewModel.setActiveTab(tab) },
-                icon = {
-                  Icon(
-                    imageVector = tabIcon(tab),
-                    contentDescription = tabLabel(tab, strings),
-                  )
-                },
-                label = {
-                  Text(
-                    text = tabLabel(tab, strings),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                  )
-                },
-                modifier = Modifier.testTag("rail_tab_${tab.name.lowercase()}"),
-              )
-            }
-          }
-        }
-
-        Box(
-          modifier = Modifier.fillMaxSize(),
-          contentAlignment = Alignment.TopCenter,
+        Column(
+          modifier = Modifier
+            .widthIn(max = 1040.dp)
+            .fillMaxSize(),
         ) {
+          TrackerHeader(
+            languageCode = state.languageCode,
+            isTranslating = state.isTranslatingLanguage,
+            strings = strings,
+            onOpenLanguagePicker = { languageDialogOpen = true },
+          )
+
           Column(
             modifier = Modifier
-              .widthIn(max = 1100.dp)
-              .fillMaxSize(),
+              .fillMaxSize()
+              .verticalScroll(mainScrollState)
+              .navigationBarsPadding()
+              .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
           ) {
-            TrackerHeader(
-              language = state.language,
+            SearchAndControlPanel(
+              fromInput = state.fromInput,
+              toInput = state.toInput,
+              fromSuggestions = state.fromSuggestions,
+              toSuggestions = state.toSuggestions,
+              betweenLoading = state.betweenLoading,
+              betweenError = state.betweenError,
+              betweenTrains = state.betweenTrains,
+              trainNoInput = state.trainNoInput,
+              isCurrentTrainFavorite = state.favoriteTrains.any {
+                it.trainNumber == state.trainNoInput.trim()
+              },
+              favoriteTrains = state.favoriteTrains,
+              recentTrains = state.recentTrains,
+              recentRoutes = state.recentRoutes,
+              running = state.running,
+              backgroundTrackingEnabled = state.backgroundTrackingEnabled,
+              isWideLayout = isWideLayout,
               strings = strings,
-              onSelectLanguage = viewModel::setLanguage,
-            )
-
-            when (state.activeTab) {
-              TrackerTab.LIVE_ROUTE -> LiveRouteTabContent(
-                state = state,
-                strings = strings,
-                isWideLayout = isWideLayout,
-                onFromChanged = viewModel::onFromInputChanged,
-                onToChanged = viewModel::onToInputChanged,
-                onStationSelected = { isFrom, entry ->
-                  focusManager.clearFocus()
-                  viewModel.onStationSelected(isFrom, entry)
-                },
-                onSwapStations = viewModel::swapStations,
-                onSelectBetweenTrain = { trainNo ->
-                  focusManager.clearFocus()
-                  viewModel.onSelectTrainBetween(trainNo)
-                },
-                onTrainNoChanged = viewModel::onTrainNoChanged,
-                onToggleFavorite = viewModel::toggleFavoriteCurrentTrain,
-                onQuickTrainClick = { entry ->
-                  focusManager.clearFocus()
-                  viewModel.onQuickTrainSelected(entry)
-                },
-                onRecentRouteClick = { pair ->
-                  focusManager.clearFocus()
-                  viewModel.onRecentRouteSelected(pair)
-                },
-                onStartTracking = {
-                  focusManager.clearFocus()
-                  viewModel.startTracking()
-                },
-                onStopTracking = { viewModel.stopTracking(showBanner = true) },
-                onOpenNtes = {
+              onFromChanged = viewModel::onFromInputChanged,
+              onToChanged = viewModel::onToInputChanged,
+              onStationSelected = { isFrom, entry ->
+                focusManager.clearFocus()
+                viewModel.onStationSelected(isFrom, entry)
+              },
+              onSwapStations = viewModel::swapStations,
+              onSelectBetweenTrain = { trainNo ->
+                focusManager.clearFocus()
+                viewModel.onSelectTrainBetween(trainNo)
+              },
+              onTrainNoChanged = viewModel::onTrainNoChanged,
+              onToggleFavorite = viewModel::toggleFavoriteCurrentTrain,
+              onQuickTrainClick = { entry ->
+                focusManager.clearFocus()
+                viewModel.onQuickTrainSelected(entry)
+              },
+              onRecentRouteClick = { pair ->
+                focusManager.clearFocus()
+                viewModel.onRecentRouteSelected(pair)
+              },
+              onStartTracking = {
+                focusManager.clearFocus()
+                viewModel.startTracking()
+              },
+              onStopTracking = { viewModel.stopTracking(showBanner = true) },
+              onOpenNtes = {
+                try {
                   val intent = Intent(
                     Intent.ACTION_VIEW,
                     Uri.parse("https://enquiry.indianrail.gov.in/mntes/"),
                   )
                   context.startActivity(intent)
+                } catch (_: Throwable) {
+                }
+              },
+              onToggleBackgroundTracking = viewModel::setBackgroundTrackingEnabled,
+            )
+
+            // Destination Alarm Banner
+            AnimatedVisibility(visible = state.stationAlarm != null || state.alarmAlertMessage != null) {
+              AlarmBannerBox(
+                alarm = state.stationAlarm,
+                alertMessage = state.alarmAlertMessage,
+                strings = strings,
+                onDismiss = viewModel::dismissStationAlarm,
+              )
+            }
+
+            // Verification Result Banner
+            AnimatedVisibility(visible = state.resultBanner != null) {
+              state.resultBanner?.let { banner ->
+                StatusBannerBox(banner = banner, testTag = "result_banner")
+              }
+            }
+
+            // Live Fetch / GPS Status Banner
+            AnimatedVisibility(visible = state.statusBanner != null) {
+              state.statusBanner?.let { banner ->
+                StatusBannerBox(
+                  banner = banner,
+                  showPermissionAction = !state.locationPermissionGranted &&
+                    banner.type == BannerType.BAD,
+                  permissionButtonLabel = strings.grantPermissionBtn,
+                  onRequestPermission = viewModel::requestLocationPermissionPrompt,
+                  testTag = "status_banner",
+                )
+              }
+            }
+
+            // Train Route Timeline
+            RouteTimelineCard(
+              route = state.route,
+              locatedTrain = state.locatedTrain,
+              insideTrain = state.insideTrain,
+              userSpeedKmh = state.movementStats.speedKmh,
+              running = state.running,
+              selectedStationIndex = state.selectedStationIndex,
+              stationAlarm = state.stationAlarm,
+              strings = strings,
+              onStationClick = viewModel::onStationNodeClicked,
+              onFocusStationOnMap = { idx ->
+                viewModel.focusStationOnMap(idx)
+                coroutineScope.launch {
+                  mainScrollState.animateScrollTo(mapSectionOffsetPx)
+                }
+              },
+              onToggleStationAlarm = viewModel::toggleStationAlarm,
+            )
+
+            // Train Live Data
+            TrainLiveCard(
+              trainNo = state.trainNoInput,
+              trainName = state.trainName,
+              locatedTrain = state.locatedTrain,
+              rawSource = state.rawSource,
+              insideTrain = state.insideTrain,
+              movementStats = state.movementStats,
+              strings = strings,
+            )
+
+            // Live Map Section (OpenStreetMap)
+            Box(
+              modifier = Modifier
+                .fillMaxWidth()
+                .onGloballyPositioned { coords ->
+                  mapSectionOffsetPx = coords.positionInParent().y.roundToInt()
                 },
-                onRequestPermission = viewModel::requestLocationPermissionPrompt,
-                onStationNodeClick = viewModel::onStationNodeClicked,
-                onFocusStationOnMap = viewModel::focusStationOnMap,
-                onToggleStationAlarm = viewModel::toggleStationAlarm,
-                onDismissAlarm = viewModel::dismissStationAlarm,
-              )
-
-              TrackerTab.MAP -> MapTabContent(
-                state = state,
-                strings = strings,
-                viewModel = viewModel,
-              )
-
-              TrackerTab.GPS_DIAGNOSTICS -> GpsDiagnosticsTabContent(
-                state = state,
-                strings = strings,
-                isWideLayout = isWideLayout,
-                onToggleBackgroundTracking = viewModel::setBackgroundTrackingEnabled,
-              )
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-private fun tabIcon(tab: TrackerTab) = when (tab) {
-  TrackerTab.LIVE_ROUTE -> Icons.Filled.Route
-  TrackerTab.MAP -> Icons.Filled.Map
-  TrackerTab.GPS_DIAGNOSTICS -> Icons.Filled.GpsFixed
-}
-
-private fun tabLabel(tab: TrackerTab, strings: LocalizedStrings) = when (tab) {
-  TrackerTab.LIVE_ROUTE -> strings.tabLiveRoute
-  TrackerTab.MAP -> strings.tabMap
-  TrackerTab.GPS_DIAGNOSTICS -> strings.tabGps
-}
-
-@Composable
-private fun LiveRouteTabContent(
-  state: TrackerUiState,
-  strings: LocalizedStrings,
-  isWideLayout: Boolean,
-  onFromChanged: (String) -> Unit,
-  onToChanged: (String) -> Unit,
-  onStationSelected: (Boolean, StationDbEntry) -> Unit,
-  onSwapStations: () -> Unit,
-  onSelectBetweenTrain: (String) -> Unit,
-  onTrainNoChanged: (String) -> Unit,
-  onToggleFavorite: () -> Unit,
-  onQuickTrainClick: (SavedTrainEntry) -> Unit,
-  onRecentRouteClick: (SavedRoutePair) -> Unit,
-  onStartTracking: () -> Unit,
-  onStopTracking: () -> Unit,
-  onOpenNtes: () -> Unit,
-  onRequestPermission: () -> Unit,
-  onStationNodeClick: (Int) -> Unit,
-  onFocusStationOnMap: (Int) -> Unit,
-  onToggleStationAlarm: (Int) -> Unit,
-  onDismissAlarm: () -> Unit,
-) {
-  Column(
-    modifier = Modifier
-      .fillMaxSize()
-      .verticalScroll(rememberScrollState())
-      .padding(horizontal = 14.dp, vertical = 12.dp),
-    verticalArrangement = Arrangement.spacedBy(12.dp),
-  ) {
-    SearchAndControlPanel(
-      fromInput = state.fromInput,
-      toInput = state.toInput,
-      fromSuggestions = state.fromSuggestions,
-      toSuggestions = state.toSuggestions,
-      betweenLoading = state.betweenLoading,
-      betweenError = state.betweenError,
-      betweenTrains = state.betweenTrains,
-      trainNoInput = state.trainNoInput,
-      isCurrentTrainFavorite = state.favoriteTrains.any {
-        it.trainNumber == state.trainNoInput.trim()
-      },
-      favoriteTrains = state.favoriteTrains,
-      recentTrains = state.recentTrains,
-      recentRoutes = state.recentRoutes,
-      running = state.running,
-      isWideLayout = isWideLayout,
-      strings = strings,
-      onFromChanged = onFromChanged,
-      onToChanged = onToChanged,
-      onStationSelected = onStationSelected,
-      onSwapStations = onSwapStations,
-      onSelectBetweenTrain = onSelectBetweenTrain,
-      onTrainNoChanged = onTrainNoChanged,
-      onToggleFavorite = onToggleFavorite,
-      onQuickTrainClick = onQuickTrainClick,
-      onRecentRouteClick = onRecentRouteClick,
-      onStartTracking = onStartTracking,
-      onStopTracking = onStopTracking,
-      onOpenNtes = onOpenNtes,
-    )
-
-    // Destination Alarm Active / Triggered Alert Banner
-    AnimatedVisibility(visible = state.stationAlarm != null || state.alarmAlertMessage != null) {
-      AlarmBannerBox(
-        alarm = state.stationAlarm,
-        alertMessage = state.alarmAlertMessage,
-        strings = strings,
-        onDismiss = onDismissAlarm,
-      )
-    }
-
-    // Verification Result Banner
-    AnimatedVisibility(visible = state.resultBanner != null) {
-      state.resultBanner?.let { banner ->
-        StatusBannerBox(banner = banner, testTag = "result_banner")
-      }
-    }
-
-    // Live Fetch / GPS Status Banner
-    AnimatedVisibility(visible = state.statusBanner != null) {
-      state.statusBanner?.let { banner ->
-        StatusBannerBox(
-          banner = banner,
-          showPermissionAction = !state.locationPermissionGranted &&
-            banner.type == BannerType.BAD,
-          permissionButtonLabel = strings.grantPermissionBtn,
-          onRequestPermission = onRequestPermission,
-          testTag = "status_banner",
-        )
-      }
-    }
-
-    RouteTimelineCard(
-      route = state.route,
-      locatedTrain = state.locatedTrain,
-      insideTrain = state.insideTrain,
-      userSpeedKmh = state.movementStats.speedKmh,
-      running = state.running,
-      selectedStationIndex = state.selectedStationIndex,
-      stationAlarm = state.stationAlarm,
-      strings = strings,
-      onStationClick = onStationNodeClick,
-      onFocusStationOnMap = onFocusStationOnMap,
-      onToggleStationAlarm = onToggleStationAlarm,
-    )
-
-    TrainLiveCard(
-      trainNo = state.trainNoInput,
-      trainName = state.trainName,
-      locatedTrain = state.locatedTrain,
-      rawSource = state.rawSource,
-      insideTrain = state.insideTrain,
-      movementStats = state.movementStats,
-      strings = strings,
-    )
-
-    Spacer(modifier = Modifier.height(6.dp))
-  }
-}
-
-@Composable
-private fun MapTabContent(
-  state: TrackerUiState,
-  strings: LocalizedStrings,
-  viewModel: TrainTrackerViewModel,
-) {
-  Column(
-    modifier = Modifier
-      .fillMaxSize()
-      .padding(horizontal = 14.dp, vertical = 12.dp),
-    verticalArrangement = Arrangement.spacedBy(10.dp),
-  ) {
-    if (state.locatedTrain != null) {
-      Surface(
-        shape = RoundedCornerShape(12.dp),
-        color = MaterialTheme.colorScheme.surface,
-        shadowElevation = 2.dp,
-        modifier = Modifier.fillMaxWidth(),
-      ) {
-        Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically,
-        ) {
-          Column(modifier = Modifier.weight(1f)) {
-            Text(
-              text = "🚆 ${state.trainNoInput} ${state.trainName?.let { "• $it" } ?: ""}",
-              style = MaterialTheme.typography.titleSmall,
-              color = CobaltPrimary,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-              text = "${state.locatedTrain.name}${
-                if (state.locatedTrain.next.isNotBlank()) " → ${state.locatedTrain.next}" else ""
-              }",
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              maxLines = 1,
-              overflow = TextOverflow.Ellipsis,
-            )
-          }
-          state.verification?.let { v ->
-            Surface(
-              shape = RoundedCornerShape(8.dp),
-              color = MaterialTheme.colorScheme.primaryContainer,
             ) {
-              Text(
-                text = "${String.format(Locale.US, "%.2f", v.distanceKm)} km",
-                fontFamily = JetBrainsMonoFontFamily,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Bold,
-                color = CobaltPrimary,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+              OsmMapSection(
+                tileLoader = viewModel.tileLoader,
+                route = state.route,
+                locatedTrain = state.locatedTrain,
+                latestUserGps = state.latestUserGps,
+                userBearingDegrees = state.movementStats.bearingDegrees,
+                userSpeedKmh = state.movementStats.speedKmh,
+                insideTrain = state.insideTrain,
+                distanceKm = state.verification?.distanceKm,
+                focusedStation = state.focusedMapStation,
+                alarmStation = state.stationAlarm,
+                mapSizePreset = state.mapSizePreset,
+                isFullscreen = state.mapFullscreen,
+                recenterSignal = state.recenterSignal,
+                strings = strings,
+                showSizePresets = true,
+                fillAvailableHeight = false,
+                onSizePresetSelected = viewModel::setMapSizePreset,
+                onToggleFullscreen = viewModel::setMapFullscreen,
+                onRecenter = viewModel::triggerRecenterMap,
               )
             }
+
+            // Distance & Movement Card (Confidence Score, User GPS, GPS Samples omitted per request)
+            MovementDistanceCard(
+              verification = state.verification,
+              movementStats = state.movementStats,
+              locatedTrain = state.locatedTrain,
+              strings = strings,
+            )
+
+            Spacer(modifier = Modifier.height(10.dp))
           }
         }
       }
     }
-
-    OsmMapSection(
-      tileLoader = viewModel.tileLoader,
-      route = state.route,
-      locatedTrain = state.locatedTrain,
-      latestUserGps = state.gpsSamples.lastOrNull(),
-      userBearingDegrees = state.movementStats.bearingDegrees,
-      userSpeedKmh = state.movementStats.speedKmh,
-      insideTrain = state.insideTrain,
-      distanceKm = state.verification?.distanceKm,
-      focusedStation = state.focusedMapStation,
-      alarmStation = state.stationAlarm,
-      mapSizePreset = state.mapSizePreset,
-      isFullscreen = state.mapFullscreen,
-      recenterSignal = state.recenterSignal,
-      strings = strings,
-      showSizePresets = false,
-      fillAvailableHeight = true,
-      onSizePresetSelected = viewModel::setMapSizePreset,
-      onToggleFullscreen = viewModel::setMapFullscreen,
-      onRecenter = viewModel::triggerRecenterMap,
-      modifier = Modifier
-        .fillMaxWidth()
-        .weight(1f),
-    )
   }
-}
 
-@Composable
-private fun GpsDiagnosticsTabContent(
-  state: TrackerUiState,
-  strings: LocalizedStrings,
-  isWideLayout: Boolean,
-  onToggleBackgroundTracking: (Boolean) -> Unit,
-) {
-  Column(
-    modifier = Modifier
-      .fillMaxSize()
-      .verticalScroll(rememberScrollState())
-      .padding(horizontal = 14.dp, vertical = 12.dp),
-    verticalArrangement = Arrangement.spacedBy(12.dp),
-  ) {
-    // Background Live Notification Switch Card
-    Card(
-      modifier = Modifier
-        .fillMaxWidth()
-        .testTag("background_tracking_card"),
-      shape = RoundedCornerShape(14.dp),
-      colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-      elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-    ) {
-      Row(
-        modifier = Modifier
-          .fillMaxWidth()
-          .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-      ) {
-        Box(
-          modifier = Modifier
-            .size(36.dp)
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.primaryContainer),
-          contentAlignment = Alignment.Center,
-        ) {
-          Icon(
-            imageVector = Icons.Filled.NotificationsActive,
-            contentDescription = null,
-            tint = CobaltPrimary,
-            modifier = Modifier.size(20.dp),
-          )
-        }
-        Column(modifier = Modifier.weight(1f)) {
-          Text(
-            text = strings.backgroundTrackingTitle,
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurface,
-          )
-          Spacer(modifier = Modifier.height(2.dp))
-          Text(
-            text = strings.backgroundTrackingDesc,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-        }
-        Switch(
-          checked = state.backgroundTrackingEnabled,
-          onCheckedChange = onToggleBackgroundTracking,
-          modifier = Modifier.testTag("background_tracking_switch"),
-        )
-      }
-    }
-
-    if (isWideLayout) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-      ) {
-        ConfidenceScoreCard(
-          verification = state.verification,
-          strings = strings,
-          modifier = Modifier.weight(1f),
-        )
-        UserGpsCard(
-          latestSample = state.gpsSamples.lastOrNull(),
-          lowAccuracyMeters = state.lowAccuracyMeters,
-          movementStats = state.movementStats,
-          strings = strings,
-          modifier = Modifier.weight(1f),
-        )
-      }
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-      ) {
-        MovementDistanceCard(
-          verification = state.verification,
-          movementStats = state.movementStats,
-          locatedTrain = state.locatedTrain,
-          strings = strings,
-          modifier = Modifier.weight(1f),
-        )
-        GpsSamplesCard(
-          samples = state.gpsSamples,
-          strings = strings,
-          modifier = Modifier.weight(1f),
-        )
-      }
-    } else {
-      ConfidenceScoreCard(
-        verification = state.verification,
-        strings = strings,
-      )
-      UserGpsCard(
-        latestSample = state.gpsSamples.lastOrNull(),
-        lowAccuracyMeters = state.lowAccuracyMeters,
-        movementStats = state.movementStats,
-        strings = strings,
-      )
-      MovementDistanceCard(
-        verification = state.verification,
-        movementStats = state.movementStats,
-        locatedTrain = state.locatedTrain,
-        strings = strings,
-      )
-      GpsSamplesCard(
-        samples = state.gpsSamples,
-        strings = strings,
-      )
-    }
-
-    Spacer(modifier = Modifier.height(6.dp))
+  if (languageDialogOpen) {
+    LanguagePickerDialog(
+      currentCode = state.languageCode,
+      searchHint = strings.searchLanguageHint,
+      title = strings.languageLabel,
+      onSelect = { code ->
+        languageDialogOpen = false
+        viewModel.setLanguage(code)
+      },
+      onDismiss = { languageDialogOpen = false },
+    )
   }
 }
 
 @Composable
 private fun TrackerHeader(
-  language: AppLanguage,
+  languageCode: String,
+  isTranslating: Boolean,
   strings: LocalizedStrings,
-  onSelectLanguage: (AppLanguage) -> Unit,
+  onOpenLanguagePicker: () -> Unit,
 ) {
   val isDark = isSystemInDarkTheme()
-  var langMenuExpanded by remember { mutableStateOf(false) }
+  val currentLang = remember(languageCode) { GoogleLanguages.findByCode(languageCode) }
 
   val headerBrush = if (isDark) {
     Brush.verticalGradient(listOf(CobaltDark, Color(0xFF0A2A47)))
@@ -777,56 +483,187 @@ private fun TrackerHeader(
 
       Spacer(modifier = Modifier.width(8.dp))
 
-      Box {
-        Surface(
-          onClick = { langMenuExpanded = true },
-          shape = RoundedCornerShape(20.dp),
-          color = if (isDark) Color(0xFF153452) else Color.White,
-          shadowElevation = 2.dp,
-          modifier = Modifier.testTag("language_selector_button"),
+      Surface(
+        onClick = onOpenLanguagePicker,
+        shape = RoundedCornerShape(20.dp),
+        color = if (isDark) Color(0xFF153452) else Color.White,
+        shadowElevation = 2.dp,
+        modifier = Modifier.testTag("language_selector_button"),
+      ) {
+        Row(
+          modifier = Modifier
+            .border(
+              1.dp,
+              if (isDark) Color(0xFF2D5378) else Color(0xFFCBD5E1),
+              RoundedCornerShape(20.dp),
+            )
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(5.dp),
         ) {
-          Row(
-            modifier = Modifier
-              .border(
-                1.dp,
-                if (isDark) Color(0xFF2D5378) else Color(0xFFCBD5E1),
-                RoundedCornerShape(20.dp),
-              )
-              .padding(horizontal = 10.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
-          ) {
+          if (isTranslating) {
+            CircularProgressIndicator(
+              modifier = Modifier.size(14.dp),
+              strokeWidth = 2.dp,
+              color = CobaltPrimary,
+            )
+          } else {
             Icon(
               imageVector = Icons.Filled.Language,
               contentDescription = strings.languageLabel,
               tint = CobaltPrimary,
-              modifier = Modifier.size(15.dp),
+              modifier = Modifier.size(16.dp),
+            )
+          }
+          Text(
+            text = currentLang.nativeName,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (isDark) Color.White else Color(0xFF1E293B),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun LanguagePickerDialog(
+  currentCode: String,
+  searchHint: String,
+  title: String,
+  onSelect: (String) -> Unit,
+  onDismiss: () -> Unit,
+) {
+  var query by remember { mutableStateOf("") }
+  val filteredLanguages = remember(query) {
+    val q = query.trim().lowercase(Locale.US)
+    if (q.isEmpty()) {
+      GoogleLanguages.ALL
+    } else {
+      GoogleLanguages.ALL.filter {
+        it.nativeName.lowercase(Locale.US).contains(q) ||
+          it.englishName.lowercase(Locale.US).contains(q) ||
+          it.code.lowercase(Locale.US).contains(q)
+      }
+    }
+  }
+
+  Dialog(onDismissRequest = onDismiss) {
+    Surface(
+      shape = RoundedCornerShape(18.dp),
+      color = MaterialTheme.colorScheme.surface,
+      tonalElevation = 6.dp,
+      modifier = Modifier
+        .fillMaxWidth()
+        .heightIn(max = 520.dp),
+    ) {
+      Column(modifier = Modifier.padding(16.dp)) {
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.SpaceBetween,
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Language,
+              contentDescription = null,
+              tint = CobaltPrimary,
             )
             Text(
-              text = language.label,
-              style = MaterialTheme.typography.labelMedium,
-              color = if (isDark) Color.White else Color(0xFF1E293B),
+              text = "$title (${GoogleLanguages.ALL.size}+)",
+              style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+              color = MaterialTheme.colorScheme.onSurface,
             )
+          }
+          IconButton(onClick = onDismiss) {
+            Icon(Icons.Filled.Close, contentDescription = "Close")
           }
         }
 
-        DropdownMenu(
-          expanded = langMenuExpanded,
-          onDismissRequest = { langMenuExpanded = false },
+        Spacer(modifier = Modifier.height(8.dp))
+
+        OutlinedTextField(
+          value = query,
+          onValueChange = { query = it },
+          placeholder = { Text(searchHint, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+          leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+          trailingIcon = {
+            if (query.isNotEmpty()) {
+              IconButton(onClick = { query = "" }) {
+                Icon(Icons.Filled.Clear, contentDescription = "Clear")
+              }
+            }
+          },
+          singleLine = true,
+          shape = RoundedCornerShape(12.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .testTag("language_search_input"),
+        )
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        LazyColumn(
+          modifier = Modifier
+            .fillMaxWidth()
+            .weight(1f, fill = false),
+          verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-          AppLanguage.entries.forEach { lang ->
-            DropdownMenuItem(
-              text = {
-                Text(
-                  text = lang.label,
-                  fontWeight = if (lang == language) FontWeight.Bold else FontWeight.Normal,
-                )
+          items(
+            items = filteredLanguages,
+            key = { it.code },
+          ) { option ->
+            val selected = option.code.equals(currentCode, ignoreCase = true)
+            Surface(
+              onClick = { onSelect(option.code) },
+              shape = RoundedCornerShape(10.dp),
+              color = if (selected) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f)
+              } else {
+                Color.Transparent
               },
-              onClick = {
-                langMenuExpanded = false
-                onSelectLanguage(lang)
-              },
-            )
+              modifier = Modifier
+                .fillMaxWidth()
+                .testTag("lang_option_${option.code}"),
+            ) {
+              Row(
+                modifier = Modifier
+                  .fillMaxWidth()
+                  .padding(horizontal = 12.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+              ) {
+                Column(modifier = Modifier.weight(1f)) {
+                  Text(
+                    text = option.nativeName,
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                      fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+                    ),
+                    color = if (selected) CobaltPrimary else MaterialTheme.colorScheme.onSurface,
+                  )
+                  if (!option.nativeName.equals(option.englishName, ignoreCase = true)) {
+                    Text(
+                      text = option.englishName,
+                      style = MaterialTheme.typography.labelSmall,
+                      color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                  }
+                }
+                if (selected) {
+                  Icon(
+                    imageVector = Icons.Filled.Check,
+                    contentDescription = null,
+                    tint = CobaltPrimary,
+                    modifier = Modifier.size(18.dp),
+                  )
+                }
+              }
+            }
           }
         }
       }
@@ -849,6 +686,7 @@ private fun SearchAndControlPanel(
   recentTrains: List<SavedTrainEntry>,
   recentRoutes: List<SavedRoutePair>,
   running: Boolean,
+  backgroundTrackingEnabled: Boolean,
   isWideLayout: Boolean,
   strings: LocalizedStrings,
   onFromChanged: (String) -> Unit,
@@ -863,6 +701,7 @@ private fun SearchAndControlPanel(
   onStartTracking: () -> Unit,
   onStopTracking: () -> Unit,
   onOpenNtes: () -> Unit,
+  onToggleBackgroundTracking: (Boolean) -> Unit,
 ) {
   Card(
     modifier = Modifier.fillMaxWidth(),
@@ -997,7 +836,7 @@ private fun SearchAndControlPanel(
         }
       }
 
-      // Between Stations Result List
+      // Between Stations Result List (Rendered directly without nested verticalScroll to avoid scroll/click crashes)
       if (betweenLoading) {
         Row(
           modifier = Modifier
@@ -1022,20 +861,28 @@ private fun SearchAndControlPanel(
         )
       } else if (betweenTrains.isNotEmpty()) {
         Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(max = 260.dp)
-            .verticalScroll(rememberScrollState()),
+          modifier = Modifier.fillMaxWidth(),
           verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
           betweenTrains.forEach { item ->
+            val isSelectedTrain = trainNoInput.isNotBlank() &&
+              item.trainNumber.contains(trainNoInput)
+            val safeDist = item.distanceKm.takeIf { it.isFinite() } ?: 0.0
             Surface(
               onClick = { onSelectBetweenTrain(item.trainNumber) },
               shape = RoundedCornerShape(10.dp),
-              color = MaterialTheme.colorScheme.surfaceVariant,
+              color = if (isSelectedTrain) {
+                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+              } else {
+                MaterialTheme.colorScheme.surfaceVariant
+              },
               modifier = Modifier
                 .fillMaxWidth()
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
+                .border(
+                  width = if (isSelectedTrain) 1.5.dp else 1.dp,
+                  color = if (isSelectedTrain) CobaltPrimary else MaterialTheme.colorScheme.outline,
+                  shape = RoundedCornerShape(10.dp),
+                )
                 .testTag("between_train_item_${item.trainNumber}"),
             ) {
               Column(modifier = Modifier.padding(10.dp)) {
@@ -1046,7 +893,7 @@ private fun SearchAndControlPanel(
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                  text = "${item.departure} → ${item.arrival} • ${String.format(Locale.US, "%.0f", item.distanceKm)} km",
+                  text = "${item.departure} → ${item.arrival} • ${String.format(Locale.US, "%.0f", safeDist)} km",
                   fontFamily = JetBrainsMonoFontFamily,
                   fontSize = 12.sp,
                   color = CobaltPrimary,
@@ -1079,7 +926,7 @@ private fun SearchAndControlPanel(
         },
         trailingIcon = {
           Row(verticalAlignment = Alignment.CenterVertically) {
-            if (trainNoInput.length == 5) {
+            if (trainNoInput.length >= 4) {
               IconButton(
                 onClick = onToggleFavorite,
                 modifier = Modifier.testTag("favorite_train_button"),
@@ -1104,7 +951,7 @@ private fun SearchAndControlPanel(
           imeAction = ImeAction.Search,
         ),
         keyboardActions = KeyboardActions(
-          onSearch = { if (trainNoInput.length == 5) onStartTracking() },
+          onSearch = { if (trainNoInput.length >= 4) onStartTracking() },
         ),
         textStyle = MaterialTheme.typography.titleMedium.copy(
           fontFamily = JetBrainsMonoFontFamily,
@@ -1139,7 +986,7 @@ private fun SearchAndControlPanel(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        if (trainNoInput.length == 5 && !running) {
+        if (trainNoInput.length >= 4 && !running) {
           Button(
             onClick = onStartTracking,
             shape = RoundedCornerShape(10.dp),
@@ -1204,6 +1051,56 @@ private fun SearchAndControlPanel(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             fontWeight = FontWeight.Bold,
+          )
+        }
+      }
+
+      // Screen-off Notification Live Tracking Toggle
+      Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = if (backgroundTrackingEnabled) {
+          MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+        } else {
+          MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f)
+        },
+        modifier = Modifier
+          .fillMaxWidth()
+          .border(
+            1.dp,
+            if (backgroundTrackingEnabled) CobaltPrimary.copy(alpha = 0.45f) else MaterialTheme.colorScheme.outline,
+            RoundedCornerShape(12.dp),
+          )
+          .testTag("background_tracking_card"),
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+          verticalAlignment = Alignment.CenterVertically,
+          horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.NotificationsActive,
+            contentDescription = null,
+            tint = CobaltPrimary,
+            modifier = Modifier.size(22.dp),
+          )
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = strings.backgroundTrackingTitle,
+              style = MaterialTheme.typography.titleSmall,
+              color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+              text = strings.backgroundTrackingDesc,
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+          Switch(
+            checked = backgroundTrackingEnabled,
+            onCheckedChange = onToggleBackgroundTracking,
+            modifier = Modifier.testTag("background_tracking_switch"),
           )
         }
       }
@@ -1355,18 +1252,20 @@ private fun StationInputWithSuggestions(
       Surface(
         modifier = Modifier
           .fillMaxWidth()
-          .padding(top = 4.dp)
-          .heightIn(max = 200.dp),
+          .padding(top = 4.dp),
         shape = RoundedCornerShape(10.dp),
         color = MaterialTheme.colorScheme.surface,
         shadowElevation = 4.dp,
       ) {
         Column(
-          modifier = Modifier
-            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(10.dp))
-            .verticalScroll(rememberScrollState()),
+          modifier = Modifier.border(
+            1.dp,
+            MaterialTheme.colorScheme.outline,
+            RoundedCornerShape(10.dp),
+          ),
         ) {
-          suggestions.forEachIndexed { idx, entry ->
+          val capped = suggestions.take(6)
+          capped.forEachIndexed { idx, entry ->
             Row(
               modifier = Modifier
                 .fillMaxWidth()
@@ -1398,7 +1297,7 @@ private fun StationInputWithSuggestions(
                 )
               }
             }
-            if (idx < suggestions.lastIndex) {
+            if (idx < capped.lastIndex) {
               HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
             }
           }

@@ -1,13 +1,10 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.animateDpAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -16,11 +13,12 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -41,18 +39,12 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -199,7 +191,7 @@ fun RouteTimelineCard(
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f),
                   )
-                  if (distFromTrain != null) {
+                  if (distFromTrain != null && distFromTrain.isFinite()) {
                     Text(
                       text = strings.distanceFromTrainLabel(
                         String.format(Locale.US, "%.1f", distFromTrain),
@@ -289,11 +281,7 @@ private fun RouteTrackStrip(
   strings: LocalizedStrings,
   onStationClick: (Int) -> Unit,
 ) {
-  val stationWidthDp = 132.dp
-  val scrollState = rememberScrollState()
-  val density = LocalDensity.current
-  var viewportWidthPx by remember { mutableIntStateOf(0) }
-
+  val listState = rememberLazyListState()
   val activeIdx = if (locatedTrain != null) {
     GeoMath.findNearestRouteStationIndex(
       locatedTrain.lat,
@@ -309,15 +297,7 @@ private fun RouteTrackStrip(
     GeoMath.computeSegmentProgress(locatedTrain.copy(idx = activeIdx), route)
   } else {
     0.0
-  }
-
-  val startOffsetDp = stationWidthDp / 2
-  val targetTrainXDp = startOffsetDp + (stationWidthDp * activeIdx) + (stationWidthDp * progress.toFloat())
-  val animatedTrainXDp by animateDpAsState(
-    targetValue = targetTrainXDp,
-    animationSpec = tween(durationMillis = 700),
-    label = "moving_train_x",
-  )
+  }.toFloat().coerceIn(0f, 0.9f)
 
   val effectiveSpeed = if (insideTrain && userSpeedKmh > 0.0) {
     userSpeedKmh
@@ -325,280 +305,306 @@ private fun RouteTrackStrip(
     locatedTrain?.speedKmh ?: 0.0
   }
 
-  LaunchedEffect(activeIdx, progress, viewportWidthPx) {
-    if (viewportWidthPx > 0) {
-      val trainPx = with(density) { targetTrainXDp.toPx() }
-      val targetScroll = (trainPx - viewportWidthPx / 2f).toInt().coerceAtLeast(0)
-      scrollState.animateScrollTo(targetScroll)
+  LaunchedEffect(activeIdx, route.size) {
+    if (locatedTrain != null && activeIdx in route.indices) {
+      listState.animateScrollToItem((activeIdx - 1).coerceAtLeast(0))
     }
   }
 
-  val totalStationsWidth = stationWidthDp * route.size
-  val trackStart = stationWidthDp / 2
-  val trackEnd = totalStationsWidth - (stationWidthDp / 2)
+  val trackColor = MaterialTheme.colorScheme.outline
+  val passedColor = VerifiedEmerald
 
-  Box(
+  LazyRow(
+    state = listState,
     modifier = Modifier
       .fillMaxWidth()
-      .onSizeChanged { viewportWidthPx = it.width }
-      .horizontalScroll(scrollState)
-      .padding(top = 8.dp, bottom = 6.dp),
+      .padding(top = 6.dp, bottom = 4.dp),
+    contentPadding = PaddingValues(horizontal = 4.dp),
   ) {
-    Box(modifier = Modifier.width(totalStationsWidth)) {
-      val trackColor = MaterialTheme.colorScheme.outline
-      val passedColor = VerifiedEmerald
-      Canvas(
+    itemsIndexed(
+      items = route,
+      key = { idx, st -> "${idx}_${st.stationCode}_${st.stationName}" },
+    ) { index, station ->
+      val isPassed = locatedTrain != null && index < activeIdx
+      val isActive = locatedTrain != null && index == activeIdx
+      val isSelected = selectedStationIndex == index
+      val stName = station.stationName.ifBlank { station.stationCode }
+      val hasAlarm = stationAlarm != null &&
+        stationAlarm.stationCode.equals(station.stationCode, ignoreCase = true) &&
+        stationAlarm.stationName == stName
+
+      val dotColor = when {
+        hasAlarm -> NtesOrange
+        isPassed -> VerifiedEmerald
+        isActive -> CobaltPrimary
+        else -> Color(0xFF90A4AE)
+      }
+      val ringColor = when {
+        isSelected -> NtesOrange.copy(alpha = 0.35f)
+        isActive -> CobaltPrimary.copy(alpha = 0.28f)
+        isPassed -> VerifiedEmerald.copy(alpha = 0.25f)
+        else -> Color.Transparent
+      }
+
+      val scheduledText = GeoMath.extractStationTime(station)
+      val etaText = if (index >= activeIdx && locatedTrain != null) {
+        GeoMath.calculateEta(locatedTrain, station, effectiveSpeed)
+      } else {
+        null
+      }
+      val delayStatus = if (etaText != null) {
+        GeoMath.computeDelayStatus(scheduledText, etaText)
+      } else {
+        DelayStatus.Unknown
+      }
+
+      Column(
         modifier = Modifier
-          .fillMaxWidth()
-          .height(64.dp),
-      ) {
-        val lineY = 48.dp.toPx()
-        val startX = trackStart.toPx()
-        val endX = trackEnd.toPx()
-        val trainX = animatedTrainXDp.toPx().coerceIn(startX, endX)
-
-        if (endX > startX) {
-          drawLine(
-            color = trackColor,
-            start = Offset(startX, lineY),
-            end = Offset(endX, lineY),
-            strokeWidth = 4.dp.toPx(),
-            cap = StrokeCap.Round,
+          .width(132.dp)
+          .clip(RoundedCornerShape(10.dp))
+          .then(
+            if (isSelected) {
+              Modifier
+                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f))
+                .border(1.dp, CobaltPrimary.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
+            } else {
+              Modifier
+            },
           )
-          if (trainX > startX) {
-            drawLine(
-              color = passedColor,
-              start = Offset(startX, lineY),
-              end = Offset(trainX, lineY),
-              strokeWidth = 4.dp.toPx(),
-              cap = StrokeCap.Round,
-            )
-          }
-        }
-      }
-
-      if (locatedTrain != null) {
-        Surface(
+          .minimumInteractiveComponentSize()
+          .clickable { onStationClick(index) }
+          .padding(bottom = 6.dp)
+          .testTag("route_station_node_$index"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+      ) {
+        // Track header with train badge + left/right track line + station dot
+        Box(
           modifier = Modifier
-            .offset(x = animatedTrainXDp - 18.dp, y = 2.dp)
-            .size(36.dp),
-          shape = CircleShape,
-          color = CobaltPrimary,
-          shadowElevation = 4.dp,
+            .fillMaxWidth()
+            .height(60.dp),
+          contentAlignment = Alignment.BottomCenter,
         ) {
-          Box(contentAlignment = Alignment.Center) {
-            Icon(
-              imageVector = Icons.Filled.Train,
-              contentDescription = "Train position",
-              tint = Color.White,
-              modifier = Modifier.size(20.dp),
-            )
-          }
-        }
-      }
-
-      Row(modifier = Modifier.padding(top = 38.dp)) {
-        route.forEachIndexed { index, station ->
-          val isPassed = index < activeIdx
-          val isActive = index == activeIdx && locatedTrain != null
-          val isSelected = selectedStationIndex == index
-          val stName = station.stationName.ifBlank { station.stationCode }
-          val hasAlarm = stationAlarm != null &&
-            stationAlarm.stationCode.equals(station.stationCode, ignoreCase = true) &&
-            stationAlarm.stationName == stName
-
-          val dotColor = when {
-            hasAlarm -> NtesOrange
-            isPassed -> VerifiedEmerald
-            isActive -> CobaltPrimary
-            else -> Color(0xFF90A4AE)
-          }
-          val ringColor = when {
-            isSelected -> NtesOrange.copy(alpha = 0.35f)
-            isActive -> CobaltPrimary.copy(alpha = 0.28f)
-            isPassed -> VerifiedEmerald.copy(alpha = 0.25f)
-            else -> Color.Transparent
-          }
-
-          val scheduledText = GeoMath.extractStationTime(station)
-          val etaText = if (index >= activeIdx && locatedTrain != null) {
-            GeoMath.calculateEta(locatedTrain, station, effectiveSpeed)
-          } else {
-            null
-          }
-          val delayStatus = if (etaText != null) {
-            GeoMath.computeDelayStatus(scheduledText, etaText)
-          } else {
-            DelayStatus.Unknown
-          }
-
-          Column(
+          Canvas(
             modifier = Modifier
-              .width(stationWidthDp)
-              .clip(RoundedCornerShape(10.dp))
-              .then(
-                if (isSelected) {
-                  Modifier
-                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f))
-                    .border(1.dp, CobaltPrimary.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
-                } else {
-                  Modifier
-                },
+              .fillMaxWidth()
+              .height(60.dp),
+          ) {
+            val lineY = size.height - 11.dp.toPx()
+            val centerX = size.width / 2f
+            val strokePx = 4.dp.toPx()
+
+            if (index > 0) {
+              val leftColor = if (locatedTrain != null && index <= activeIdx) {
+                passedColor
+              } else {
+                trackColor
+              }
+              drawLine(
+                color = leftColor,
+                start = Offset(0f, lineY),
+                end = Offset(centerX, lineY),
+                strokeWidth = strokePx,
+                cap = StrokeCap.Butt,
               )
-              .minimumInteractiveComponentSize()
-              .clickable { onStationClick(index) }
-              .padding(horizontal = 6.dp, vertical = 4.dp)
-              .testTag("route_station_node_$index"),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            }
+            if (index < route.lastIndex) {
+              val rightColor = if (locatedTrain != null && index < activeIdx) {
+                passedColor
+              } else {
+                trackColor
+              }
+              drawLine(
+                color = rightColor,
+                start = Offset(centerX, lineY),
+                end = Offset(size.width, lineY),
+                strokeWidth = strokePx,
+                cap = StrokeCap.Butt,
+              )
+              if (isActive && progress > 0f) {
+                drawLine(
+                  color = passedColor,
+                  start = Offset(centerX, lineY),
+                  end = Offset(centerX + (size.width - centerX) * progress, lineY),
+                  strokeWidth = strokePx,
+                  cap = StrokeCap.Round,
+                )
+              }
+            }
+          }
+
+          if (isActive) {
+            Surface(
+              modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 2.dp)
+                .size(32.dp),
+              shape = CircleShape,
+              color = CobaltPrimary,
+              shadowElevation = 4.dp,
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Icon(
+                  imageVector = Icons.Filled.Train,
+                  contentDescription = "Train position",
+                  tint = Color.White,
+                  modifier = Modifier.size(18.dp),
+                )
+              }
+            }
+          }
+
+          Box(
+            modifier = Modifier
+              .size(22.dp)
+              .clip(CircleShape)
+              .background(ringColor),
+            contentAlignment = Alignment.Center,
           ) {
             Box(
               modifier = Modifier
-                .size(22.dp)
+                .size(16.dp)
                 .clip(CircleShape)
-                .background(ringColor),
-              contentAlignment = Alignment.Center,
-            ) {
-              Box(
-                modifier = Modifier
-                  .size(16.dp)
-                  .clip(CircleShape)
-                  .background(dotColor)
-                  .border(2.5.dp, Color.White, CircleShape),
-              )
-            }
+                .background(dotColor)
+                .border(2.5.dp, Color.White, CircleShape),
+            )
+          }
+        }
 
-            Spacer(modifier = Modifier.height(6.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
-            Row(
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.Center,
-            ) {
-              if (hasAlarm) {
-                Icon(
-                  imageVector = Icons.Filled.NotificationsActive,
-                  contentDescription = null,
-                  tint = NtesOrange,
-                  modifier = Modifier
-                    .size(13.dp)
-                    .padding(end = 2.dp),
-                )
-              }
-              Text(
-                text = stName,
-                style = MaterialTheme.typography.bodySmall.copy(
-                  fontWeight = if (isActive || isSelected) FontWeight.Bold else FontWeight.SemiBold,
-                  fontSize = 12.sp,
-                ),
-                color = if (isActive) CobaltPrimary else MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-              )
-            }
-
-            if (station.stationCode.isNotBlank()) {
-              Text(
-                text = station.stationCode,
-                fontFamily = JetBrainsMonoFontFamily,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Medium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-              )
-            }
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            // Scheduled time pill
-            Row(
-              modifier = Modifier
-                .clip(RoundedCornerShape(6.dp))
-                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f))
-                .padding(horizontal = 6.dp, vertical = 2.dp),
-              verticalAlignment = Alignment.CenterVertically,
-              horizontalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
+        Column(
+          modifier = Modifier.padding(horizontal = 6.dp),
+          horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+          ) {
+            if (hasAlarm) {
               Icon(
-                imageVector = Icons.Filled.Schedule,
+                imageVector = Icons.Filled.NotificationsActive,
                 contentDescription = null,
-                tint = CobaltPrimary,
-                modifier = Modifier.size(11.dp),
+                tint = NtesOrange,
+                modifier = Modifier
+                  .size(13.dp)
+                  .padding(end = 2.dp),
               )
+            }
+            Text(
+              text = stName,
+              style = MaterialTheme.typography.bodySmall.copy(
+                fontWeight = if (isActive || isSelected) FontWeight.Bold else FontWeight.SemiBold,
+                fontSize = 12.sp,
+              ),
+              color = if (isActive) CobaltPrimary else MaterialTheme.colorScheme.onSurface,
+              textAlign = TextAlign.Center,
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+
+          if (station.stationCode.isNotBlank()) {
+            Text(
+              text = station.stationCode,
+              fontFamily = JetBrainsMonoFontFamily,
+              fontSize = 10.sp,
+              fontWeight = FontWeight.Medium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+
+          Spacer(modifier = Modifier.height(4.dp))
+
+          // Scheduled time pill
+          Row(
+            modifier = Modifier
+              .clip(RoundedCornerShape(6.dp))
+              .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f))
+              .padding(horizontal = 6.dp, vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.Schedule,
+              contentDescription = null,
+              tint = CobaltPrimary,
+              modifier = Modifier.size(11.dp),
+            )
+            Text(
+              text = scheduledText,
+              fontFamily = JetBrainsMonoFontFamily,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.SemiBold,
+              color = CobaltPrimary,
+            )
+          }
+
+          // Live ETA pill
+          if (etaText != null) {
+            Spacer(modifier = Modifier.height(3.dp))
+            Surface(
+              shape = RoundedCornerShape(6.dp),
+              color = StopCrimsonContainer,
+            ) {
               Text(
-                text = scheduledText,
+                text = "⏳ $etaText",
                 fontFamily = JetBrainsMonoFontFamily,
                 fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = CobaltPrimary,
+                fontWeight = FontWeight.Bold,
+                color = StopCrimson,
+                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
               )
             }
+          }
 
-            // Live ETA pill
-            if (etaText != null) {
+          // Delay / On-Time badge
+          when (delayStatus) {
+            DelayStatus.OnTime -> {
+              Spacer(modifier = Modifier.height(3.dp))
+              Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = VerifiedEmeraldContainer,
+              ) {
+                Text(
+                  text = strings.delayOnTime,
+                  fontSize = 10.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = VerifiedEmeraldDark,
+                  modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                )
+              }
+            }
+            is DelayStatus.Delayed -> {
               Spacer(modifier = Modifier.height(3.dp))
               Surface(
                 shape = RoundedCornerShape(6.dp),
                 color = StopCrimsonContainer,
               ) {
                 Text(
-                  text = "⏳ $etaText",
-                  fontFamily = JetBrainsMonoFontFamily,
-                  fontSize = 11.sp,
+                  text = strings.delayLateMinutes(delayStatus.minutes),
+                  fontSize = 10.sp,
                   fontWeight = FontWeight.Bold,
                   color = StopCrimson,
-                  modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                  modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
                 )
               }
             }
-
-            // Delay / On-Time badge
-            when (delayStatus) {
-              DelayStatus.OnTime -> {
-                Spacer(modifier = Modifier.height(3.dp))
-                Surface(
-                  shape = RoundedCornerShape(6.dp),
-                  color = VerifiedEmeraldContainer,
-                ) {
-                  Text(
-                    text = strings.delayOnTime,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = VerifiedEmeraldDark,
-                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-                  )
-                }
+            is DelayStatus.Early -> {
+              Spacer(modifier = Modifier.height(3.dp))
+              Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = MaterialTheme.colorScheme.primaryContainer,
+              ) {
+                Text(
+                  text = strings.delayEarlyMinutes(delayStatus.minutes),
+                  fontSize = 10.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = CobaltPrimary,
+                  modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
+                )
               }
-              is DelayStatus.Delayed -> {
-                Spacer(modifier = Modifier.height(3.dp))
-                Surface(
-                  shape = RoundedCornerShape(6.dp),
-                  color = StopCrimsonContainer,
-                ) {
-                  Text(
-                    text = strings.delayLateMinutes(delayStatus.minutes),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = StopCrimson,
-                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-                  )
-                }
-              }
-              is DelayStatus.Early -> {
-                Spacer(modifier = Modifier.height(3.dp))
-                Surface(
-                  shape = RoundedCornerShape(6.dp),
-                  color = MaterialTheme.colorScheme.primaryContainer,
-                ) {
-                  Text(
-                    text = strings.delayEarlyMinutes(delayStatus.minutes),
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = CobaltPrimary,
-                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp),
-                  )
-                }
-              }
-              DelayStatus.Unknown -> {}
             }
+            DelayStatus.Unknown -> {}
           }
         }
       }
