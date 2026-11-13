@@ -1,6 +1,11 @@
 package com.example.ui.components
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -44,7 +49,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableDoubleStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -54,6 +58,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -71,13 +76,16 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.OsmTileLoader
+import com.example.model.FocusedMapStation
 import com.example.model.GpsSample
 import com.example.model.LocalizedStrings
 import com.example.model.LocatedTrain
 import com.example.model.MapSizePreset
 import com.example.model.RouteStation
+import com.example.model.StationAlarmState
 import com.example.ui.theme.CobaltPrimary
 import com.example.ui.theme.JetBrainsMonoFontFamily
+import com.example.ui.theme.NtesOrange
 import com.example.ui.theme.VerifiedEmeraldDark
 import java.util.Locale
 import kotlin.math.PI
@@ -87,6 +95,7 @@ import kotlin.math.floor
 import kotlin.math.ln
 import kotlin.math.pow
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlin.math.sinh
 import kotlin.math.tan
 
@@ -96,12 +105,18 @@ fun OsmMapSection(
   route: List<RouteStation>,
   locatedTrain: LocatedTrain?,
   latestUserGps: GpsSample?,
+  userBearingDegrees: Double,
+  userSpeedKmh: Double,
   insideTrain: Boolean,
   distanceKm: Double?,
+  focusedStation: FocusedMapStation?,
+  alarmStation: StationAlarmState?,
   mapSizePreset: MapSizePreset,
   isFullscreen: Boolean,
   recenterSignal: Int,
   strings: LocalizedStrings,
+  showSizePresets: Boolean = true,
+  fillAvailableHeight: Boolean = false,
   onSizePresetSelected: (MapSizePreset) -> Unit,
   onToggleFullscreen: (Boolean) -> Unit,
   onRecenter: () -> Unit,
@@ -115,8 +130,7 @@ fun OsmMapSection(
     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
   ) {
-    Column {
-      // Title & Quick Map Controls Bar
+    Column(modifier = if (fillAvailableHeight) Modifier.fillMaxSize() else Modifier) {
       Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
         Row(
           modifier = Modifier.fillMaxWidth(),
@@ -144,18 +158,20 @@ fun OsmMapSection(
           horizontalArrangement = Arrangement.spacedBy(8.dp),
           verticalAlignment = Alignment.CenterVertically,
         ) {
-          MapActionChip(
-            label = strings.mapSmallBtn,
-            selected = mapSizePreset == MapSizePreset.SMALL,
-            onClick = { onSizePresetSelected(MapSizePreset.SMALL) },
-            testTag = "map_small_button",
-          )
-          MapActionChip(
-            label = strings.mapLargeBtn,
-            selected = mapSizePreset == MapSizePreset.LARGE,
-            onClick = { onSizePresetSelected(MapSizePreset.LARGE) },
-            testTag = "map_large_button",
-          )
+          if (showSizePresets) {
+            MapActionChip(
+              label = strings.mapSmallBtn,
+              selected = mapSizePreset == MapSizePreset.SMALL,
+              onClick = { onSizePresetSelected(MapSizePreset.SMALL) },
+              testTag = "map_small_button",
+            )
+            MapActionChip(
+              label = strings.mapLargeBtn,
+              selected = mapSizePreset == MapSizePreset.LARGE,
+              onClick = { onSizePresetSelected(MapSizePreset.LARGE) },
+              testTag = "map_large_button",
+            )
+          }
           FilledTonalButton(
             onClick = { onToggleFullscreen(true) },
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
@@ -205,13 +221,23 @@ fun OsmMapSection(
           route = route,
           locatedTrain = locatedTrain,
           latestUserGps = latestUserGps,
+          userBearingDegrees = userBearingDegrees,
+          userSpeedKmh = userSpeedKmh,
           insideTrain = insideTrain,
           distanceKm = distanceKm,
+          focusedStation = focusedStation,
+          alarmStation = alarmStation,
           recenterSignal = recenterSignal,
           strings = strings,
-          modifier = Modifier
-            .fillMaxWidth()
-            .height(mapSizePreset.heightDp.dp),
+          modifier = if (fillAvailableHeight) {
+            Modifier
+              .fillMaxWidth()
+              .weight(1f)
+          } else {
+            Modifier
+              .fillMaxWidth()
+              .height(mapSizePreset.heightDp.dp)
+          },
         )
       }
     }
@@ -233,8 +259,12 @@ fun OsmMapSection(
             route = route,
             locatedTrain = locatedTrain,
             latestUserGps = latestUserGps,
+            userBearingDegrees = userBearingDegrees,
+            userSpeedKmh = userSpeedKmh,
             insideTrain = insideTrain,
             distanceKm = distanceKm,
+            focusedStation = focusedStation,
+            alarmStation = alarmStation,
             recenterSignal = recenterSignal,
             strings = strings,
             modifier = Modifier.fillMaxSize(),
@@ -314,19 +344,43 @@ private fun InteractiveOsmCanvas(
   route: List<RouteStation>,
   locatedTrain: LocatedTrain?,
   latestUserGps: GpsSample?,
+  userBearingDegrees: Double,
+  userSpeedKmh: Double,
   insideTrain: Boolean,
   distanceKm: Double?,
+  focusedStation: FocusedMapStation?,
+  alarmStation: StationAlarmState?,
   recenterSignal: Int,
   strings: LocalizedStrings,
   modifier: Modifier = Modifier,
 ) {
   val tileRevision by tileLoader.tileRevision.collectAsStateWithLifecycle()
   var canvasSize by remember { mutableStateOf(IntSize.Zero) }
-  // Default center: Kolkata / West Bengal (22.57, 88.36) zoom 7, matching the HTML initial view
   var centerLat by remember { mutableDoubleStateOf(22.57) }
   var centerLon by remember { mutableDoubleStateOf(88.36) }
   var zoom by remember { mutableDoubleStateOf(7.0) }
   var selectedMarkerInfo by remember { mutableStateOf<String?>(null) }
+
+  val infiniteTransition = rememberInfiniteTransition(label = "map_pulse")
+  val pulseProgress by infiniteTransition.animateFloat(
+    initialValue = 0.2f,
+    targetValue = 1.0f,
+    animationSpec = infiniteRepeatable(
+      animation = tween(durationMillis = 1400),
+      repeatMode = RepeatMode.Restart,
+    ),
+    label = "pulse_progress",
+  )
+
+  // Focus on tapped station from RouteTimeline
+  LaunchedEffect(focusedStation?.signal) {
+    if (focusedStation != null) {
+      centerLat = focusedStation.lat
+      centerLon = focusedStation.lon
+      zoom = 13.5
+      selectedMarkerInfo = "🚉 ${focusedStation.stationName}"
+    }
+  }
 
   // Fit bounds when recenterSignal increments
   LaunchedEffect(recenterSignal) {
@@ -387,7 +441,6 @@ private fun InteractiveOsmCanvas(
     val width = canvasSize.width.toFloat()
     val height = canvasSize.height.toFloat()
 
-    // Projection helpers anchored at current center & zoom
     fun latLonToScreen(lat: Double, lon: Double): Offset {
       val worldSize = tileSizePx * 2.0.pow(zoom)
       val cx = lonToWorldX(centerLon) * worldSize
@@ -401,7 +454,6 @@ private fun InteractiveOsmCanvas(
     }
 
     Canvas(modifier = Modifier.fillMaxSize()) {
-      // Read tileRevision to redraw when new OSM tiles finish downloading
       val _rev = tileRevision
 
       val intZoom = floor(zoom).toInt().coerceIn(3, 17)
@@ -446,14 +498,14 @@ private fun InteractiveOsmCanvas(
         }
       }
 
-      // Draw railway polyline connecting route stations
+      // Railway polyline
       val validPoints = route.mapNotNull { st ->
         if (st.lat != null && st.lon != null) latLonToScreen(st.lat, st.lon) else null
       }
       if (validPoints.size >= 2) {
         for (i in 0 until validPoints.lastIndex) {
           drawLine(
-            color = CobaltPrimary.copy(alpha = 0.72f),
+            color = CobaltPrimary.copy(alpha = 0.75f),
             start = validPoints[i],
             end = validPoints[i + 1],
             strokeWidth = 3.5.dp.toPx(),
@@ -462,18 +514,31 @@ private fun InteractiveOsmCanvas(
         }
       }
 
-      // Draw station dots
+      // Station dots + highlight rings for focused / alarm stations
       route.forEach { st ->
         if (st.lat != null && st.lon != null) {
           val pos = latLonToScreen(st.lat, st.lon)
           if (pos.x in -30f..(size.width + 30f) && pos.y in -30f..(size.height + 30f)) {
+            val isAlarm = alarmStation != null &&
+              alarmStation.stationCode.equals(st.stationCode, ignoreCase = true)
+            val isFocused = focusedStation != null &&
+              focusedStation.stationCode.equals(st.stationCode, ignoreCase = true) &&
+              focusedStation.stationName == st.stationName.ifBlank { st.stationCode }
+
+            if (isAlarm || isFocused) {
+              drawCircle(
+                color = NtesOrange.copy(alpha = 0.35f),
+                radius = 13.dp.toPx(),
+                center = pos,
+              )
+            }
             drawCircle(
               color = Color.White,
               radius = 6.5.dp.toPx(),
               center = pos,
             )
             drawCircle(
-              color = CobaltPrimary,
+              color = if (isAlarm) NtesOrange else CobaltPrimary,
               radius = 4.5.dp.toPx(),
               center = pos,
             )
@@ -481,7 +546,73 @@ private fun InteractiveOsmCanvas(
         }
       }
 
-      // Draw dashed distance line between train & user when outside train
+      // User GPS Accuracy Ring + Pulsing Halo + Heading Cone
+      if (latestUserGps != null) {
+        val uPt = latLonToScreen(latestUserGps.lat, latestUserGps.lon)
+        val metersPerTilePx =
+          156543.03392 * cos(Math.toRadians(latestUserGps.lat)) / 2.0.pow(zoom)
+        val accuracyRadiusPx = (latestUserGps.accuracy / metersPerTilePx)
+          .toFloat()
+          .coerceIn(14.dp.toPx(), 160.dp.toPx())
+
+        drawCircle(
+          color = Color(0x221565C0),
+          radius = accuracyRadiusPx,
+          center = uPt,
+        )
+        drawCircle(
+          color = Color(0x661565C0),
+          radius = accuracyRadiusPx,
+          center = uPt,
+          style = Stroke(width = 1.5.dp.toPx()),
+        )
+
+        // Pulsing halo
+        drawCircle(
+          color = Color(0xFF1565C0).copy(alpha = (1f - pulseProgress) * 0.45f),
+          radius = (16.dp.toPx() + pulseProgress * 18.dp.toPx()),
+          center = uPt,
+        )
+
+        // Directional heading arrow when moving >= 2 km/h
+        if (userSpeedKmh >= 2.0) {
+          val rad = Math.toRadians(userBearingDegrees)
+          val tipDist = 26.dp.toPx()
+          val baseDist = 13.dp.toPx()
+          val halfAngle = Math.toRadians(24.0)
+          val tip = Offset(
+            uPt.x + (sin(rad) * tipDist).toFloat(),
+            uPt.y - (cos(rad) * tipDist).toFloat(),
+          )
+          val left = Offset(
+            uPt.x + (sin(rad - halfAngle) * baseDist).toFloat(),
+            uPt.y - (cos(rad - halfAngle) * baseDist).toFloat(),
+          )
+          val right = Offset(
+            uPt.x + (sin(rad + halfAngle) * baseDist).toFloat(),
+            uPt.y - (cos(rad + halfAngle) * baseDist).toFloat(),
+          )
+          val arrowPath = Path().apply {
+            moveTo(tip.x, tip.y)
+            lineTo(left.x, left.y)
+            lineTo(right.x, right.y)
+            close()
+          }
+          drawPath(path = arrowPath, color = Color(0xFF1565C0))
+        }
+      }
+
+      // Pulsing halo around train marker
+      if (locatedTrain != null) {
+        val tPt = latLonToScreen(locatedTrain.lat, locatedTrain.lon)
+        drawCircle(
+          color = CobaltPrimary.copy(alpha = (1f - pulseProgress) * 0.45f),
+          radius = (19.dp.toPx() + pulseProgress * 22.dp.toPx()),
+          center = tPt,
+        )
+      }
+
+      // Dashed distance line between train & user when outside train
       if (locatedTrain != null && latestUserGps != null && !insideTrain) {
         val trainPt = latLonToScreen(locatedTrain.lat, locatedTrain.lon)
         val userPt = latLonToScreen(latestUserGps.lat, latestUserGps.lon)
@@ -495,11 +626,14 @@ private fun InteractiveOsmCanvas(
       }
     }
 
-    // Permanent alternating station labels (visible at zoom >= 9 or <= 18 stations)
     if (width > 0f && height > 0f) {
       val showAllLabels = zoom >= 9.2 || route.size <= 12
       route.forEachIndexed { index, st ->
-        if (st.lat != null && st.lon != null && (showAllLabels || index == locatedTrain?.idx)) {
+        val isFocusedOrAlarm = (focusedStation?.stationCode.equals(st.stationCode, true)) ||
+          (alarmStation?.stationCode.equals(st.stationCode, true))
+        if (st.lat != null && st.lon != null &&
+          (showAllLabels || index == locatedTrain?.idx || isFocusedOrAlarm)
+        ) {
           val pos = latLonToScreen(st.lat, st.lon)
           if (pos.x in 0f..width && pos.y in 0f..height) {
             val isRight = index % 2 == 0
@@ -519,11 +653,15 @@ private fun InteractiveOsmCanvas(
                 text = st.stationName.ifBlank { st.stationCode },
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
-                color = CobaltPrimary,
+                color = if (isFocusedOrAlarm) NtesOrange else CobaltPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier
-                  .border(1.dp, CobaltPrimary.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
+                  .border(
+                    1.dp,
+                    (if (isFocusedOrAlarm) NtesOrange else CobaltPrimary).copy(alpha = 0.75f),
+                    RoundedCornerShape(4.dp),
+                  )
                   .padding(horizontal = 5.dp, vertical = 1.dp),
               )
             }
@@ -566,7 +704,7 @@ private fun InteractiveOsmCanvas(
       if (latestUserGps != null) {
         val uPt = latLonToScreen(latestUserGps.lat, latestUserGps.lon)
         if (uPt.x in -40f..(width + 40f) && uPt.y in -40f..(height + 40f)) {
-          val pinSizePx = with(density) { 32.dp.roundToPx() }
+          val pinSizePx = with(density) { 30.dp.roundToPx() }
           Surface(
             onClick = {
               selectedMarkerInfo =
@@ -576,7 +714,7 @@ private fun InteractiveOsmCanvas(
               .offset {
                 IntOffset(uPt.x.roundToInt() - pinSizePx / 2, uPt.y.roundToInt() - pinSizePx / 2)
               }
-              .size(32.dp),
+              .size(30.dp),
             shape = CircleShape,
             color = Color(0xFF1565C0),
             shadowElevation = 5.dp,
@@ -589,7 +727,7 @@ private fun InteractiveOsmCanvas(
             ) {
               Box(
                 modifier = Modifier
-                  .size(10.dp)
+                  .size(9.dp)
                   .clip(CircleShape)
                   .background(Color.White),
               )
@@ -605,7 +743,8 @@ private fun InteractiveOsmCanvas(
           val badgeSizePx = with(density) { 38.dp.roundToPx() }
           Surface(
             onClick = {
-              selectedMarkerInfo = "🚆 ${locatedTrain.name} (${String.format(Locale.US, "%.1f", locatedTrain.speedKmh)} km/h)"
+              selectedMarkerInfo =
+                "🚆 ${locatedTrain.name} (${String.format(Locale.US, "%.1f", locatedTrain.speedKmh)} km/h)"
             },
             modifier = Modifier
               .offset {
@@ -634,7 +773,6 @@ private fun InteractiveOsmCanvas(
       }
     }
 
-    // Selected marker popup chip
     if (selectedMarkerInfo != null) {
       Surface(
         modifier = Modifier
@@ -653,7 +791,6 @@ private fun InteractiveOsmCanvas(
       }
     }
 
-    // Zoom +/- controls on right edge
     Column(
       modifier = Modifier
         .align(Alignment.BottomEnd)
@@ -683,7 +820,6 @@ private fun InteractiveOsmCanvas(
       }
     }
 
-    // OpenStreetMap attribution
     Surface(
       modifier = Modifier
         .align(Alignment.BottomStart)

@@ -4,12 +4,15 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,11 +22,12 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -41,9 +45,16 @@ import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.DirectionsRailway
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.GpsFixed
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.Map
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Route
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material.icons.filled.Train
@@ -58,11 +69,17 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -80,7 +97,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -89,8 +105,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.model.AppLanguage
 import com.example.model.BannerType
 import com.example.model.LocalizedStrings
+import com.example.model.SavedRoutePair
+import com.example.model.SavedTrainEntry
+import com.example.model.StationAlarmState
 import com.example.model.StationDbEntry
 import com.example.model.StatusBanner
+import com.example.model.TrackerTab
+import com.example.model.TrackerUiState
 import com.example.model.TrainBetweenItem
 import com.example.model.stringsFor
 import com.example.ui.components.ConfidenceScoreCard
@@ -125,12 +146,18 @@ fun TrainTrackerScreen(
   val context = LocalContext.current
   val focusManager = LocalFocusManager.current
 
-  val permissionLauncher = rememberLauncherForActivityResult(
+  val locationPermissionLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestMultiplePermissions(),
   ) { results ->
     val fineGranted = results[Manifest.permission.ACCESS_FINE_LOCATION] == true
     val coarseGranted = results[Manifest.permission.ACCESS_COARSE_LOCATION] == true
     viewModel.onLocationPermissionResult(fineGranted || coarseGranted)
+  }
+
+  val notificationPermissionLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestPermission(),
+  ) {
+    viewModel.onNotificationPermissionHandled()
   }
 
   LaunchedEffect(Unit) {
@@ -147,7 +174,7 @@ fun TrainTrackerScreen(
 
   LaunchedEffect(state.needsLocationPermissionPrompt) {
     if (state.needsLocationPermissionPrompt) {
-      permissionLauncher.launch(
+      locationPermissionLauncher.launch(
         arrayOf(
           Manifest.permission.ACCESS_FINE_LOCATION,
           Manifest.permission.ACCESS_COARSE_LOCATION,
@@ -156,212 +183,528 @@ fun TrainTrackerScreen(
     }
   }
 
-  Scaffold(
-    modifier = modifier.fillMaxSize(),
-    containerColor = MaterialTheme.colorScheme.background,
-    contentWindowInsets = WindowInsets(0, 0, 0, 0),
-  ) { innerPadding ->
-    Box(
-      modifier = Modifier
-        .fillMaxSize()
-        .padding(innerPadding),
-      contentAlignment = Alignment.TopCenter,
-    ) {
-      BoxWithConstraints(
-        modifier = Modifier
-          .widthIn(max = 1100.dp)
-          .fillMaxSize(),
-      ) {
-        val isWideLayout = maxWidth >= 640.dp
+  LaunchedEffect(state.needsNotificationPermissionPrompt) {
+    if (state.needsNotificationPermissionPrompt) {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val already = ContextCompat.checkSelfPermission(
+          context,
+          Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (!already) {
+          notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+          viewModel.onNotificationPermissionHandled()
+        }
+      } else {
+        viewModel.onNotificationPermissionHandled()
+      }
+    }
+  }
 
-        Column(
-          modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .navigationBarsPadding(),
-        ) {
-          // Top Language Bar + Hero Header
-          TrackerHeader(
-            language = state.language,
-            strings = strings,
-            onSelectLanguage = viewModel::setLanguage,
-          )
+  BackHandler(enabled = state.activeTab != TrackerTab.LIVE_ROUTE) {
+    viewModel.setActiveTab(TrackerTab.LIVE_ROUTE)
+  }
 
-          Column(
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+  BoxWithConstraints(modifier = modifier.fillMaxSize()) {
+    val isWideLayout = maxWidth >= 640.dp
+
+    Scaffold(
+      modifier = Modifier.fillMaxSize(),
+      containerColor = MaterialTheme.colorScheme.background,
+      contentWindowInsets = WindowInsets(0, 0, 0, 0),
+      bottomBar = {
+        if (!isWideLayout) {
+          NavigationBar(
+            windowInsets = WindowInsets.navigationBars,
+            containerColor = MaterialTheme.colorScheme.surface,
           ) {
-            // Search & Train Controls Panel
-            SearchAndControlPanel(
-              fromInput = state.fromInput,
-              toInput = state.toInput,
-              fromSuggestions = state.fromSuggestions,
-              toSuggestions = state.toSuggestions,
-              betweenLoading = state.betweenLoading,
-              betweenError = state.betweenError,
-              betweenTrains = state.betweenTrains,
-              trainNoInput = state.trainNoInput,
-              running = state.running,
-              isWideLayout = isWideLayout,
-              strings = strings,
-              onFromChanged = viewModel::onFromInputChanged,
-              onToChanged = viewModel::onToInputChanged,
-              onStationSelected = { isFrom, entry ->
-                focusManager.clearFocus()
-                viewModel.onStationSelected(isFrom, entry)
-              },
-              onSwapStations = viewModel::swapStations,
-              onSelectBetweenTrain = { trainNo ->
-                focusManager.clearFocus()
-                viewModel.onSelectTrainBetween(trainNo)
-              },
-              onTrainNoChanged = viewModel::onTrainNoChanged,
-              onStartTracking = {
-                focusManager.clearFocus()
-                viewModel.startTracking()
-              },
-              onStopTracking = { viewModel.stopTracking(showBanner = true) },
-              onOpenNtes = {
-                val intent = Intent(
-                  Intent.ACTION_VIEW,
-                  Uri.parse("https://enquiry.indianrail.gov.in/mntes/"),
-                )
-                context.startActivity(intent)
-              },
-            )
-
-            // Result Banner (Verification result / offset)
-            AnimatedVisibility(visible = state.resultBanner != null) {
-              state.resultBanner?.let { banner ->
-                StatusBannerBox(banner = banner, testTag = "result_banner")
-              }
-            }
-
-            // Status Banner (Live fetch / GPS status)
-            AnimatedVisibility(visible = state.statusBanner != null) {
-              state.statusBanner?.let { banner ->
-                StatusBannerBox(
-                  banner = banner,
-                  showPermissionAction = !state.locationPermissionGranted &&
-                    banner.type == BannerType.BAD,
-                  permissionButtonLabel = strings.grantPermissionBtn,
-                  onRequestPermission = { viewModel.requestLocationPermissionPrompt() },
-                  testTag = "status_banner",
-                )
-              }
-            }
-
-            // Horizontal Animated Route Timeline
-            RouteTimelineCard(
-              route = state.route,
-              locatedTrain = state.locatedTrain,
-              insideTrain = state.insideTrain,
-              userSpeedKmh = state.movementStats.speedKmh,
-              running = state.running,
-              strings = strings,
-            )
-
-            // Train Live Data Summary Card
-            TrainLiveCard(
-              trainNo = state.trainNoInput,
-              trainName = state.trainName,
-              locatedTrain = state.locatedTrain,
-              rawSource = state.rawSource,
-              insideTrain = state.insideTrain,
-              movementStats = state.movementStats,
-              strings = strings,
-            )
-
-            // Interactive OpenStreetMap Live View
-            OsmMapSection(
-              tileLoader = viewModel.tileLoader,
-              route = state.route,
-              locatedTrain = state.locatedTrain,
-              latestUserGps = state.gpsSamples.lastOrNull(),
-              insideTrain = state.insideTrain,
-              distanceKm = state.verification?.distanceKm,
-              mapSizePreset = state.mapSizePreset,
-              isFullscreen = state.mapFullscreen,
-              recenterSignal = state.recenterSignal,
-              strings = strings,
-              onSizePresetSelected = viewModel::setMapSizePreset,
-              onToggleFullscreen = viewModel::setMapFullscreen,
-              onRecenter = viewModel::triggerRecenterMap,
-            )
-
-            // Telemetry & GPS Verification Cards (1-col compact / 2-col wide)
-            if (isWideLayout) {
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-              ) {
-                UserGpsCard(
-                  latestSample = state.gpsSamples.lastOrNull(),
-                  lowAccuracyMeters = state.lowAccuracyMeters,
-                  movementStats = state.movementStats,
-                  strings = strings,
-                  modifier = Modifier.weight(1f),
-                )
-                MovementDistanceCard(
-                  verification = state.verification,
-                  movementStats = state.movementStats,
-                  locatedTrain = state.locatedTrain,
-                  strings = strings,
-                  modifier = Modifier.weight(1f),
-                )
-              }
-              Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-              ) {
-                ConfidenceScoreCard(
-                  verification = state.verification,
-                  strings = strings,
-                  modifier = Modifier.weight(1f),
-                )
-                GpsSamplesCard(
-                  samples = state.gpsSamples,
-                  strings = strings,
-                  modifier = Modifier.weight(1f),
-                )
-              }
-            } else {
-              UserGpsCard(
-                latestSample = state.gpsSamples.lastOrNull(),
-                lowAccuracyMeters = state.lowAccuracyMeters,
-                movementStats = state.movementStats,
-                strings = strings,
-              )
-              MovementDistanceCard(
-                verification = state.verification,
-                movementStats = state.movementStats,
-                locatedTrain = state.locatedTrain,
-                strings = strings,
-              )
-              ConfidenceScoreCard(
-                verification = state.verification,
-                strings = strings,
-              )
-              GpsSamplesCard(
-                samples = state.gpsSamples,
-                strings = strings,
+            TrackerTab.entries.forEach { tab ->
+              NavigationBarItem(
+                selected = state.activeTab == tab,
+                onClick = { viewModel.setActiveTab(tab) },
+                icon = {
+                  Icon(
+                    imageVector = tabIcon(tab),
+                    contentDescription = tabLabel(tab, strings),
+                  )
+                },
+                label = {
+                  Text(
+                    text = tabLabel(tab, strings),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                },
+                modifier = Modifier.testTag("bottom_tab_${tab.name.lowercase()}"),
               )
             }
+          }
+        }
+      },
+    ) { innerPadding ->
+      Row(
+        modifier = Modifier
+          .fillMaxSize()
+          .padding(innerPadding),
+      ) {
+        if (isWideLayout) {
+          NavigationRail(
+            containerColor = MaterialTheme.colorScheme.surface,
+            modifier = Modifier
+              .fillMaxHeight()
+              .statusBarsPadding(),
+          ) {
+            Spacer(modifier = Modifier.height(12.dp))
+            TrackerTab.entries.forEach { tab ->
+              NavigationRailItem(
+                selected = state.activeTab == tab,
+                onClick = { viewModel.setActiveTab(tab) },
+                icon = {
+                  Icon(
+                    imageVector = tabIcon(tab),
+                    contentDescription = tabLabel(tab, strings),
+                  )
+                },
+                label = {
+                  Text(
+                    text = tabLabel(tab, strings),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                  )
+                },
+                modifier = Modifier.testTag("rail_tab_${tab.name.lowercase()}"),
+              )
+            }
+          }
+        }
 
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-              text = strings.appSubtitle,
-              style = MaterialTheme.typography.bodySmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-              textAlign = TextAlign.Center,
-              modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = 12.dp),
+        Box(
+          modifier = Modifier.fillMaxSize(),
+          contentAlignment = Alignment.TopCenter,
+        ) {
+          Column(
+            modifier = Modifier
+              .widthIn(max = 1100.dp)
+              .fillMaxSize(),
+          ) {
+            TrackerHeader(
+              language = state.language,
+              strings = strings,
+              onSelectLanguage = viewModel::setLanguage,
             )
+
+            when (state.activeTab) {
+              TrackerTab.LIVE_ROUTE -> LiveRouteTabContent(
+                state = state,
+                strings = strings,
+                isWideLayout = isWideLayout,
+                onFromChanged = viewModel::onFromInputChanged,
+                onToChanged = viewModel::onToInputChanged,
+                onStationSelected = { isFrom, entry ->
+                  focusManager.clearFocus()
+                  viewModel.onStationSelected(isFrom, entry)
+                },
+                onSwapStations = viewModel::swapStations,
+                onSelectBetweenTrain = { trainNo ->
+                  focusManager.clearFocus()
+                  viewModel.onSelectTrainBetween(trainNo)
+                },
+                onTrainNoChanged = viewModel::onTrainNoChanged,
+                onToggleFavorite = viewModel::toggleFavoriteCurrentTrain,
+                onQuickTrainClick = { entry ->
+                  focusManager.clearFocus()
+                  viewModel.onQuickTrainSelected(entry)
+                },
+                onRecentRouteClick = { pair ->
+                  focusManager.clearFocus()
+                  viewModel.onRecentRouteSelected(pair)
+                },
+                onStartTracking = {
+                  focusManager.clearFocus()
+                  viewModel.startTracking()
+                },
+                onStopTracking = { viewModel.stopTracking(showBanner = true) },
+                onOpenNtes = {
+                  val intent = Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://enquiry.indianrail.gov.in/mntes/"),
+                  )
+                  context.startActivity(intent)
+                },
+                onRequestPermission = viewModel::requestLocationPermissionPrompt,
+                onStationNodeClick = viewModel::onStationNodeClicked,
+                onFocusStationOnMap = viewModel::focusStationOnMap,
+                onToggleStationAlarm = viewModel::toggleStationAlarm,
+                onDismissAlarm = viewModel::dismissStationAlarm,
+              )
+
+              TrackerTab.MAP -> MapTabContent(
+                state = state,
+                strings = strings,
+                viewModel = viewModel,
+              )
+
+              TrackerTab.GPS_DIAGNOSTICS -> GpsDiagnosticsTabContent(
+                state = state,
+                strings = strings,
+                isWideLayout = isWideLayout,
+                onToggleBackgroundTracking = viewModel::setBackgroundTrackingEnabled,
+              )
+            }
           }
         }
       }
     }
+  }
+}
+
+private fun tabIcon(tab: TrackerTab) = when (tab) {
+  TrackerTab.LIVE_ROUTE -> Icons.Filled.Route
+  TrackerTab.MAP -> Icons.Filled.Map
+  TrackerTab.GPS_DIAGNOSTICS -> Icons.Filled.GpsFixed
+}
+
+private fun tabLabel(tab: TrackerTab, strings: LocalizedStrings) = when (tab) {
+  TrackerTab.LIVE_ROUTE -> strings.tabLiveRoute
+  TrackerTab.MAP -> strings.tabMap
+  TrackerTab.GPS_DIAGNOSTICS -> strings.tabGps
+}
+
+@Composable
+private fun LiveRouteTabContent(
+  state: TrackerUiState,
+  strings: LocalizedStrings,
+  isWideLayout: Boolean,
+  onFromChanged: (String) -> Unit,
+  onToChanged: (String) -> Unit,
+  onStationSelected: (Boolean, StationDbEntry) -> Unit,
+  onSwapStations: () -> Unit,
+  onSelectBetweenTrain: (String) -> Unit,
+  onTrainNoChanged: (String) -> Unit,
+  onToggleFavorite: () -> Unit,
+  onQuickTrainClick: (SavedTrainEntry) -> Unit,
+  onRecentRouteClick: (SavedRoutePair) -> Unit,
+  onStartTracking: () -> Unit,
+  onStopTracking: () -> Unit,
+  onOpenNtes: () -> Unit,
+  onRequestPermission: () -> Unit,
+  onStationNodeClick: (Int) -> Unit,
+  onFocusStationOnMap: (Int) -> Unit,
+  onToggleStationAlarm: (Int) -> Unit,
+  onDismissAlarm: () -> Unit,
+) {
+  Column(
+    modifier = Modifier
+      .fillMaxSize()
+      .verticalScroll(rememberScrollState())
+      .padding(horizontal = 14.dp, vertical = 12.dp),
+    verticalArrangement = Arrangement.spacedBy(12.dp),
+  ) {
+    SearchAndControlPanel(
+      fromInput = state.fromInput,
+      toInput = state.toInput,
+      fromSuggestions = state.fromSuggestions,
+      toSuggestions = state.toSuggestions,
+      betweenLoading = state.betweenLoading,
+      betweenError = state.betweenError,
+      betweenTrains = state.betweenTrains,
+      trainNoInput = state.trainNoInput,
+      isCurrentTrainFavorite = state.favoriteTrains.any {
+        it.trainNumber == state.trainNoInput.trim()
+      },
+      favoriteTrains = state.favoriteTrains,
+      recentTrains = state.recentTrains,
+      recentRoutes = state.recentRoutes,
+      running = state.running,
+      isWideLayout = isWideLayout,
+      strings = strings,
+      onFromChanged = onFromChanged,
+      onToChanged = onToChanged,
+      onStationSelected = onStationSelected,
+      onSwapStations = onSwapStations,
+      onSelectBetweenTrain = onSelectBetweenTrain,
+      onTrainNoChanged = onTrainNoChanged,
+      onToggleFavorite = onToggleFavorite,
+      onQuickTrainClick = onQuickTrainClick,
+      onRecentRouteClick = onRecentRouteClick,
+      onStartTracking = onStartTracking,
+      onStopTracking = onStopTracking,
+      onOpenNtes = onOpenNtes,
+    )
+
+    // Destination Alarm Active / Triggered Alert Banner
+    AnimatedVisibility(visible = state.stationAlarm != null || state.alarmAlertMessage != null) {
+      AlarmBannerBox(
+        alarm = state.stationAlarm,
+        alertMessage = state.alarmAlertMessage,
+        strings = strings,
+        onDismiss = onDismissAlarm,
+      )
+    }
+
+    // Verification Result Banner
+    AnimatedVisibility(visible = state.resultBanner != null) {
+      state.resultBanner?.let { banner ->
+        StatusBannerBox(banner = banner, testTag = "result_banner")
+      }
+    }
+
+    // Live Fetch / GPS Status Banner
+    AnimatedVisibility(visible = state.statusBanner != null) {
+      state.statusBanner?.let { banner ->
+        StatusBannerBox(
+          banner = banner,
+          showPermissionAction = !state.locationPermissionGranted &&
+            banner.type == BannerType.BAD,
+          permissionButtonLabel = strings.grantPermissionBtn,
+          onRequestPermission = onRequestPermission,
+          testTag = "status_banner",
+        )
+      }
+    }
+
+    RouteTimelineCard(
+      route = state.route,
+      locatedTrain = state.locatedTrain,
+      insideTrain = state.insideTrain,
+      userSpeedKmh = state.movementStats.speedKmh,
+      running = state.running,
+      selectedStationIndex = state.selectedStationIndex,
+      stationAlarm = state.stationAlarm,
+      strings = strings,
+      onStationClick = onStationNodeClick,
+      onFocusStationOnMap = onFocusStationOnMap,
+      onToggleStationAlarm = onToggleStationAlarm,
+    )
+
+    TrainLiveCard(
+      trainNo = state.trainNoInput,
+      trainName = state.trainName,
+      locatedTrain = state.locatedTrain,
+      rawSource = state.rawSource,
+      insideTrain = state.insideTrain,
+      movementStats = state.movementStats,
+      strings = strings,
+    )
+
+    Spacer(modifier = Modifier.height(6.dp))
+  }
+}
+
+@Composable
+private fun MapTabContent(
+  state: TrackerUiState,
+  strings: LocalizedStrings,
+  viewModel: TrainTrackerViewModel,
+) {
+  Column(
+    modifier = Modifier
+      .fillMaxSize()
+      .padding(horizontal = 14.dp, vertical = 12.dp),
+    verticalArrangement = Arrangement.spacedBy(10.dp),
+  ) {
+    if (state.locatedTrain != null) {
+      Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surface,
+        shadowElevation = 2.dp,
+        modifier = Modifier.fillMaxWidth(),
+      ) {
+        Row(
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Column(modifier = Modifier.weight(1f)) {
+            Text(
+              text = "🚆 ${state.trainNoInput} ${state.trainName?.let { "• $it" } ?: ""}",
+              style = MaterialTheme.typography.titleSmall,
+              color = CobaltPrimary,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+              text = "${state.locatedTrain.name}${
+                if (state.locatedTrain.next.isNotBlank()) " → ${state.locatedTrain.next}" else ""
+              }",
+              style = MaterialTheme.typography.bodySmall,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+          state.verification?.let { v ->
+            Surface(
+              shape = RoundedCornerShape(8.dp),
+              color = MaterialTheme.colorScheme.primaryContainer,
+            ) {
+              Text(
+                text = "${String.format(Locale.US, "%.2f", v.distanceKm)} km",
+                fontFamily = JetBrainsMonoFontFamily,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                color = CobaltPrimary,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+              )
+            }
+          }
+        }
+      }
+    }
+
+    OsmMapSection(
+      tileLoader = viewModel.tileLoader,
+      route = state.route,
+      locatedTrain = state.locatedTrain,
+      latestUserGps = state.gpsSamples.lastOrNull(),
+      userBearingDegrees = state.movementStats.bearingDegrees,
+      userSpeedKmh = state.movementStats.speedKmh,
+      insideTrain = state.insideTrain,
+      distanceKm = state.verification?.distanceKm,
+      focusedStation = state.focusedMapStation,
+      alarmStation = state.stationAlarm,
+      mapSizePreset = state.mapSizePreset,
+      isFullscreen = state.mapFullscreen,
+      recenterSignal = state.recenterSignal,
+      strings = strings,
+      showSizePresets = false,
+      fillAvailableHeight = true,
+      onSizePresetSelected = viewModel::setMapSizePreset,
+      onToggleFullscreen = viewModel::setMapFullscreen,
+      onRecenter = viewModel::triggerRecenterMap,
+      modifier = Modifier
+        .fillMaxWidth()
+        .weight(1f),
+    )
+  }
+}
+
+@Composable
+private fun GpsDiagnosticsTabContent(
+  state: TrackerUiState,
+  strings: LocalizedStrings,
+  isWideLayout: Boolean,
+  onToggleBackgroundTracking: (Boolean) -> Unit,
+) {
+  Column(
+    modifier = Modifier
+      .fillMaxSize()
+      .verticalScroll(rememberScrollState())
+      .padding(horizontal = 14.dp, vertical = 12.dp),
+    verticalArrangement = Arrangement.spacedBy(12.dp),
+  ) {
+    // Background Live Notification Switch Card
+    Card(
+      modifier = Modifier
+        .fillMaxWidth()
+        .testTag("background_tracking_card"),
+      shape = RoundedCornerShape(14.dp),
+      colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+      elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+    ) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+      ) {
+        Box(
+          modifier = Modifier
+            .size(36.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.primaryContainer),
+          contentAlignment = Alignment.Center,
+        ) {
+          Icon(
+            imageVector = Icons.Filled.NotificationsActive,
+            contentDescription = null,
+            tint = CobaltPrimary,
+            modifier = Modifier.size(20.dp),
+          )
+        }
+        Column(modifier = Modifier.weight(1f)) {
+          Text(
+            text = strings.backgroundTrackingTitle,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+          )
+          Spacer(modifier = Modifier.height(2.dp))
+          Text(
+            text = strings.backgroundTrackingDesc,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+        }
+        Switch(
+          checked = state.backgroundTrackingEnabled,
+          onCheckedChange = onToggleBackgroundTracking,
+          modifier = Modifier.testTag("background_tracking_switch"),
+        )
+      }
+    }
+
+    if (isWideLayout) {
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+      ) {
+        ConfidenceScoreCard(
+          verification = state.verification,
+          strings = strings,
+          modifier = Modifier.weight(1f),
+        )
+        UserGpsCard(
+          latestSample = state.gpsSamples.lastOrNull(),
+          lowAccuracyMeters = state.lowAccuracyMeters,
+          movementStats = state.movementStats,
+          strings = strings,
+          modifier = Modifier.weight(1f),
+        )
+      }
+      Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+      ) {
+        MovementDistanceCard(
+          verification = state.verification,
+          movementStats = state.movementStats,
+          locatedTrain = state.locatedTrain,
+          strings = strings,
+          modifier = Modifier.weight(1f),
+        )
+        GpsSamplesCard(
+          samples = state.gpsSamples,
+          strings = strings,
+          modifier = Modifier.weight(1f),
+        )
+      }
+    } else {
+      ConfidenceScoreCard(
+        verification = state.verification,
+        strings = strings,
+      )
+      UserGpsCard(
+        latestSample = state.gpsSamples.lastOrNull(),
+        lowAccuracyMeters = state.lowAccuracyMeters,
+        movementStats = state.movementStats,
+        strings = strings,
+      )
+      MovementDistanceCard(
+        verification = state.verification,
+        movementStats = state.movementStats,
+        locatedTrain = state.locatedTrain,
+        strings = strings,
+      )
+      GpsSamplesCard(
+        samples = state.gpsSamples,
+        strings = strings,
+      )
+    }
+
+    Spacer(modifier = Modifier.height(6.dp))
   }
 }
 
@@ -387,14 +730,53 @@ private fun TrackerHeader(
       .fillMaxWidth()
       .background(headerBrush)
       .statusBarsPadding()
-      .padding(horizontal = 16.dp, vertical = 14.dp),
+      .padding(horizontal = 16.dp, vertical = 10.dp),
   ) {
-    // Top Language Selector Row
     Row(
       modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.End,
       verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.SpaceBetween,
     ) {
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.weight(1f),
+      ) {
+        Surface(
+          shape = CircleShape,
+          color = CobaltPrimary,
+          shadowElevation = 4.dp,
+          modifier = Modifier.size(38.dp),
+        ) {
+          Box(contentAlignment = Alignment.Center) {
+            Icon(
+              imageVector = Icons.Filled.DirectionsRailway,
+              contentDescription = null,
+              tint = Color.White,
+              modifier = Modifier.size(21.dp),
+            )
+          }
+        }
+        Spacer(modifier = Modifier.width(10.dp))
+        Column {
+          Text(
+            text = strings.appTitle,
+            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+            color = titleColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+          Text(
+            text = strings.appSubtitle,
+            style = MaterialTheme.typography.labelSmall,
+            color = subtitleColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+          )
+        }
+      }
+
+      Spacer(modifier = Modifier.width(8.dp))
+
       Box {
         Surface(
           onClick = { langMenuExpanded = true },
@@ -410,18 +792,18 @@ private fun TrackerHeader(
                 if (isDark) Color(0xFF2D5378) else Color(0xFFCBD5E1),
                 RoundedCornerShape(20.dp),
               )
-              .padding(horizontal = 12.dp, vertical = 6.dp),
+              .padding(horizontal = 10.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
           ) {
             Icon(
               imageVector = Icons.Filled.Language,
               contentDescription = strings.languageLabel,
               tint = CobaltPrimary,
-              modifier = Modifier.size(16.dp),
+              modifier = Modifier.size(15.dp),
             )
             Text(
-              text = "${strings.languageLabel}: ${language.label}",
+              text = language.label,
               style = MaterialTheme.typography.labelMedium,
               color = if (isDark) Color.White else Color(0xFF1E293B),
             )
@@ -449,43 +831,6 @@ private fun TrackerHeader(
         }
       }
     }
-
-    Spacer(modifier = Modifier.height(8.dp))
-
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.Center,
-    ) {
-      Surface(
-        shape = CircleShape,
-        color = CobaltPrimary,
-        shadowElevation = 4.dp,
-        modifier = Modifier.size(44.dp),
-      ) {
-        Box(contentAlignment = Alignment.Center) {
-          Icon(
-            imageVector = Icons.Filled.DirectionsRailway,
-            contentDescription = null,
-            tint = Color.White,
-            modifier = Modifier.size(24.dp),
-          )
-        }
-      }
-      Spacer(modifier = Modifier.width(12.dp))
-      Column {
-        Text(
-          text = strings.appTitle,
-          style = MaterialTheme.typography.headlineSmall,
-          color = titleColor,
-        )
-        Text(
-          text = strings.appSubtitle,
-          style = MaterialTheme.typography.bodySmall,
-          color = subtitleColor,
-        )
-      }
-    }
   }
 }
 
@@ -499,6 +844,10 @@ private fun SearchAndControlPanel(
   betweenError: String?,
   betweenTrains: List<TrainBetweenItem>,
   trainNoInput: String,
+  isCurrentTrainFavorite: Boolean,
+  favoriteTrains: List<SavedTrainEntry>,
+  recentTrains: List<SavedTrainEntry>,
+  recentRoutes: List<SavedRoutePair>,
   running: Boolean,
   isWideLayout: Boolean,
   strings: LocalizedStrings,
@@ -508,6 +857,9 @@ private fun SearchAndControlPanel(
   onSwapStations: () -> Unit,
   onSelectBetweenTrain: (String) -> Unit,
   onTrainNoChanged: (String) -> Unit,
+  onToggleFavorite: () -> Unit,
+  onQuickTrainClick: (SavedTrainEntry) -> Unit,
+  onRecentRouteClick: (SavedRoutePair) -> Unit,
   onStartTracking: () -> Unit,
   onStopTracking: () -> Unit,
   onOpenNtes: () -> Unit,
@@ -607,6 +959,44 @@ private fun SearchAndControlPanel(
         )
       }
 
+      // Recent Routes Quick Chips
+      if (recentRoutes.isNotEmpty() && betweenTrains.isEmpty() && !betweenLoading) {
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+          Text(
+            text = strings.recentRoutesTitle,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+          )
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+          ) {
+            recentRoutes.forEach { pair ->
+              Surface(
+                onClick = { onRecentRouteClick(pair) },
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+              ) {
+                Text(
+                  text = "${pair.fromInput.substringAfterLast('(').removeSuffix(")")} → ${
+                    pair.toInput.substringAfterLast('(').removeSuffix(")")
+                  }",
+                  fontFamily = JetBrainsMonoFontFamily,
+                  fontSize = 11.sp,
+                  fontWeight = FontWeight.SemiBold,
+                  color = CobaltPrimary,
+                  modifier = Modifier
+                    .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 5.dp),
+                )
+              }
+            }
+          }
+        }
+      }
+
       // Between Stations Result List
       if (betweenLoading) {
         Row(
@@ -669,7 +1059,7 @@ private fun SearchAndControlPanel(
 
       HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
 
-      // 5-digit Train Number Input
+      // 5-digit Train Number Input + Favorite Star
       OutlinedTextField(
         value = trainNoInput,
         onValueChange = onTrainNoChanged,
@@ -688,9 +1078,23 @@ private fun SearchAndControlPanel(
           )
         },
         trailingIcon = {
-          if (trainNoInput.isNotEmpty()) {
-            IconButton(onClick = { onTrainNoChanged("") }) {
-              Icon(Icons.Filled.Clear, contentDescription = "Clear train number")
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            if (trainNoInput.length == 5) {
+              IconButton(
+                onClick = onToggleFavorite,
+                modifier = Modifier.testTag("favorite_train_button"),
+              ) {
+                Icon(
+                  imageVector = if (isCurrentTrainFavorite) Icons.Filled.Star else Icons.Filled.StarBorder,
+                  contentDescription = strings.favoriteToggleDesc,
+                  tint = if (isCurrentTrainFavorite) NtesOrange else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+              }
+            }
+            if (trainNoInput.isNotEmpty()) {
+              IconButton(onClick = { onTrainNoChanged("") }) {
+                Icon(Icons.Filled.Clear, contentDescription = "Clear train number")
+              }
             }
           }
         },
@@ -711,6 +1115,24 @@ private fun SearchAndControlPanel(
           .fillMaxWidth()
           .testTag("train_number_input"),
       )
+
+      // Favorite & Recent Trains Quick-Tap Chips
+      if (favoriteTrains.isNotEmpty()) {
+        QuickTrainChipsRow(
+          title = strings.favoritesSectionTitle,
+          entries = favoriteTrains,
+          isFavorite = true,
+          onChipClick = onQuickTrainClick,
+        )
+      }
+      if (recentTrains.isNotEmpty()) {
+        QuickTrainChipsRow(
+          title = strings.recentSectionTitle,
+          entries = recentTrains,
+          isFavorite = false,
+          onChipClick = onQuickTrainClick,
+        )
+      }
 
       // Action Buttons Row
       Row(
@@ -784,6 +1206,115 @@ private fun SearchAndControlPanel(
             fontWeight = FontWeight.Bold,
           )
         }
+      }
+    }
+  }
+}
+
+@Composable
+private fun QuickTrainChipsRow(
+  title: String,
+  entries: List<SavedTrainEntry>,
+  isFavorite: Boolean,
+  onChipClick: (SavedTrainEntry) -> Unit,
+) {
+  Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    Text(
+      text = title,
+      style = MaterialTheme.typography.labelSmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .horizontalScroll(rememberScrollState()),
+      horizontalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+      entries.forEach { entry ->
+        Surface(
+          onClick = { onChipClick(entry) },
+          shape = RoundedCornerShape(16.dp),
+          color = if (isFavorite) {
+            NtesOrange.copy(alpha = 0.14f)
+          } else {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f)
+          },
+          modifier = Modifier.testTag("quick_train_chip_${entry.trainNumber}"),
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(4.dp),
+          ) {
+            Icon(
+              imageVector = if (isFavorite) Icons.Filled.Star else Icons.Filled.History,
+              contentDescription = null,
+              tint = if (isFavorite) NtesOrange else CobaltPrimary,
+              modifier = Modifier.size(14.dp),
+            )
+            Text(
+              text = if (entry.trainName.isNotBlank()) {
+                "${entry.trainNumber} • ${entry.trainName}"
+              } else {
+                entry.trainNumber
+              },
+              fontFamily = JetBrainsMonoFontFamily,
+              fontSize = 11.sp,
+              fontWeight = FontWeight.Bold,
+              color = if (isFavorite) Color(0xFFB26500) else CobaltPrimary,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
+        }
+      }
+    }
+  }
+}
+
+@Composable
+private fun AlarmBannerBox(
+  alarm: StationAlarmState?,
+  alertMessage: String?,
+  strings: LocalizedStrings,
+  onDismiss: () -> Unit,
+) {
+  val isTriggered = alertMessage != null
+  val bgColor = if (isTriggered) StopCrimsonContainer else Color(0xFFFFF8E1)
+  val fgColor = if (isTriggered) StopCrimson else Color(0xFFB26500)
+  val text = alertMessage ?: alarm?.let { strings.alarmBannerTitle(it.stationName) } ?: return
+
+  Surface(
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("alarm_banner"),
+    shape = RoundedCornerShape(12.dp),
+    color = bgColor,
+  ) {
+    Row(
+      modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+      verticalAlignment = Alignment.CenterVertically,
+      horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+      Icon(
+        imageVector = Icons.Filled.NotificationsActive,
+        contentDescription = null,
+        tint = fgColor,
+        modifier = Modifier.size(20.dp),
+      )
+      Text(
+        text = text,
+        style = MaterialTheme.typography.bodySmall.copy(fontWeight = FontWeight.Bold),
+        color = fgColor,
+        modifier = Modifier.weight(1f),
+      )
+      TextButton(onClick = onDismiss) {
+        Text(
+          text = strings.dismissAlarmBtn,
+          color = fgColor,
+          fontWeight = FontWeight.Bold,
+          fontSize = 12.sp,
+        )
       }
     }
   }

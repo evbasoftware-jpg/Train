@@ -1,6 +1,7 @@
 package com.example.util
 
 import com.example.model.CurrentLocationDto
+import com.example.model.DelayStatus
 import com.example.model.GpsSample
 import com.example.model.LocatedTrain
 import com.example.model.MovementStats
@@ -95,6 +96,32 @@ object GeoMath {
     return sdf.format(arrivalDate)
   }
 
+  fun computeDelayStatus(scheduledTime: String, etaTime: String?): DelayStatus {
+    if (etaTime == null || scheduledTime == "--:--") return DelayStatus.Unknown
+    val schedMin = parseMinutesOfDay(scheduledTime) ?: return DelayStatus.Unknown
+    val etaMin = parseMinutesOfDay(etaTime) ?: return DelayStatus.Unknown
+
+    var diff = etaMin - schedMin
+    // Handle midnight wrap-around within +/-12 hours
+    if (diff > 720) diff -= 1440
+    if (diff < -720) diff += 1440
+
+    return when {
+      diff > 3 -> DelayStatus.Delayed(diff)
+      diff < -3 -> DelayStatus.Early(-diff)
+      else -> DelayStatus.OnTime
+    }
+  }
+
+  private fun parseMinutesOfDay(hhMm: String): Int? {
+    val parts = hhMm.trim().split(":")
+    if (parts.size != 2) return null
+    val h = parts[0].toIntOrNull() ?: return null
+    val m = parts[1].toIntOrNull() ?: return null
+    if (h !in 0..23 || m !in 0..59) return null
+    return h * 60 + m
+  }
+
   fun computeMovement(samples: List<GpsSample>): MovementStats {
     if (samples.size < 2) return MovementStats(0.0, 0.0)
     val a = samples[samples.size - 2]
@@ -138,7 +165,7 @@ object GeoMath {
     val relAngleRad = Math.toRadians(userBearing - trainBearing)
     val crossTrack = abs(d * sin(relAngleRad))
     val alongTrack = abs(d * cos(relAngleRad))
-    val isWithinBounds = d <= 0.2 // 200m
+    val isWithinBounds = d <= 0.2
     val recognizedInside = isMovingWithTrain || isWithinBounds
     val confidence = when {
       isMovingWithTrain -> 95

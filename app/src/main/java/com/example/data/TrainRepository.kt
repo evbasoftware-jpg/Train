@@ -6,6 +6,7 @@ import com.example.model.LiveTrainPayload
 import com.example.model.RouteStation
 import com.example.model.StationDbEntry
 import com.example.model.TrainBetweenItem
+import java.io.File
 import java.io.IOException
 import java.net.SocketTimeoutException
 import java.util.Locale
@@ -25,7 +26,7 @@ class ApiException(message: String) : Exception(message)
 
 class TimeoutApiException : Exception("TIMEOUT")
 
-class TrainRepository {
+class TrainRepository(private val cacheDir: File? = null) {
   companion object {
     const val API_URL =
       "https://script.google.com/macros/s/AKfycbxpHggaA7sNDXrwcyNid4Yy-Mfm3nLe8M0VGgplD4XHHc7Ul9LTWDJtpjj4C_4MFGopBQ/exec"
@@ -33,6 +34,8 @@ class TrainRepository {
       "https://cdn.jsdelivr.net/gh/datameet/railways/stations.json"
     const val TRAIN_CDN_BASE =
       "https://raw.githubusercontent.com/datameet/railways/master/trains/"
+    private const val STATION_CACHE_FILE = "stations_cache.json"
+    private const val STATION_CACHE_MAX_AGE_MS = 7L * 24 * 60 * 60 * 1000L
   }
 
   private val client = OkHttpClient.Builder()
@@ -45,32 +48,68 @@ class TrainRepository {
 
   private val textPlainJson = "text/plain;charset=utf-8".toMediaType()
 
-  suspend fun fetchStationsDb(): List<StationDbEntry> = withContext(Dispatchers.IO) {
-    try {
-      val req = Request.Builder().url(STATIONS_CDN_URL).get().build()
-      client.newCall(req).execute().use { resp ->
-        if (!resp.isSuccessful) return@withContext emptyList()
-        val body = resp.body?.string() ?: return@withContext emptyList()
-        val root = JSONObject(body)
-        val features = root.optJSONArray("features") ?: return@withContext emptyList()
-        val list = ArrayList<StationDbEntry>(features.length())
-        for (i in 0 until features.length()) {
-          val f = features.optJSONObject(i) ?: continue
-          val props = f.optJSONObject("properties") ?: continue
-          val code = props.optString("code", "").trim().uppercase(Locale.US)
-          val name = props.optString("name", "").trim()
-          val coords = f.optJSONObject("geometry")?.optJSONArray("coordinates")
-          val lon = coords?.optDoubleOrNull(0)
-          val lat = coords?.optDoubleOrNull(1)
-          if (code.isNotEmpty() || name.isNotEmpty()) {
-            list.add(StationDbEntry(name = name, code = code, lat = lat, lon = lon))
-          }
-        }
-        list
-      }
+  suspend fun loadCachedStationsDb(): List<StationDbEntry> = withContext(Dispatchers.IO) {
+    val file = cacheDir?.let { File(it, STATION_CACHE_FILE) } ?: return@withContext emptyList()
+    if (!file.exists()) return@withContext emptyList()
+    return@withContext try {
+      parseStationsGeoJson(file.readText())
     } catch (_: Exception) {
       emptyList()
     }
+  }
+
+  suspend fun fetchStationsDb(forceRefreshIfStale: Boolean = true): List<StationDbEntry> =
+    withContext(Dispatchers.IO) {
+      val file = cacheDir?.let { File(it, STATION_CACHE_FILE) }
+      if (file != null && file.exists() && forceRefreshIfStale) {
+        val age = System.currentTimeMillis() - file.lastModified()
+        if (age < STATION_CACHE_MAX_AGE_MS) {
+          val cached = try {
+            parseStationsGeoJson(file.readText())
+          } catch (_: Exception) {
+            emptyList()
+          }
+          if (cached.isNotEmpty()) return@withContext cached
+        }
+      }
+
+      try {
+        val req = Request.Builder().url(STATIONS_CDN_URL).get().build()
+        client.newCall(req).execute().use { resp ->
+          if (!resp.isSuccessful) return@withContext loadCachedStationsDb()
+          val body = resp.body?.string() ?: return@withContext loadCachedStationsDb()
+          val parsed = parseStationsGeoJson(body)
+          if (parsed.isNotEmpty() && file != null) {
+            try {
+              file.parentFile?.mkdirs()
+              file.writeText(body)
+            } catch (_: Exception) {
+            }
+          }
+          parsed.ifEmpty { loadCachedStationsDb() }
+        }
+      } catch (_: Exception) {
+        loadCachedStationsDb()
+      }
+    }
+
+  private fun parseStationsGeoJson(rawJson: String): List<StationDbEntry> {
+    val root = JSONObject(rawJson)
+    val features = root.optJSONArray("features") ?: return emptyList()
+    val list = ArrayList<StationDbEntry>(features.length())
+    for (i in 0 until features.length()) {
+      val f = features.optJSONObject(i) ?: continue
+      val props = f.optJSONObject("properties") ?: continue
+      val code = props.optString("code", "").trim().uppercase(Locale.US)
+      val name = props.optString("name", "").trim()
+      val coords = f.optJSONObject("geometry")?.optJSONArray("coordinates")
+      val lon = coords?.optDoubleOrNull(0)
+      val lat = coords?.optDoubleOrNull(1)
+      if (code.isNotEmpty() || name.isNotEmpty()) {
+        list.add(StationDbEntry(name = name, code = code, lat = lat, lon = lon))
+      }
+    }
+    return list
   }
 
   suspend fun fetchTrainsBetween(fromCode: String, toCode: String): List<TrainBetweenItem> =
@@ -129,7 +168,6 @@ class TrainRepository {
           ?: parseRouteArray(sched.optJSONObject("data")?.optJSONArray("route"))
           ?: parseRouteArray(sched.optJSONArray("stations"))
       } catch (_: Exception) {
-        // Ignore schedule fallback failure
       }
     }
 
@@ -202,7 +240,6 @@ class TrainRepository {
           .build()
         client.newCall(req).execute().close()
       } catch (_: Exception) {
-        // Non-fatal background crowd-GPS upload
       }
     }
 

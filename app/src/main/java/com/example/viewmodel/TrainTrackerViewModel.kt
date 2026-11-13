@@ -1,22 +1,31 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.LocationClient
 import com.example.data.LocationEvent
 import com.example.data.OsmTileLoader
+import com.example.data.TrackerPreferences
 import com.example.data.TrainRepository
 import com.example.model.AppLanguage
 import com.example.model.BannerType
-import com.example.model.GpsSample
+import com.example.model.FocusedMapStation
 import com.example.model.LocatedTrain
 import com.example.model.MapSizePreset
+import com.example.model.MovementStats
 import com.example.model.RouteStation
+import com.example.model.SavedRoutePair
+import com.example.model.SavedTrainEntry
+import com.example.model.StationAlarmState
 import com.example.model.StationDbEntry
 import com.example.model.StatusBanner
+import com.example.model.TrackerTab
 import com.example.model.TrackerUiState
 import com.example.model.stringsFor
+import com.example.service.TrainNotificationHelper
+import com.example.service.TrainTrackingService
 import com.example.util.GeoMath
 import java.util.Locale
 import kotlinx.coroutines.Job
@@ -33,11 +42,14 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
     private const val GPS_MS = 15_000L // 15 seconds
     private const val MAX_ACC = 200f // meters
     private const val MAX_API = 1_200_000L // 20 minutes
+    private const val ALARM_RADIUS_KM = 3.0
   }
 
-  private val repository = TrainRepository()
+  private val appContext = application.applicationContext
+  private val repository = TrainRepository(application.cacheDir)
+  private val preferences = TrackerPreferences(application.applicationContext)
   private val locationClient = LocationClient(application)
-  val tileLoader = OsmTileLoader()
+  val tileLoader = OsmTileLoader(application.cacheDir)
 
   private val _uiState = MutableStateFlow(TrackerUiState())
   val uiState: StateFlow<TrackerUiState> = _uiState.asStateFlow()
@@ -57,15 +69,48 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
   private var startToken = 0
 
   init {
+    TrainTrackingService.onStopRequestedFromNotification = {
+      stopTracking(showBanner = true)
+    }
+
     viewModelScope.launch {
-      val loaded = repository.fetchStationsDb()
-      stationDb = loaded
-      _uiState.update { state ->
-        state.copy(
-          stationDbLoaded = loaded.isNotEmpty(),
-          fromSuggestions = GeoMath.filterStationSuggestions(state.fromInput, loaded),
-          toSuggestions = GeoMath.filterStationSuggestions(state.toInput, loaded),
-        )
+      preferences.prefsFlow.collect { saved ->
+        _uiState.update { state ->
+          state.copy(
+            language = saved.language,
+            favoriteTrains = saved.favoriteTrains,
+            recentTrains = saved.recentTrains,
+            recentRoutes = saved.recentRoutes,
+            backgroundTrackingEnabled = saved.backgroundTrackingEnabled,
+          )
+        }
+      }
+    }
+
+    viewModelScope.launch {
+      // Load cached station DB immediately for instant offline search
+      val cached = repository.loadCachedStationsDb()
+      if (cached.isNotEmpty()) {
+        stationDb = cached
+        _uiState.update { state ->
+          state.copy(
+            stationDbLoaded = true,
+            fromSuggestions = GeoMath.filterStationSuggestions(state.fromInput, cached),
+            toSuggestions = GeoMath.filterStationSuggestions(state.toInput, cached),
+          )
+        }
+      }
+      // Refresh if stale or missing
+      val fresh = repository.fetchStationsDb(forceRefreshIfStale = true)
+      if (fresh.isNotEmpty()) {
+        stationDb = fresh
+        _uiState.update { state ->
+          state.copy(
+            stationDbLoaded = true,
+            fromSuggestions = GeoMath.filterStationSuggestions(state.fromInput, fresh),
+            toSuggestions = GeoMath.filterStationSuggestions(state.toInput, fresh),
+          )
+        }
       }
     }
   }
@@ -74,6 +119,13 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
 
   fun setLanguage(language: AppLanguage) {
     _uiState.update { it.copy(language = language) }
+    viewModelScope.launch {
+      preferences.saveLanguage(language)
+    }
+  }
+
+  fun setActiveTab(tab: TrackerTab) {
+    _uiState.update { it.copy(activeTab = tab) }
   }
 
   fun setLocationPermissionState(granted: Boolean) {
@@ -115,6 +167,53 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
     _uiState.update { it.copy(needsLocationPermissionPrompt = true) }
   }
 
+  fun onNotificationPermissionHandled() {
+    _uiState.update { it.copy(needsNotificationPermissionPrompt = false) }
+  }
+
+  fun setBackgroundTrackingEnabled(enabled: Boolean) {
+    _uiState.update { state ->
+      state.copy(
+        backgroundTrackingEnabled = enabled,
+        needsNotificationPermissionPrompt =
+          enabled && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU,
+      )
+    }
+    viewModelScope.launch {
+      preferences.saveBackgroundTracking(enabled)
+    }
+    if (enabled && _uiState.value.running) {
+      updateForegroundServiceNotification()
+    } else if (!enabled) {
+      TrainTrackingService.stop(appContext)
+    }
+  }
+
+  fun toggleFavoriteCurrentTrain() {
+    val num = _uiState.value.trainNoInput.trim()
+    if (num.length != 5) return
+    val name = _uiState.value.trainName ?: ""
+    viewModelScope.launch {
+      preferences.toggleFavoriteTrain(SavedTrainEntry(num, name))
+    }
+  }
+
+  fun onQuickTrainSelected(entry: SavedTrainEntry) {
+    onSelectTrainBetween(entry.trainNumber)
+  }
+
+  fun onRecentRouteSelected(pair: SavedRoutePair) {
+    _uiState.update {
+      it.copy(
+        fromInput = pair.fromInput,
+        toInput = pair.toInput,
+        fromSuggestions = emptyList(),
+        toSuggestions = emptyList(),
+      )
+    }
+    maybeSearchBetween(force = true)
+  }
+
   fun onFromInputChanged(value: String) {
     val suggestions = GeoMath.filterStationSuggestions(value, stationDb)
     _uiState.update { it.copy(fromInput = value, fromSuggestions = suggestions) }
@@ -137,12 +236,6 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
       }
     }
     maybeSearchBetween(force = true)
-  }
-
-  fun dismissSuggestions(isFrom: Boolean) {
-    _uiState.update { state ->
-      if (isFrom) state.copy(fromSuggestions = emptyList()) else state.copy(toSuggestions = emptyList())
-    }
   }
 
   fun swapStations() {
@@ -176,12 +269,18 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
     if (f.isEmpty() || t.isEmpty() || f == t) return
 
     lastBetweenPair = f to t
+    val fromLabel = state.fromInput.trim().ifBlank { f }
+    val toLabel = state.toInput.trim().ifBlank { t }
+
     betweenJob?.cancel()
     betweenJob = viewModelScope.launch {
       _uiState.update { it.copy(betweenLoading = true, betweenError = null) }
       try {
         delay(250)
         val trains = repository.fetchTrainsBetween(f, t)
+        if (trains.isNotEmpty()) {
+          preferences.addRecentRoute(SavedRoutePair(fromLabel, toLabel))
+        }
         val err = if (trains.isEmpty()) currentStrings().noTrainsFound(f, t) else null
         _uiState.update {
           it.copy(
@@ -244,8 +343,12 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
         rawSource = null,
         route = emptyList(),
         locatedTrain = null,
+        selectedStationIndex = null,
+        stationAlarm = null,
+        alarmAlertMessage = null,
+        focusedMapStation = null,
         gpsSamples = emptyList(),
-        movementStats = com.example.model.MovementStats(0.0, 0.0),
+        movementStats = MovementStats(0.0, 0.0),
         verification = null,
         lowAccuracyMeters = null,
         resultBanner = null,
@@ -253,10 +356,18 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
       )
     }
 
+    viewModelScope.launch {
+      preferences.addRecentTrain(SavedTrainEntry(trainNo, ""))
+    }
+
     if (_uiState.value.locationPermissionGranted) {
       startGpsCollection()
     } else {
       _uiState.update { it.copy(needsLocationPermissionPrompt = true) }
+    }
+
+    if (_uiState.value.backgroundTrackingEnabled) {
+      updateForegroundServiceNotification()
     }
 
     viewModelScope.launch {
@@ -283,6 +394,8 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
     stopTimerJob?.cancel()
     stopTimerJob = null
 
+    TrainTrackingService.stop(appContext)
+
     _uiState.update { state ->
       state.copy(
         running = false,
@@ -296,6 +409,102 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
           state.statusBanner
         },
       )
+    }
+  }
+
+  fun onStationNodeClicked(index: Int) {
+    _uiState.update { state ->
+      val nextIdx = if (state.selectedStationIndex == index) null else index
+      state.copy(selectedStationIndex = nextIdx)
+    }
+  }
+
+  fun focusStationOnMap(index: Int) {
+    val st = _uiState.value.route.getOrNull(index) ?: return
+    val lat = st.lat ?: return
+    val lon = st.lon ?: return
+    val name = st.stationName.ifBlank { st.stationCode }
+    _uiState.update { state ->
+      state.copy(
+        selectedStationIndex = index,
+        focusedMapStation = FocusedMapStation(
+          stationCode = st.stationCode,
+          stationName = name,
+          lat = lat,
+          lon = lon,
+          signal = (state.focusedMapStation?.signal ?: 0) + 1,
+        ),
+        activeTab = TrackerTab.MAP,
+      )
+    }
+  }
+
+  fun toggleStationAlarm(index: Int) {
+    val st = _uiState.value.route.getOrNull(index) ?: return
+    val lat = st.lat ?: return
+    val lon = st.lon ?: return
+    val stName = st.stationName.ifBlank { st.stationCode }
+    val currentAlarm = _uiState.value.stationAlarm
+
+    val clearing = currentAlarm != null &&
+      currentAlarm.stationCode.equals(st.stationCode, ignoreCase = true) &&
+      currentAlarm.stationName == stName
+
+    if (clearing) {
+      _uiState.update { it.copy(stationAlarm = null, alarmAlertMessage = null) }
+    } else {
+      val needsNotif = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+      _uiState.update {
+        it.copy(
+          stationAlarm = StationAlarmState(
+            stationCode = st.stationCode,
+            stationName = stName,
+            lat = lat,
+            lon = lon,
+            triggered = false,
+          ),
+          alarmAlertMessage = null,
+          needsNotificationPermissionPrompt = needsNotif,
+        )
+      }
+      checkStationAlarmProximity()
+    }
+  }
+
+  fun dismissStationAlarm() {
+    _uiState.update { it.copy(stationAlarm = null, alarmAlertMessage = null) }
+  }
+
+  private fun checkStationAlarmProximity() {
+    val state = _uiState.value
+    val alarm = state.stationAlarm ?: return
+    if (alarm.triggered) return
+    val train = state.locatedTrain
+    val user = state.gpsSamples.lastOrNull()
+
+    val trainDistKm = train?.let { GeoMath.haversineKm(it.lat, it.lon, alarm.lat, alarm.lon) }
+    val userDistKm = if (state.insideTrain && user != null) {
+      GeoMath.haversineKm(user.lat, user.lon, alarm.lat, alarm.lon)
+    } else {
+      null
+    }
+
+    val effectiveDist = listOfNotNull(trainDistKm, userDistKm).minOrNull() ?: return
+    if (effectiveDist <= ALARM_RADIUS_KM) {
+      val strings = currentStrings()
+      val trainNo = state.trainNoInput.trim()
+      val alertMsg = strings.alarmTriggeredMsg(trainNo, alarm.stationName)
+      TrainNotificationHelper.triggerStationAlarm(
+        context = appContext,
+        title = strings.appTitle,
+        message = alertMsg,
+      )
+      _uiState.update {
+        it.copy(
+          stationAlarm = alarm.copy(triggered = true),
+          alarmAlertMessage = alertMsg,
+        )
+      }
     }
   }
 
@@ -322,7 +531,6 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
         try {
           updateTrainLive(trainNo)
         } catch (_: Exception) {
-          // Silent retry on transient network drop
         }
       }
     }
@@ -344,6 +552,10 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
       fallbackStationLabel = currentStrings().unknownStation,
     )
 
+    if (!payload.trainName.isNullOrBlank()) {
+      preferences.addRecentTrain(SavedTrainEntry(trainNo, payload.trainName))
+    }
+
     _uiState.update { state ->
       val shouldAutoCenter = previousTrain == null
       val nextStatus = if (previousTrain != null && payload.source == "gps" && !state.insideTrain) {
@@ -362,6 +574,8 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
     }
 
     verifyAndSync()
+    checkStationAlarmProximity()
+    updateForegroundServiceNotification()
   }
 
   private fun startGpsCollection() {
@@ -386,6 +600,8 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
               )
             }
             verifyAndSync()
+            checkStationAlarmProximity()
+            updateForegroundServiceNotification()
           }
           LocationEvent.SlowSignalFallback -> {
             _uiState.update {
@@ -421,7 +637,6 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
       if (!wasInside) {
         stopTimerJob?.cancel()
         stopTimerJob = null
-        // Restart polling at GPS_MS cadence
         schedulePolling(state.trainNoInput.trim(), startToken)
       }
 
@@ -435,7 +650,6 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
         train
       }
 
-      // Throttled GPS publish (every 15 seconds)
       val now = System.currentTimeMillis()
       if (now - lastPublishTimeMillis >= GPS_MS) {
         lastPublishTimeMillis = now
@@ -471,6 +685,26 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
     }
   }
 
+  private fun updateForegroundServiceNotification() {
+    val state = _uiState.value
+    if (!state.running || !state.backgroundTrackingEnabled) return
+    val trainNo = state.trainNoInput.trim()
+    val name = state.trainName?.let { "$trainNo • $it" } ?: "🚆 $trainNo"
+    val loc = state.locatedTrain
+    val content = if (loc != null) {
+      val speed = if (state.insideTrain && state.movementStats.speedKmh > 0) {
+        state.movementStats.speedKmh
+      } else {
+        loc.speedKmh
+      }
+      val nextText = if (loc.next.isNotBlank()) " → ${loc.next}" else ""
+      "${loc.name}$nextText • ${String.format(Locale.US, "%.0f", speed)} km/h"
+    } else {
+      currentStrings().searchingTrainInfo
+    }
+    TrainTrackingService.startOrUpdate(appContext, name, content)
+  }
+
   fun setMapSizePreset(preset: MapSizePreset) {
     _uiState.update { it.copy(mapSizePreset = preset) }
   }
@@ -485,6 +719,7 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
 
   override fun onCleared() {
     super.onCleared()
+    TrainTrackingService.onStopRequestedFromNotification = null
     stopTracking(showBanner = false)
   }
 }

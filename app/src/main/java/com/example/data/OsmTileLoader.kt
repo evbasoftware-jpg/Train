@@ -4,6 +4,7 @@ import android.graphics.BitmapFactory
 import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import java.io.File
 import java.util.Collections
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
@@ -13,17 +14,25 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import okhttp3.Cache
 import okhttp3.OkHttpClient
 import okhttp3.Request
 
-class OsmTileLoader {
+class OsmTileLoader(cacheDir: File? = null) {
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
   private val client = OkHttpClient.Builder()
+    .apply {
+      if (cacheDir != null) {
+        val tileCacheDir = File(cacheDir, "osm_tiles")
+        tileCacheDir.mkdirs()
+        cache(Cache(tileCacheDir, 25L * 1024L * 1024L)) // 25 MB disk cache
+      }
+    }
     .connectTimeout(10, TimeUnit.SECONDS)
     .readTimeout(10, TimeUnit.SECONDS)
     .build()
 
-  private val cache = object : LruCache<String, ImageBitmap>(120) {}
+  private val cache = object : LruCache<String, ImageBitmap>(140) {}
   private val inFlight = Collections.synchronizedSet(mutableSetOf<String>())
 
   private val _tileRevision = MutableStateFlow(0)
@@ -58,7 +67,6 @@ class OsmTileLoader {
             }
           }
         } catch (_: Exception) {
-          // Tile fetch failed gracefully; canvas draws grid background
         } finally {
           inFlight.remove(key)
         }

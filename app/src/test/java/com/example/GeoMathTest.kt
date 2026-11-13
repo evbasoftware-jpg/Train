@@ -123,4 +123,28 @@ class GeoMathTest {
     assertNotNull(eta)
     assertTrue(Regex("""\d{2}:\d{2}""").matches(eta!!))
   }
+
+  @Test
+  fun computeDelayStatus_handlesOnTimeDelayedEarlyAndMidnightWrap() {
+    assertEquals(
+      com.example.model.DelayStatus.OnTime,
+      GeoMath.computeDelayStatus("10:30", "10:32"),
+    )
+    assertEquals(
+      com.example.model.DelayStatus.Delayed(20),
+      GeoMath.computeDelayStatus("10:30", "10:50"),
+    )
+    assertEquals(
+      com.example.model.DelayStatus.Early(10),
+      GeoMath.computeDelayStatus("10:30", "10:20"),
+    )
+    assertEquals(
+      com.example.model.DelayStatus.Delayed(15),
+      GeoMath.computeDelayStatus("23:55", "00:10"),
+    )
+    assertEquals(
+      com.example.model.DelayStatus.Unknown,
+      GeoMath.computeDelayStatus("--:--", "10:30"),
+    )
+  }
 }
