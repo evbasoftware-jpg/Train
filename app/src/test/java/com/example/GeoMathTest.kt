@@ -42,7 +42,7 @@ class GeoMathTest {
   }
 
   @Test
-  fun verification_detectsMovingInsideTrainAndStationaryBounds() {
+  fun verification_rejectsStationaryAndAcceptsMovingAlignedGps() {
     val train = LocatedTrain(
       lat = 22.5700,
       lon = 88.3600,
@@ -63,12 +63,13 @@ class GeoMathTest {
     )
     val movingMetrics = GeoMath.computeVerification(
       user = movingSample,
-      movement = MovementStats(speedKmh = 54.0, bearingDegrees = 15.0),
+      movement = MovementStats(speedKmh = 54.0, bearingDegrees = 15.0, netDisplacementKm = 0.08),
       train = train,
     )
     assertTrue(movingMetrics.recognizedInside)
     assertEquals(95, movingMetrics.confidencePercent)
 
+    // Stationary phone right next to the train MUST NOT track the train
     val stationaryNearSample = GpsSample(
       lat = 22.5705,
       lon = 88.3600,
@@ -79,11 +80,11 @@ class GeoMathTest {
     )
     val nearMetrics = GeoMath.computeVerification(
       user = stationaryNearSample,
-      movement = MovementStats(speedKmh = 0.0, bearingDegrees = 0.0),
+      movement = MovementStats(speedKmh = 0.0, bearingDegrees = 0.0, netDisplacementKm = 0.0),
       train = train,
     )
-    assertTrue(nearMetrics.recognizedInside)
-    assertEquals(85, nearMetrics.confidencePercent)
+    assertFalse(nearMetrics.recognizedInside)
+    assertEquals(20, nearMetrics.confidencePercent)
 
     val farSample = GpsSample(
       lat = 22.6200,
@@ -100,6 +101,31 @@ class GeoMathTest {
     )
     assertFalse(farMetrics.recognizedInside)
     assertEquals(20, farMetrics.confidencePercent)
+  }
+
+  @Test
+  fun stoppageDistances_computePassedAndRemainingCorrectly() {
+    val route = listOf(
+      RouteStation("HWH", "Howrah", 1, 22.000, 88.000, "10:00", "10:00", "10:05"),
+      RouteStation("BWN", "Barddhaman", 2, 22.100, 88.000, "10:20", "10:20", "10:22"),
+      RouteStation("RPH", "Rampurhat", 3, 22.200, 88.000, "10:45", "10:45", "10:47"),
+    )
+
+    // Mid-way between HWH (22.000) and BWN (22.100) — ~4.45 km past HWH, ~6.67 km before BWN
+    val midLat = 22.040
+    val progressedIdx = GeoMath.resolveProgressStationIndex(midLat, 88.000, route, 0)
+    assertEquals(0, progressedIdx)
+
+    val train = LocatedTrain(midLat, 88.000, "Howrah", "Barddhaman", 60.0, 0.0, progressedIdx)
+    val distances = GeoMath.computeStoppageDistances(train, route)
+    assertNotNull(distances.passedFromCurrentKm)
+    assertNotNull(distances.remainingToNextKm)
+    assertTrue(distances.passedFromCurrentKm!! in 4.0..5.0)
+    assertTrue(distances.remainingToNextKm!! in 6.0..7.2)
+
+    // Arriving within 250m of BWN advances active index to BWN
+    val arrivedIdx = GeoMath.resolveProgressStationIndex(22.099, 88.000, route, 0)
+    assertEquals(1, arrivedIdx)
   }
 
   @Test

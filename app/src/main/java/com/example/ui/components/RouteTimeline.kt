@@ -56,6 +56,7 @@ import com.example.model.LocalizedStrings
 import com.example.model.LocatedTrain
 import com.example.model.RouteStation
 import com.example.model.StationAlarmState
+import com.example.model.StoppageDistances
 import com.example.ui.theme.CobaltPrimary
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.NtesOrange
@@ -71,12 +72,14 @@ import java.util.Locale
 fun RouteTimelineCard(
   route: List<RouteStation>,
   locatedTrain: LocatedTrain?,
+  stoppageDistances: StoppageDistances,
   insideTrain: Boolean,
   userSpeedKmh: Double,
   running: Boolean,
   selectedStationIndex: Int?,
   stationAlarm: StationAlarmState?,
   strings: LocalizedStrings,
+  localizeName: (String) -> String = { it },
   onStationClick: (Int) -> Unit,
   onFocusStationOnMap: (Int) -> Unit,
   onToggleStationAlarm: (Int) -> Unit,
@@ -139,18 +142,21 @@ fun RouteTimelineCard(
         RouteTrackStrip(
           route = route,
           locatedTrain = locatedTrain,
+          stoppageDistances = stoppageDistances,
           insideTrain = insideTrain,
           userSpeedKmh = userSpeedKmh,
           selectedStationIndex = selectedStationIndex,
           stationAlarm = stationAlarm,
           strings = strings,
+          localizeName = localizeName,
           onStationClick = onStationClick,
         )
 
         val selectedStation = selectedStationIndex?.let { route.getOrNull(it) }
         AnimatedVisibility(visible = selectedStation != null && selectedStationIndex != null) {
           if (selectedStation != null && selectedStationIndex != null) {
-            val stName = selectedStation.stationName.ifBlank { selectedStation.stationCode }
+            val rawStName = selectedStation.stationName.ifBlank { selectedStation.stationCode }
+            val stName = localizeName(rawStName)
             val hasCoords = selectedStation.lat != null && selectedStation.lon != null
             val distFromTrain = if (locatedTrain != null && hasCoords) {
               GeoMath.haversineKm(
@@ -164,7 +170,7 @@ fun RouteTimelineCard(
             }
             val isAlarmSet = stationAlarm != null &&
               stationAlarm.stationCode.equals(selectedStation.stationCode, ignoreCase = true) &&
-              stationAlarm.stationName == stName
+              stationAlarm.stationName == rawStName
 
             Spacer(modifier = Modifier.height(10.dp))
             Surface(
@@ -274,21 +280,24 @@ fun RouteTimelineCard(
 private fun RouteTrackStrip(
   route: List<RouteStation>,
   locatedTrain: LocatedTrain?,
+  stoppageDistances: StoppageDistances,
   insideTrain: Boolean,
   userSpeedKmh: Double,
   selectedStationIndex: Int?,
   stationAlarm: StationAlarmState?,
   strings: LocalizedStrings,
+  localizeName: (String) -> String,
   onStationClick: (Int) -> Unit,
 ) {
   val listState = rememberLazyListState()
   val activeIdx = if (locatedTrain != null) {
-    GeoMath.findNearestRouteStationIndex(
-      locatedTrain.lat,
-      locatedTrain.lon,
-      route,
-      locatedTrain.idx.coerceIn(0, route.lastIndex),
-    )
+    locatedTrain.idx.takeIf { it in route.indices }
+      ?: GeoMath.findNearestRouteStationIndex(
+        locatedTrain.lat,
+        locatedTrain.lon,
+        route,
+        locatedTrain.idx.coerceIn(0, route.lastIndex),
+      )
   } else {
     0
   }
@@ -327,11 +336,13 @@ private fun RouteTrackStrip(
     ) { index, station ->
       val isPassed = locatedTrain != null && index < activeIdx
       val isActive = locatedTrain != null && index == activeIdx
+      val isNext = locatedTrain != null && index == activeIdx + 1
       val isSelected = selectedStationIndex == index
-      val stName = station.stationName.ifBlank { station.stationCode }
+      val rawStName = station.stationName.ifBlank { station.stationCode }
+      val stName = localizeName(rawStName)
       val hasAlarm = stationAlarm != null &&
         stationAlarm.stationCode.equals(station.stationCode, ignoreCase = true) &&
-        stationAlarm.stationName == stName
+        stationAlarm.stationName == rawStName
 
       val dotColor = when {
         hasAlarm -> NtesOrange
@@ -605,6 +616,38 @@ private fun RouteTrackStrip(
               }
             }
             DelayStatus.Unknown -> {}
+          }
+
+          if (isActive && stoppageDistances.passedFromCurrentKm != null) {
+            Spacer(modifier = Modifier.height(3.dp))
+            Surface(
+              shape = RoundedCornerShape(6.dp),
+              color = NtesOrange.copy(alpha = 0.14f),
+            ) {
+              Text(
+                text = strings.formatPassedDistance(stoppageDistances.passedFromCurrentKm),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = NtesOrange,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+              )
+            }
+          } else if (isNext && stoppageDistances.remainingToNextKm != null) {
+            Spacer(modifier = Modifier.height(3.dp))
+            Surface(
+              shape = RoundedCornerShape(6.dp),
+              color = CobaltPrimary.copy(alpha = 0.12f),
+            ) {
+              Text(
+                text = strings.formatDistance(stoppageDistances.remainingToNextKm),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = CobaltPrimary,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+              )
+            }
           }
         }
       }

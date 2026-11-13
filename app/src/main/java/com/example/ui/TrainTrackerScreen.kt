@@ -252,6 +252,7 @@ fun TrainTrackerScreen(
               running = state.running,
               isWideLayout = isWideLayout,
               strings = strings,
+              localizeName = state::localizeName,
               onFromChanged = viewModel::onFromInputChanged,
               onToChanged = viewModel::onToInputChanged,
               onStationSelected = { isFrom, entry ->
@@ -296,6 +297,7 @@ fun TrainTrackerScreen(
                 alarm = state.stationAlarm,
                 alertMessage = state.alarmAlertMessage,
                 strings = strings,
+                localizeName = state::localizeName,
                 onDismiss = viewModel::dismissStationAlarm,
               )
             }
@@ -318,12 +320,14 @@ fun TrainTrackerScreen(
             RouteTimelineCard(
               route = state.route,
               locatedTrain = state.locatedTrain,
+              stoppageDistances = state.stoppageDistances,
               insideTrain = state.insideTrain,
               userSpeedKmh = state.movementStats.speedKmh,
               running = state.running,
               selectedStationIndex = state.selectedStationIndex,
               stationAlarm = state.stationAlarm,
               strings = strings,
+              localizeName = state::localizeName,
               onStationClick = viewModel::onStationNodeClicked,
               onFocusStationOnMap = { idx ->
                 viewModel.focusStationOnMap(idx)
@@ -339,10 +343,12 @@ fun TrainTrackerScreen(
               trainNo = state.trainNoInput,
               trainName = state.trainName,
               locatedTrain = state.locatedTrain,
+              stoppageDistances = state.stoppageDistances,
               rawSource = state.rawSource,
               insideTrain = state.insideTrain,
               movementStats = state.movementStats,
               strings = strings,
+              localizeName = state::localizeName,
             )
 
             // Live Map Section (OpenStreetMap)
@@ -370,6 +376,7 @@ fun TrainTrackerScreen(
                 isFullscreen = state.mapFullscreen,
                 recenterSignal = state.recenterSignal,
                 strings = strings,
+                localizeName = state::localizeName,
                 showSizePresets = true,
                 fillAvailableHeight = false,
                 onSizePresetSelected = viewModel::setMapSizePreset,
@@ -398,6 +405,8 @@ fun TrainTrackerScreen(
       currentCode = state.languageCode,
       searchHint = strings.searchLanguageHint,
       title = strings.languageLabel,
+      closeDesc = strings.closeLabel,
+      clearDesc = strings.clearLabel,
       onSelect = { code ->
         languageDialogOpen = false
         viewModel.setLanguage(code)
@@ -527,6 +536,8 @@ private fun LanguagePickerDialog(
   currentCode: String,
   searchHint: String,
   title: String,
+  closeDesc: String,
+  clearDesc: String,
   onSelect: (String) -> Unit,
   onDismiss: () -> Unit,
 ) {
@@ -575,7 +586,7 @@ private fun LanguagePickerDialog(
             )
           }
           IconButton(onClick = onDismiss) {
-            Icon(Icons.Filled.Close, contentDescription = "Close")
+            Icon(Icons.Filled.Close, contentDescription = closeDesc)
           }
         }
 
@@ -589,7 +600,7 @@ private fun LanguagePickerDialog(
           trailingIcon = {
             if (query.isNotEmpty()) {
               IconButton(onClick = { query = "" }) {
-                Icon(Icons.Filled.Clear, contentDescription = "Clear")
+                Icon(Icons.Filled.Clear, contentDescription = clearDesc)
               }
             }
           },
@@ -684,6 +695,7 @@ private fun SearchAndControlPanel(
   running: Boolean,
   isWideLayout: Boolean,
   strings: LocalizedStrings,
+  localizeName: (String) -> String,
   onFromChanged: (String) -> Unit,
   onToChanged: (String) -> Unit,
   onStationSelected: (Boolean, StationDbEntry) -> Unit,
@@ -716,9 +728,11 @@ private fun SearchAndControlPanel(
           StationInputWithSuggestions(
             label = strings.fromStationLabel,
             placeholder = strings.stationPlaceholder,
+            clearLabel = strings.clearLabel,
             value = fromInput,
             resolvedStation = fromResolvedStation,
             suggestions = fromSuggestions,
+            localizeName = localizeName,
             onValueChange = onFromChanged,
             onSuggestionClick = { onStationSelected(true, it) },
             testTag = "from_station_input",
@@ -740,9 +754,11 @@ private fun SearchAndControlPanel(
           StationInputWithSuggestions(
             label = strings.toStationLabel,
             placeholder = strings.stationPlaceholder,
+            clearLabel = strings.clearLabel,
             value = toInput,
             resolvedStation = toResolvedStation,
             suggestions = toSuggestions,
+            localizeName = localizeName,
             onValueChange = onToChanged,
             onSuggestionClick = { onStationSelected(false, it) },
             testTag = "to_station_input",
@@ -753,9 +769,11 @@ private fun SearchAndControlPanel(
         StationInputWithSuggestions(
           label = strings.fromStationLabel,
           placeholder = strings.stationPlaceholder,
+          clearLabel = strings.clearLabel,
           value = fromInput,
           resolvedStation = fromResolvedStation,
           suggestions = fromSuggestions,
+          localizeName = localizeName,
           onValueChange = onFromChanged,
           onSuggestionClick = { onStationSelected(true, it) },
           testTag = "from_station_input",
@@ -787,9 +805,11 @@ private fun SearchAndControlPanel(
         StationInputWithSuggestions(
           label = strings.toStationLabel,
           placeholder = strings.stationPlaceholder,
+          clearLabel = strings.clearLabel,
           value = toInput,
           resolvedStation = toResolvedStation,
           suggestions = toSuggestions,
+          localizeName = localizeName,
           onValueChange = onToChanged,
           onSuggestionClick = { onStationSelected(false, it) },
           testTag = "to_station_input",
@@ -885,13 +905,13 @@ private fun SearchAndControlPanel(
             ) {
               Column(modifier = Modifier.padding(10.dp)) {
                 Text(
-                  text = "🚆 ${item.trainNumber} — ${item.trainName}",
+                  text = "🚆 ${item.trainNumber} — ${localizeName(item.trainName)}",
                   style = MaterialTheme.typography.titleSmall,
                   color = MaterialTheme.colorScheme.onSurface,
                 )
                 Spacer(modifier = Modifier.height(2.dp))
                 Text(
-                  text = "${item.departure} → ${item.arrival} • ${String.format(Locale.US, "%.0f", safeDist)} km",
+                  text = "${item.departure} → ${item.arrival} • ${String.format(Locale.US, "%.0f", safeDist)} ${strings.kmUnit}",
                   fontFamily = JetBrainsMonoFontFamily,
                   fontSize = 12.sp,
                   color = CobaltPrimary,
@@ -938,7 +958,7 @@ private fun SearchAndControlPanel(
             }
             if (trainNoInput.isNotEmpty()) {
               IconButton(onClick = { onTrainNoChanged("") }) {
-                Icon(Icons.Filled.Clear, contentDescription = "Clear train number")
+                Icon(Icons.Filled.Clear, contentDescription = strings.clearLabel)
               }
             }
           }
@@ -967,6 +987,7 @@ private fun SearchAndControlPanel(
           title = strings.favoritesSectionTitle,
           entries = favoriteTrains,
           isFavorite = true,
+          localizeName = localizeName,
           onChipClick = onQuickTrainClick,
         )
       }
@@ -975,6 +996,7 @@ private fun SearchAndControlPanel(
           title = strings.recentSectionTitle,
           entries = recentTrains,
           isFavorite = false,
+          localizeName = localizeName,
           onChipClick = onQuickTrainClick,
         )
       }
@@ -1061,6 +1083,7 @@ private fun QuickTrainChipsRow(
   title: String,
   entries: List<SavedTrainEntry>,
   isFavorite: Boolean,
+  localizeName: (String) -> String,
   onChipClick: (SavedTrainEntry) -> Unit,
 ) {
   Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -1099,7 +1122,7 @@ private fun QuickTrainChipsRow(
             )
             Text(
               text = if (entry.trainName.isNotBlank()) {
-                "${entry.trainNumber} • ${entry.trainName}"
+                "${entry.trainNumber} • ${localizeName(entry.trainName)}"
               } else {
                 entry.trainNumber
               },
@@ -1122,12 +1145,13 @@ private fun AlarmBannerBox(
   alarm: StationAlarmState?,
   alertMessage: String?,
   strings: LocalizedStrings,
+  localizeName: (String) -> String,
   onDismiss: () -> Unit,
 ) {
   val isTriggered = alertMessage != null
   val bgColor = if (isTriggered) StopCrimsonContainer else Color(0xFFFFF8E1)
   val fgColor = if (isTriggered) StopCrimson else Color(0xFFB26500)
-  val text = alertMessage ?: alarm?.let { strings.alarmBannerTitle(it.stationName) } ?: return
+  val text = alertMessage ?: alarm?.let { strings.alarmBannerTitle(localizeName(it.stationName)) } ?: return
 
   Surface(
     modifier = Modifier
@@ -1169,9 +1193,11 @@ private fun AlarmBannerBox(
 private fun StationInputWithSuggestions(
   label: String,
   placeholder: String,
+  clearLabel: String,
   value: String,
   resolvedStation: StationDbEntry?,
   suggestions: List<StationDbEntry>,
+  localizeName: (String) -> String,
   onValueChange: (String) -> Unit,
   onSuggestionClick: (StationDbEntry) -> Unit,
   testTag: String,
@@ -1187,7 +1213,7 @@ private fun StationInputWithSuggestions(
       trailingIcon = {
         if (value.isNotEmpty()) {
           IconButton(onClick = { onValueChange("") }) {
-            Icon(Icons.Filled.Clear, contentDescription = "Clear $label")
+            Icon(Icons.Filled.Clear, contentDescription = clearLabel)
           }
         }
       },
@@ -1205,7 +1231,7 @@ private fun StationInputWithSuggestions(
         modifier = Modifier.padding(top = 4.dp),
       ) {
         Text(
-          text = "🚉 ${resolvedStation.name} (${resolvedStation.code})",
+          text = "🚉 ${localizeName(resolvedStation.name)} (${resolvedStation.code})",
           fontSize = 12.sp,
           fontWeight = FontWeight.Bold,
           color = CobaltPrimary,
@@ -1241,7 +1267,7 @@ private fun StationInputWithSuggestions(
               verticalAlignment = Alignment.CenterVertically,
             ) {
               Text(
-                text = entry.name,
+                text = localizeName(entry.name),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),

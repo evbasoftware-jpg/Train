@@ -18,6 +18,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -32,9 +33,11 @@ import androidx.compose.ui.unit.sp
 import com.example.model.LocalizedStrings
 import com.example.model.LocatedTrain
 import com.example.model.MovementStats
+import com.example.model.StoppageDistances
 import com.example.model.VerificationMetrics
 import com.example.ui.theme.CobaltPrimary
 import com.example.ui.theme.JetBrainsMonoFontFamily
+import com.example.ui.theme.NtesOrange
 import java.util.Locale
 import kotlin.math.roundToInt
 
@@ -43,10 +46,12 @@ fun TrainLiveCard(
   trainNo: String,
   trainName: String?,
   locatedTrain: LocatedTrain?,
+  stoppageDistances: StoppageDistances,
   rawSource: String?,
   insideTrain: Boolean,
   movementStats: MovementStats,
   strings: LocalizedStrings,
+  localizeName: (String) -> String = { it },
   modifier: Modifier = Modifier,
 ) {
   TelemetryCardShell(
@@ -61,7 +66,19 @@ fun TrainLiveCard(
         color = MaterialTheme.colorScheme.onSurfaceVariant,
       )
     } else {
-      val displayName = if (!trainName.isNullOrBlank()) "$trainNo - $trainName" else trainNo
+      val localizedTrainName = trainName?.takeIf { it.isNotBlank() }?.let(localizeName)
+      val displayName = if (!localizedTrainName.isNullOrBlank()) {
+        "$trainNo - $localizedTrainName"
+      } else {
+        trainNo
+      }
+      val currentStationName = locatedTrain.name.takeIf { it.isNotBlank() }
+        ?.let(localizeName)
+        ?: strings.unknownStation
+      val nextStationName = locatedTrain.next.takeIf { it.isNotBlank() }
+        ?.let(localizeName)
+        ?: "—"
+
       val currentSpeed = if (insideTrain) {
         if (movementStats.speedKmh > 0.0) movementStats.speedKmh else locatedTrain.speedKmh
       } else {
@@ -73,17 +90,71 @@ fun TrainLiveCard(
         else -> strings.sourceApiKey
       }
 
-      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+      Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
         KeyValueRow(strings.labelTrain, displayName)
-        KeyValueRow(strings.labelCurrent, locatedTrain.name.ifBlank { strings.unknownStation })
-        KeyValueRow(strings.labelNext, locatedTrain.next.ifBlank { "—" })
+
+        KeyValueRow(strings.labelCurrent, currentStationName)
+        stoppageDistances.passedFromCurrentKm?.let { passedKm ->
+          DistanceSubBadge(
+            label = strings.labelPassedCurrent,
+            badgeText = strings.formatPassedDistance(passedKm),
+            highlightColor = NtesOrange,
+            testTag = "passed_current_distance_badge",
+          )
+        }
+
+        KeyValueRow(strings.labelNext, nextStationName)
+        stoppageDistances.remainingToNextKm?.let { remKm ->
+          DistanceSubBadge(
+            label = strings.labelRemainingNext,
+            badgeText = strings.formatDistance(remKm),
+            highlightColor = CobaltPrimary,
+            testTag = "remaining_next_distance_badge",
+          )
+        }
+
         KeyValueRow(strings.labelSource, sourceLabel)
         KeyValueRow(
           strings.labelSpeed,
-          "${String.format(Locale.US, "%.1f", currentSpeed)} km/h",
+          "${String.format(Locale.US, "%.1f", currentSpeed)} ${strings.kmPerHourUnit}",
           mono = true,
         )
       }
+    }
+  }
+}
+
+@Composable
+private fun DistanceSubBadge(
+  label: String,
+  badgeText: String,
+  highlightColor: androidx.compose.ui.graphics.Color,
+  testTag: String,
+) {
+  Row(
+    modifier = Modifier
+      .fillMaxWidth()
+      .padding(bottom = 2.dp)
+      .testTag(testTag),
+    horizontalArrangement = Arrangement.SpaceBetween,
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    Text(
+      text = label,
+      style = MaterialTheme.typography.labelSmall,
+      color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Surface(
+      shape = RoundedCornerShape(6.dp),
+      color = highlightColor.copy(alpha = 0.12f),
+    ) {
+      Text(
+        text = badgeText,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Bold,
+        color = highlightColor,
+        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+      )
     }
   }
 }
@@ -118,27 +189,27 @@ fun MovementDistanceCard(
       Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         KeyValueRow(
           strings.labelTrainDistance,
-          "${String.format(Locale.US, "%.1f", distKm * 1000.0)} m (${String.format(Locale.US, "%.2f", distKm)} km)",
+          strings.formatDistance(distKm),
           mono = true,
         )
         KeyValueRow(
           strings.labelTrackOffset,
-          "${String.format(Locale.US, "%.1f", crossKm * 1000.0)} m",
+          strings.formatDistance(crossKm),
           mono = true,
         )
         KeyValueRow(
           strings.labelLengthOffset,
-          "${String.format(Locale.US, "%.1f", alongKm * 1000.0)} m",
+          strings.formatDistance(alongKm),
           mono = true,
         )
         KeyValueRow(
           strings.labelUserSpeed,
-          "${String.format(Locale.US, "%.1f", userSpd)} km/h",
+          "${String.format(Locale.US, "%.1f", userSpd)} ${strings.kmPerHourUnit}",
           mono = true,
         )
         KeyValueRow(
           strings.labelTrainSpeed,
-          "${String.format(Locale.US, "%.1f", trainSpd)} km/h",
+          "${String.format(Locale.US, "%.1f", trainSpd)} ${strings.kmPerHourUnit}",
           mono = true,
         )
         KeyValueRow(

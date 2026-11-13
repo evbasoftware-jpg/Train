@@ -12,23 +12,44 @@ class VoiceAnnouncer(context: Context) {
   private var tts: TextToSpeech? = null
   private var isReady = false
   private var currentLangCode = "bn"
+  private var configuredForLang: String? = null
   private var pendingText: String? = null
 
   private fun ensureInitialized() {
     if (tts != null) return
     try {
-      tts = TextToSpeech(appContext) { status ->
+      // Prefer Google Speech Services engine for natural Indian/global female voices
+      val listener = TextToSpeech.OnInitListener { status ->
         if (status == TextToSpeech.SUCCESS) {
           isReady = true
-          configureVoice(currentLangCode)
+          configuredForLang = null
+          configureVoiceIfNeeded(currentLangCode)
           pendingText?.let { text ->
             pendingText = null
             speakNow(text)
           }
         } else {
-          isReady = false
+          // Retry once with system default TTS engine if Google engine wasn't available
+          if (tts != null) {
+            try {
+              tts?.shutdown()
+            } catch (_: Throwable) {
+            }
+            tts = TextToSpeech(appContext) { fallbackStatus ->
+              isReady = (fallbackStatus == TextToSpeech.SUCCESS)
+              if (isReady) {
+                configuredForLang = null
+                configureVoiceIfNeeded(currentLangCode)
+                pendingText?.let { text ->
+                  pendingText = null
+                  speakNow(text)
+                }
+              }
+            }
+          }
         }
       }
+      tts = TextToSpeech(appContext, listener, "com.google.android.tts")
     } catch (_: Throwable) {
       isReady = false
     }
@@ -36,14 +57,29 @@ class VoiceAnnouncer(context: Context) {
 
   fun announce(text: String, languageCode: String) {
     if (text.isBlank()) return
-    currentLangCode = languageCode.ifBlank { "bn" }
+    val nextLang = languageCode.ifBlank { "bn" }
+    val langChanged = nextLang != currentLangCode
+    currentLangCode = nextLang
     ensureInitialized()
     if (!isReady) {
       pendingText = text
       return
     }
-    configureVoice(currentLangCode)
+    if (langChanged || configuredForLang != currentLangCode) {
+      configureVoiceIfNeeded(currentLangCode)
+    }
     speakNow(text)
+  }
+
+  fun setLanguage(languageCode: String) {
+    val clean = languageCode.ifBlank { "bn" }
+    if (clean != currentLangCode) {
+      currentLangCode = clean
+      configuredForLang = null
+      if (isReady) {
+        configureVoiceIfNeeded(clean)
+      }
+    }
   }
 
   fun stop() {
@@ -54,8 +90,9 @@ class VoiceAnnouncer(context: Context) {
     }
   }
 
-  private fun configureVoice(langCode: String) {
+  private fun configureVoiceIfNeeded(langCode: String) {
     val engine = tts ?: return
+    if (configuredForLang == langCode) return
     try {
       val preferredLocale = when {
         langCode.equals("bn", ignoreCase = true) -> Locale("bn", "IN")
@@ -82,9 +119,9 @@ class VoiceAnnouncer(context: Context) {
         }
       }
 
-      // Soft female speech cadence
-      engine.setPitch(1.12f)
-      engine.setSpeechRate(0.88f)
+      // Soft, pleasant, slightly elevated female cadence
+      engine.setPitch(1.18f)
+      engine.setSpeechRate(0.84f)
       engine.setAudioAttributes(
         AudioAttributes.Builder()
           .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
@@ -95,36 +132,45 @@ class VoiceAnnouncer(context: Context) {
       val targetLang = chosenLocale?.language ?: preferredLocale.language
       val availableVoices = engine.voices
       if (!availableVoices.isNullOrEmpty()) {
-        val femaleVoice = selectSoftFemaleVoice(availableVoices, targetLang)
+        val femaleVoice = selectSweetFemaleVoice(availableVoices, targetLang)
         if (femaleVoice != null) {
           engine.voice = femaleVoice
         }
       }
+      configuredForLang = langCode
     } catch (_: Throwable) {
     }
   }
 
-  private fun selectSoftFemaleVoice(voices: Set<Voice>, targetLanguage: String): Voice? {
+  private fun selectSweetFemaleVoice(voices: Set<Voice>, targetLanguage: String): Voice? {
     val langMatches = voices.filter {
       it.locale.language.equals(targetLanguage, ignoreCase = true)
     }
     if (langMatches.isEmpty()) return null
 
-    // Common Google/Android TTS female voice patterns; avoid male voice identifiers
+    // Google TTS voice codes: bnf / ban / bnd = Bengali Female; hia / hic / hie / cfn = Hindi Female;
+    // end / enc / ena / sfg / tpf / iog / gba = English Female.
+    // bnm / hid / ene / enm / iob / iom / gbd = Male voices to avoid.
     val femaleHints = listOf(
-      "female", "f00", "-f-", "bnf", "bnd", "bnx", "hie", "hia",
-      "end", "enc", "sfg", "tpf", "iog", "iol", "sfb", "woman",
+      "female", "woman", "girl", "f00", "f01", "f02", "-f-", "_f_",
+      "bnf", "bnd", "ban", "hia", "hic", "hie", "cfn",
+      "end", "enc", "ena", "sfg", "tpf", "iog", "tpd", "gba", "gbb",
+      "wavenet-a", "wavenet-c", "wavenet-e", "neural2-a", "neural2-c", "standard-a", "standard-c",
     )
-    val maleHints = listOf("male", "-m-", "bng", "hif", "iom", "iob", "man")
+    val maleHints = listOf(
+      "male", "man", "boy", "m00", "m01", "-m-", "_m_",
+      "bnm", "hid", "ene", "enm", "iob", "iom", "gbd",
+      "wavenet-b", "wavenet-d", "neural2-d", "standard-b", "standard-d",
+    )
 
     fun score(v: Voice): Int {
       val name = v.name.lowercase(Locale.US)
       val feats = v.features?.joinToString(" ")?.lowercase(Locale.US) ?: ""
       var s = 0
-      if (femaleHints.any { name.contains(it) || feats.contains(it) }) s += 50
-      if (maleHints.any { name.contains(it) || feats.contains(it) }) s -= 60
-      if (!v.isNetworkConnectionRequired) s += 10
-      if (v.quality >= Voice.QUALITY_HIGH) s += 5
+      if (femaleHints.any { name.contains(it) || feats.contains(it) }) s += 100
+      if (maleHints.any { name.contains(it) || feats.contains(it) }) s -= 120
+      if (!v.isNetworkConnectionRequired) s += 15
+      if (v.quality >= Voice.QUALITY_HIGH) s += 10
       return s
     }
 
@@ -135,7 +181,7 @@ class VoiceAnnouncer(context: Context) {
     val engine = tts ?: return
     try {
       val params = Bundle().apply {
-        putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.85f)
+        putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.88f)
       }
       engine.speak(text, TextToSpeech.QUEUE_FLUSH, params, "train_stop_${System.currentTimeMillis()}")
     } catch (_: Throwable) {

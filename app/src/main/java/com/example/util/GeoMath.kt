@@ -7,6 +7,7 @@ import com.example.model.LocatedTrain
 import com.example.model.MovementStats
 import com.example.model.RouteStation
 import com.example.model.StationDbEntry
+import com.example.model.StoppageDistances
 import com.example.model.VerificationMetrics
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -161,15 +162,24 @@ object GeoMath {
   }
 
   fun computeMovement(samples: List<GpsSample>): MovementStats {
-    if (samples.size < 2) return MovementStats(0.0, 0.0)
+    if (samples.size < 2) {
+      val single = samples.lastOrNull()
+      val hardwareSpeed = single?.speedMetersPerSec?.takeIf { it >= 0f }?.let { it * 3.6 } ?: 0.0
+      val hardwareBearing = single?.headingDegrees?.takeIf { it >= 0f }?.toDouble() ?: 0.0
+      return MovementStats(
+        speedKmh = if (hardwareSpeed.isFinite()) hardwareSpeed else 0.0,
+        bearingDegrees = if (hardwareBearing.isFinite()) hardwareBearing else 0.0,
+        netDisplacementKm = 0.0,
+      )
+    }
     val a = samples[samples.size - 2]
     val b = samples.last()
+    val windowStart = samples[(samples.size - 4).coerceAtLeast(0)]
+    val netDispKm = haversineKm(windowStart.lat, windowStart.lon, b.lat, b.lon)
+    val stepDispKm = haversineKm(a.lat, a.lon, b.lat, b.lon)
     val dtHours = (b.timeMillis - a.timeMillis) / 3_600_000.0
-    val computedSpeed = if (dtHours > 0.0) {
-      haversineKm(a.lat, a.lon, b.lat, b.lon) / dtHours
-    } else {
-      0.0
-    }
+    val computedSpeed = if (dtHours > 0.0) stepDispKm / dtHours else 0.0
+
     val speedKmh = if (b.speedMetersPerSec != null && b.speedMetersPerSec >= 0f) {
       b.speedMetersPerSec * 3.6
     } else {
@@ -177,12 +187,15 @@ object GeoMath {
     }
     val bearing = if (b.headingDegrees != null && b.headingDegrees >= 0f) {
       b.headingDegrees.toDouble()
-    } else {
+    } else if (stepDispKm >= 0.01) {
       bearingDegrees(a.lat, a.lon, b.lat, b.lon)
+    } else {
+      bearingDegrees(windowStart.lat, windowStart.lon, b.lat, b.lon)
     }
     return MovementStats(
       speedKmh = if (speedKmh.isFinite()) speedKmh else 0.0,
       bearingDegrees = if (bearing.isFinite()) bearing else 0.0,
+      netDisplacementKm = if (netDispKm.isFinite()) netDispKm else 0.0,
     )
   }
 
@@ -198,16 +211,20 @@ object GeoMath {
     var angleDiff = abs(userHeading - trainBearing)
     if (angleDiff > 180.0) angleDiff = 360.0 - angleDiff
 
-    val isMovingWithTrain = (movement.speedKmh >= 8.0) && (angleDiff <= 55.0)
+    // Stationary phone GPS MUST NOT track the train. Require genuine moving velocity,
+    // real displacement (or Doppler speed fix >= 2.3 m/s), heading alignment, and path match.
+    val hasMotionSignal = movement.netDisplacementKm >= 0.025 || (user.speedMetersPerSec ?: 0f) >= 2.3f
+    val isMovingWithTrain = (movement.speedKmh >= 8.0) && hasMotionSignal && (angleDiff <= 55.0)
     val userBearing = bearingDegrees(train.lat, train.lon, user.lat, user.lon)
     val relAngleRad = Math.toRadians(userBearing - trainBearing)
     val crossTrack = abs(d * sin(relAngleRad))
     val alongTrack = abs(d * cos(relAngleRad))
     val isWithinBounds = d <= 0.2
-    val recognizedInside = isMovingWithTrain || isWithinBounds
+    val isOnTrainPath = d <= 8.0 && crossTrack <= 0.8
+    val recognizedInside = isMovingWithTrain && isOnTrainPath
     val confidence = when {
-      isMovingWithTrain -> 95
-      isWithinBounds -> 85
+      recognizedInside -> 95
+      isMovingWithTrain -> 60
       else -> 20
     }
 
@@ -221,6 +238,19 @@ object GeoMath {
       isWithinBounds = isWithinBounds,
       recognizedInside = recognizedInside,
     )
+  }
+
+  private fun routeSegmentBearing(route: List<RouteStation>, idx: Int): Double {
+    val cur = route.getOrNull(idx)
+    val next = route.getOrNull(idx + 1)
+    if (cur?.lat != null && cur.lon != null && next?.lat != null && next.lon != null) {
+      return bearingDegrees(cur.lat, cur.lon, next.lat, next.lon)
+    }
+    val prev = route.getOrNull(idx - 1)
+    if (prev?.lat != null && prev.lon != null && cur?.lat != null && cur.lon != null) {
+      return bearingDegrees(prev.lat, prev.lon, cur.lat, cur.lon)
+    }
+    return 0.0
   }
 
   fun locateTrain(
@@ -272,6 +302,8 @@ object GeoMath {
       ?: nextStation?.stationCode
       ?: ""
 
+    val segmentBearing = routeSegmentBearing(route, idx)
+
     if (cLat != null && cLon != null && cLat.isFinite() && cLon.isFinite()) {
       return LocatedTrain(
         lat = cLat,
@@ -279,7 +311,7 @@ object GeoMath {
         name = stName,
         next = nextName,
         speedKmh = c.speedKmh ?: 0.0,
-        bearingDegrees = c.bearingDegrees ?: 0.0,
+        bearingDegrees = c.bearingDegrees ?: segmentBearing,
         idx = idx,
       )
     }
@@ -306,7 +338,7 @@ object GeoMath {
         name = stName,
         next = nextName,
         speedKmh = c?.speedKmh ?: 0.0,
-        bearingDegrees = c?.bearingDegrees ?: 0.0,
+        bearingDegrees = c?.bearingDegrees ?: segmentBearing,
         idx = idx,
       )
     }
@@ -328,6 +360,93 @@ object GeoMath {
       }
     }
     return bestIdx
+  }
+
+  /**
+   * Advances station index along the train's travel path: keeps the last passed station as
+   * Current until the train arrives within ~250m of the next station (or moves past it).
+   */
+  fun resolveProgressStationIndex(
+    lat: Double,
+    lon: Double,
+    route: List<RouteStation>,
+    currentIdx: Int,
+  ): Int {
+    if (route.isEmpty()) return currentIdx
+    val nearest = findNearestRouteStationIndex(lat, lon, route, currentIdx).coerceIn(0, route.lastIndex)
+    var idx = currentIdx.coerceIn(0, route.lastIndex)
+
+    val curSt = route[idx]
+    val nearestSt = route[nearest]
+    if (curSt.lat == null || curSt.lon == null || nearestSt.lat == null || nearestSt.lon == null) {
+      return nearest
+    }
+    val distCur = haversineKm(lat, lon, curSt.lat, curSt.lon)
+    val distNearest = haversineKm(lat, lon, nearestSt.lat, nearestSt.lon)
+
+    // Jump directly if current reference is far behind/unrelated to live GPS
+    if (abs(nearest - idx) > 2 && distCur - distNearest > 10.0) {
+      idx = nearest
+    }
+
+    // Advance while arriving within 250m of the next station or already passed it
+    while (idx < route.lastIndex) {
+      val a = route[idx]
+      val b = route[idx + 1]
+      if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) break
+      val distNext = haversineKm(lat, lon, b.lat, b.lon)
+      val segLen = haversineKm(a.lat, a.lon, b.lat, b.lon)
+      val segBearing = bearingDegrees(a.lat, a.lon, b.lat, b.lon)
+      val relBearing = bearingDegrees(a.lat, a.lon, lat, lon)
+      val projKm = haversineKm(a.lat, a.lon, lat, lon) *
+        cos(Math.toRadians(relBearing - segBearing))
+      if (distNext <= 0.25 || (segLen > 0.2 && projKm > segLen + 0.15)) {
+        idx++
+      } else {
+        break
+      }
+    }
+    return idx
+  }
+
+  fun computeStoppageDistances(
+    train: LocatedTrain?,
+    route: List<RouteStation>,
+  ): StoppageDistances {
+    if (train == null || route.isEmpty() || !train.lat.isFinite() || !train.lon.isFinite()) {
+      return StoppageDistances(passedFromCurrentKm = null, remainingToNextKm = null)
+    }
+    val idx = train.idx.takeIf { it in route.indices }
+      ?: findNearestRouteStationIndex(train.lat, train.lon, route, 0)
+    val cur = route.getOrNull(idx)
+    val nxt = route.getOrNull(idx + 1)
+
+    val passedKm = if (cur?.lat != null && cur.lon != null) {
+      val distFromCur = haversineKm(cur.lat, cur.lon, train.lat, train.lon)
+      val isBeforeCurrent = if (nxt?.lat != null && nxt.lon != null) {
+        val segBearing = bearingDegrees(cur.lat, cur.lon, nxt.lat, nxt.lon)
+        val relBearing = bearingDegrees(cur.lat, cur.lon, train.lat, train.lon)
+        val projKm = distFromCur * cos(Math.toRadians(relBearing - segBearing))
+        projKm < -0.15
+      } else {
+        false
+      }
+      if (!isBeforeCurrent && distFromCur >= 0.08) distFromCur else null
+    } else {
+      null
+    }
+
+    val remainingKm = if (nxt?.lat != null && nxt.lon != null) {
+      val distToNext = haversineKm(train.lat, train.lon, nxt.lat, nxt.lon)
+      if (distToNext > 0.08) distToNext else null
+    } else {
+      null
+    }
+
+    return StoppageDistances(
+      passedFromCurrentKm = passedKm,
+      remainingToNextKm = remainingKm,
+    )
   }
 
   fun computeSegmentProgress(train: LocatedTrain, route: List<RouteStation>): Double {

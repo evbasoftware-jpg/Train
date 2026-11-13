@@ -118,6 +118,7 @@ fun OsmMapSection(
   isFullscreen: Boolean,
   recenterSignal: Int,
   strings: LocalizedStrings,
+  localizeName: (String) -> String = { it },
   showSizePresets: Boolean = true,
   fillAvailableHeight: Boolean = false,
   onSizePresetSelected: (MapSizePreset) -> Unit,
@@ -234,6 +235,7 @@ fun OsmMapSection(
           alarmStation = alarmStation,
           recenterSignal = recenterSignal,
           strings = strings,
+          localizeName = localizeName,
           modifier = if (fillAvailableHeight) {
             Modifier
               .fillMaxWidth()
@@ -274,6 +276,7 @@ fun OsmMapSection(
             alarmStation = alarmStation,
             recenterSignal = recenterSignal,
             strings = strings,
+            localizeName = localizeName,
             modifier = Modifier.fillMaxSize(),
           )
 
@@ -361,6 +364,7 @@ private fun InteractiveOsmCanvas(
   alarmStation: StationAlarmState?,
   recenterSignal: Int,
   strings: LocalizedStrings,
+  localizeName: (String) -> String = { it },
   modifier: Modifier = Modifier,
 ) {
   val tileRevision by tileLoader.tileRevision.collectAsStateWithLifecycle()
@@ -387,7 +391,7 @@ private fun InteractiveOsmCanvas(
       centerLat = focusedStation.lat
       centerLon = focusedStation.lon
       zoom = 13.5
-      selectedMarkerInfo = "🚉 ${focusedStation.stationName}"
+      selectedMarkerInfo = "🚉 ${localizeName(focusedStation.stationName)}"
     }
   }
 
@@ -666,7 +670,7 @@ private fun InteractiveOsmCanvas(
               shadowElevation = 2.dp,
             ) {
               Text(
-                text = st.stationName.ifBlank { st.stationCode },
+                text = localizeName(st.stationName.ifBlank { st.stationCode }),
                 fontSize = 10.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (isFocusedOrAlarm) NtesOrange else CobaltPrimary,
@@ -703,7 +707,7 @@ private fun InteractiveOsmCanvas(
             shadowElevation = 4.dp,
           ) {
             Text(
-              text = "📏 ${String.format(Locale.US, "%.2f", distanceKm.takeIf { it.isFinite() } ?: 0.0)} km",
+              text = "📏 ${strings.formatDistance(distanceKm)}",
               fontFamily = JetBrainsMonoFontFamily,
               fontSize = 11.sp,
               fontWeight = FontWeight.Bold,
@@ -724,7 +728,7 @@ private fun InteractiveOsmCanvas(
           Surface(
             onClick = {
               selectedMarkerInfo =
-                "${strings.userPopupLabel} (±${latestUserGps.accuracy.roundToInt()}m)"
+                "${strings.userPopupLabel} (±${latestUserGps.accuracy.roundToInt()} ${strings.meterUnit})"
             },
             modifier = Modifier
               .offset {
@@ -756,12 +760,14 @@ private fun InteractiveOsmCanvas(
       if (locatedTrain != null) {
         val tPt = latLonToScreen(locatedTrain.lat, locatedTrain.lon)
         if (tPt.x in -40f..(width + 40f) && tPt.y in -40f..(height + 40f)) {
+          val localizedTrainName = trainName?.takeIf { it.isNotBlank() }?.let(localizeName)
+          val localizedLocName = localizeName(locatedTrain.name)
           val trainLabel = buildString {
             append("🚆 ")
             if (trainNo.isNotBlank()) append(trainNo)
-            if (!trainName.isNullOrBlank()) {
+            if (!localizedTrainName.isNullOrBlank()) {
               if (trainNo.isNotBlank()) append(" • ")
-              append(trainName)
+              append(localizedTrainName)
             }
           }.trim()
 
@@ -798,8 +804,8 @@ private fun InteractiveOsmCanvas(
           Surface(
             onClick = {
               val spd = locatedTrain.speedKmh.takeIf { it.isFinite() } ?: 0.0
-              val titlePart = trainLabel.ifBlank { "🚆 ${locatedTrain.name}" }
-              selectedMarkerInfo = "$titlePart • ${locatedTrain.name} (${String.format(Locale.US, "%.1f", spd)} km/h)"
+              val titlePart = trainLabel.ifBlank { "🚆 $localizedLocName" }
+              selectedMarkerInfo = "$titlePart • $localizedLocName (${String.format(Locale.US, "%.1f", spd)} ${strings.kmPerHourUnit})"
             },
             modifier = Modifier
               .offset {

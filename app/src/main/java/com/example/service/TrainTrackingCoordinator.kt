@@ -20,6 +20,7 @@ import com.example.model.SavedTrainEntry
 import com.example.model.StationAlarmState
 import com.example.model.StationDbEntry
 import com.example.model.StatusBanner
+import com.example.model.StoppageDistances
 import com.example.model.TrackerUiState
 import com.example.model.stringsForCode
 import com.example.util.GeoMath
@@ -42,6 +43,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     private const val MAX_ACC = 200f // meters
     private const val MAX_API = 1_200_000L // 20 minutes
     private const val ALARM_RADIUS_KM = 3.0
+    private const val STATIONARY_EXIT_SAMPLES = 15 // ~75s completely stationary exits onboard mode
 
     @Volatile
     private var instance: TrainTrackingCoordinator? = null
@@ -73,11 +75,13 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   private var gpsJob: Job? = null
   private var stopTimerJob: Job? = null
   private var languageJob: Job? = null
+  private var dynamicTranslationJob: Job? = null
 
   private var lastAutoStartedTrainNo = ""
   private var lastBetweenPair: Pair<String, String>? = null
   private var lastPublishTimeMillis = 0L
   private var lastAnnouncedStopKey = ""
+  private var stationaryConfirmCount = 0
   private var startToken = 0
   private var loadedLanguageCode = "bn"
 
@@ -97,6 +101,8 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         }
         if (saved.languageCode != loadedLanguageCode) {
           applyLanguage(saved.languageCode, persist = false)
+        } else {
+          scheduleDynamicTranslations()
         }
       }
     }
@@ -125,6 +131,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         toSuggestions = GeoMath.filterStationSuggestions(state.toInput, stationDb, limit = 8),
       )
     }
+    scheduleDynamicTranslations()
   }
 
   private fun currentStrings() = _uiState.value.strings
@@ -133,10 +140,59 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     applyLanguage(languageCode, persist = true)
   }
 
+  private fun collectTranslatableNames(state: TrackerUiState): Set<String> {
+    val names = LinkedHashSet<String>()
+    state.fromResolvedStation?.name?.let(names::add)
+    state.toResolvedStation?.name?.let(names::add)
+    state.fromSuggestions.forEach { names.add(it.name) }
+    state.toSuggestions.forEach { names.add(it.name) }
+    state.betweenTrains.forEach { names.add(it.trainName) }
+    state.favoriteTrains.forEach { if (it.trainName.isNotBlank()) names.add(it.trainName) }
+    state.recentTrains.forEach { if (it.trainName.isNotBlank()) names.add(it.trainName) }
+    state.trainName?.let(names::add)
+    state.locatedTrain?.let { loc ->
+      if (loc.name.isNotBlank()) names.add(loc.name)
+      if (loc.next.isNotBlank()) names.add(loc.next)
+    }
+    state.route.forEach { st ->
+      if (st.stationName.isNotBlank()) names.add(st.stationName)
+    }
+    state.stationAlarm?.stationName?.let(names::add)
+    return names
+  }
+
+  private fun scheduleDynamicTranslations() {
+    val state = _uiState.value
+    val langCode = state.languageCode
+    if (langCode == "en") {
+      if (state.translatedNames.isNotEmpty()) {
+        _uiState.update { it.copy(translatedNames = emptyMap()) }
+      }
+      return
+    }
+    val names = collectTranslatableNames(state)
+    if (names.isEmpty()) return
+
+    dynamicTranslationJob?.cancel()
+    dynamicTranslationJob = scope.launch {
+      val translated = translationRepository.translateDynamicNames(langCode, names)
+      if (_uiState.value.languageCode == langCode && translated.isNotEmpty()) {
+        _uiState.update { cur ->
+          cur.copy(translatedNames = cur.translatedNames + translated)
+        }
+        if (_uiState.value.running) {
+          updateTrackingNotification()
+        }
+      }
+    }
+  }
+
   private fun applyLanguage(languageCode: String, persist: Boolean) {
     val cleanCode = languageCode.ifBlank { "bn" }
     loadedLanguageCode = cleanCode
     languageJob?.cancel()
+    dynamicTranslationJob?.cancel()
+    voiceAnnouncer.setLanguage(cleanCode)
 
     val isBuiltIn = cleanCode == "bn" || cleanCode == "en" || cleanCode == "hi"
     _uiState.update { state ->
@@ -144,6 +200,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         languageCode = cleanCode,
         isTranslatingLanguage = !isBuiltIn,
         strings = if (isBuiltIn) stringsForCode(cleanCode) else state.strings,
+        translatedNames = emptyMap(),
       )
     }
 
@@ -152,15 +209,28 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         preferences.saveLanguageCode(cleanCode)
       }
       val resolved = translationRepository.getStringsForLanguage(cleanCode)
+      val visibleNames = collectTranslatableNames(_uiState.value)
+      val translatedNames = if (cleanCode != "en" && visibleNames.isNotEmpty()) {
+        translationRepository.translateDynamicNames(cleanCode, visibleNames)
+      } else {
+        emptyMap()
+      }
+
       _uiState.update { state ->
         if (state.languageCode == cleanCode) {
-          state.copy(strings = resolved, isTranslatingLanguage = false)
+          state.copy(
+            strings = resolved,
+            translatedNames = translatedNames,
+            isTranslatingLanguage = false,
+          )
         } else {
           state
         }
       }
+
       if (_uiState.value.running) {
         updateTrackingNotification()
+        announceStoppageIfChanged(force = true)
       }
     }
   }
@@ -237,6 +307,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         toSuggestions = emptyList(),
       )
     }
+    scheduleDynamicTranslations()
     maybeSearchBetween(force = true)
   }
 
@@ -250,6 +321,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         fromSuggestions = suggestions,
       )
     }
+    scheduleDynamicTranslations()
     maybeSearchBetween()
   }
 
@@ -263,6 +335,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         toSuggestions = suggestions,
       )
     }
+    scheduleDynamicTranslations()
     maybeSearchBetween()
   }
 
@@ -283,6 +356,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         )
       }
     }
+    scheduleDynamicTranslations()
     maybeSearchBetween(force = true)
   }
 
@@ -298,6 +372,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       )
     }
     lastBetweenPair = null
+    scheduleDynamicTranslations()
     maybeSearchBetween(force = true)
   }
 
@@ -339,6 +414,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
             betweenError = err,
           )
         }
+        scheduleDynamicTranslations()
       } catch (e: CancellationException) {
         throw e
       } catch (e: Throwable) {
@@ -396,6 +472,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     gpsHistory.clear()
     lastPublishTimeMillis = 0L
     lastAnnouncedStopKey = ""
+    stationaryConfirmCount = 0
 
     val s = currentStrings()
     val hasLoc = TrainTrackingService.hasLocationPermission(appContext)
@@ -408,6 +485,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         rawSource = null,
         route = emptyList(),
         locatedTrain = null,
+        stoppageDistances = StoppageDistances(null, null),
         selectedStationIndex = null,
         stationAlarm = null,
         alarmAlertMessage = null,
@@ -421,6 +499,8 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         needsNotificationPermissionPrompt = needsNotifPrompt,
       )
     }
+
+    scheduleDynamicTranslations()
 
     scope.launch {
       preferences.addRecentTrain(SavedTrainEntry(trainNo, prefilledTrainName ?: ""))
@@ -437,8 +517,10 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       try {
         updateTrainLive(trainNo)
         if (token != startToken || !_uiState.value.running) return@launch
-        schedulePolling(trainNo, token)
-        scheduleApiAutoStop(token)
+        if (!_uiState.value.insideTrain) {
+          schedulePolling(trainNo, token)
+          scheduleApiAutoStop(token)
+        }
       } catch (e: CancellationException) {
         throw e
       } catch (_: Throwable) {
@@ -446,7 +528,9 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         _uiState.update {
           it.copy(statusBanner = StatusBanner(currentStrings().retryingSignal, BannerType.INFO))
         }
-        schedulePolling(trainNo, token)
+        if (!_uiState.value.insideTrain) {
+          schedulePolling(trainNo, token)
+        }
       }
     }
   }
@@ -464,6 +548,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     cancelTrackingJobs()
     gpsHistory.clear()
     lastAnnouncedStopKey = ""
+    stationaryConfirmCount = 0
     voiceAnnouncer.stop()
     TrainTrackingService.stop(appContext)
 
@@ -471,6 +556,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       state.copy(
         running = false,
         insideTrain = false,
+        stoppageDistances = StoppageDistances(null, null),
         latestUserGps = null,
         verification = null,
         lowAccuracyMeters = null,
@@ -559,7 +645,8 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     if (effectiveDist <= ALARM_RADIUS_KM) {
       val strings = currentStrings()
       val trainNo = state.trainNoInput.trim()
-      val alertMsg = strings.alarmTriggeredMsg(trainNo, alarm.stationName)
+      val localizedStation = state.localizeName(alarm.stationName)
+      val alertMsg = strings.alarmTriggeredMsg(trainNo, localizedStation)
       TrainNotificationHelper.triggerStationAlarm(
         context = appContext,
         title = strings.appTitle,
@@ -590,10 +677,9 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   private fun schedulePolling(trainNo: String, token: Int) {
     pollingJob?.cancel()
     pollingJob = scope.launch {
-      while (_uiState.value.running && token == startToken) {
-        val interval = if (_uiState.value.insideTrain) GPS_MS else API_MS
-        delay(interval)
-        if (!_uiState.value.running || token != startToken) break
+      while (_uiState.value.running && token == startToken && !_uiState.value.insideTrain) {
+        delay(API_MS)
+        if (!_uiState.value.running || token != startToken || _uiState.value.insideTrain) break
         try {
           updateTrainLive(trainNo)
         } catch (e: CancellationException) {
@@ -605,12 +691,17 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   }
 
   private suspend fun updateTrainLive(trainNo: String) {
+    // When moving onboard user GPS is active, never overwrite live location with API key data
+    if (_uiState.value.insideTrain) return
+
     val previousTrain = _uiState.value.locatedTrain
     val payload = repository.fetchLiveTrain(
       trainNo = trainNo,
       cachedRoute = savedRoute,
       stationDb = stationDb,
     )
+    if (_uiState.value.insideTrain) return
+
     if (payload.route.isNotEmpty()) {
       savedRoute = payload.route
     }
@@ -619,15 +710,17 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       route = payload.route,
       fallbackStationLabel = currentStrings().unknownStation,
     )
+    val distances = GeoMath.computeStoppageDistances(located, payload.route)
 
     if (!payload.trainName.isNullOrBlank()) {
       preferences.addRecentTrain(SavedTrainEntry(trainNo, payload.trainName))
     }
 
     _uiState.update { state ->
+      if (state.insideTrain) return@update state
       val shouldAutoCenter = previousTrain == null
       val nextStatus = when {
-        previousTrain != null && payload.source == "gps" && !state.insideTrain ->
+        previousTrain != null && payload.source == "gps" ->
           StatusBanner(currentStrings().otherUserGpsMsg, BannerType.OK)
         state.statusBanner?.type == BannerType.INFO -> null
         else -> state.statusBanner
@@ -637,11 +730,13 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         rawSource = payload.source,
         route = payload.route,
         locatedTrain = located,
+        stoppageDistances = distances,
         statusBanner = nextStatus,
         recenterSignal = if (shouldAutoCenter) state.recenterSignal + 1 else state.recenterSignal,
       )
     }
 
+    scheduleDynamicTranslations()
     verifyAndSync()
     checkStationAlarmProximity()
     updateTrackingNotification()
@@ -705,64 +800,158 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     val movement = state.movementStats
     val metrics = GeoMath.computeVerification(latestSample, movement, train)
     val strings = currentStrings()
+    val route = state.route
 
-    if (metrics.recognizedInside) {
-      val wasInside = state.insideTrain
-      if (!wasInside) {
-        stopTimerJob?.cancel()
-        stopTimerJob = null
-        schedulePolling(state.trainNoInput.trim(), startToken)
-      }
-
-      val route = state.route
-      val nearestIdx = GeoMath.findNearestRouteStationIndex(train.lat, train.lon, route, train.idx)
-      val snappedTrain: LocatedTrain = if (route.isNotEmpty() && nearestIdx in route.indices) {
-        val curName = route[nearestIdx].stationName.ifBlank { train.name }
-        val nxtName = route.getOrNull(nearestIdx + 1)?.stationName ?: ""
-        train.copy(idx = nearestIdx, name = curName, next = nxtName)
+    if (state.insideTrain) {
+      // Already onboard: verify we haven't become stationary for an extended time or moved off-track
+      val isStillMoving = movement.speedKmh >= 5.0 || movement.netDisplacementKm >= 0.015
+      val offTrackWhileMoving = movement.speedKmh >= 8.0 && metrics.crossTrackKm > 0.8 && metrics.distanceKm > 1.0
+      if (!isStillMoving) {
+        stationaryConfirmCount++
       } else {
-        train
+        stationaryConfirmCount = 0
       }
 
-      val now = System.currentTimeMillis()
-      if (now - lastPublishTimeMillis >= GPS_MS) {
-        lastPublishTimeMillis = now
+      if (offTrackWhileMoving || stationaryConfirmCount >= STATIONARY_EXIT_SAMPLES) {
+        // User left train or stopped moving for extended duration — resume API/crowdsourced polling
+        stationaryConfirmCount = 0
         val trainNo = state.trainNoInput.trim()
-        val trainName = state.trainName
-        scope.launch {
-          repository.publishGps(trainNo, trainName, latestSample)
+        _uiState.update {
+          it.copy(
+            insideTrain = false,
+            rawSource = "api",
+            verification = metrics,
+            statusBanner = StatusBanner(strings.retryingSignal, BannerType.INFO),
+          )
         }
+        schedulePolling(trainNo, startToken)
+        scheduleApiAutoStop(startToken)
+        return
       }
+
+      // Stop API polling & update train location directly from phone's moving GPS
+      pollingJob?.cancel()
+      pollingJob = null
+      stopTimerJob?.cancel()
+      stopTimerJob = null
+
+      val updatedIdx = GeoMath.resolveProgressStationIndex(
+        latestSample.lat,
+        latestSample.lon,
+        route,
+        train.idx,
+      )
+      val curStation = route.getOrNull(updatedIdx)
+      val nxtStation = route.getOrNull(updatedIdx + 1)
+      val curName = curStation?.stationName?.takeIf { it.isNotBlank() }
+        ?: curStation?.stationCode?.takeIf { it.isNotBlank() }
+        ?: train.name
+      val nxtName = nxtStation?.stationName?.takeIf { it.isNotBlank() }
+        ?: nxtStation?.stationCode
+        ?: ""
+
+      val gpsTrain = train.copy(
+        lat = latestSample.lat,
+        lon = latestSample.lon,
+        speedKmh = movement.speedKmh.takeIf { it > 0.5 } ?: train.speedKmh,
+        bearingDegrees = movement.bearingDegrees.takeIf { it.isFinite() && movement.speedKmh >= 4.0 }
+          ?: train.bearingDegrees,
+        idx = updatedIdx,
+        name = curName,
+        next = nxtName,
+      )
+      val distances = GeoMath.computeStoppageDistances(gpsTrain, route)
+
+      publishGpsIfDue(state.trainNoInput.trim(), state.trainName, latestSample)
 
       _uiState.update {
         it.copy(
           insideTrain = true,
-          locatedTrain = snappedTrain,
+          rawSource = "gps",
+          locatedTrain = gpsTrain,
+          stoppageDistances = distances,
           verification = metrics,
-          statusBanner = if (!wasInside) {
-            StatusBanner(strings.gpsVerifiedInsideMsg, BannerType.OK)
-          } else {
-            it.statusBanner
-          },
+        )
+      }
+      return
+    }
+
+    if (metrics.recognizedInside) {
+      // Moving GPS matched train timing and path! Stop API key polling and take over via phone GPS.
+      stationaryConfirmCount = 0
+      pollingJob?.cancel()
+      pollingJob = null
+      stopTimerJob?.cancel()
+      stopTimerJob = null
+
+      val updatedIdx = GeoMath.resolveProgressStationIndex(
+        latestSample.lat,
+        latestSample.lon,
+        route,
+        train.idx,
+      )
+      val curStation = route.getOrNull(updatedIdx)
+      val nxtStation = route.getOrNull(updatedIdx + 1)
+      val curName = curStation?.stationName?.takeIf { it.isNotBlank() }
+        ?: curStation?.stationCode?.takeIf { it.isNotBlank() }
+        ?: train.name
+      val nxtName = nxtStation?.stationName?.takeIf { it.isNotBlank() }
+        ?: nxtStation?.stationCode
+        ?: ""
+
+      val gpsTrain = train.copy(
+        lat = latestSample.lat,
+        lon = latestSample.lon,
+        speedKmh = movement.speedKmh,
+        bearingDegrees = movement.bearingDegrees.takeIf { it.isFinite() } ?: train.bearingDegrees,
+        idx = updatedIdx,
+        name = curName,
+        next = nxtName,
+      )
+      val distances = GeoMath.computeStoppageDistances(gpsTrain, route)
+
+      publishGpsIfDue(state.trainNoInput.trim(), state.trainName, latestSample)
+
+      _uiState.update {
+        it.copy(
+          insideTrain = true,
+          rawSource = "gps",
+          locatedTrain = gpsTrain,
+          stoppageDistances = distances,
+          verification = metrics,
+          statusBanner = StatusBanner(strings.gpsVerifiedInsideMsg, BannerType.OK),
         )
       }
     } else {
+      // Stationary or off-path GPS: NEVER track train using this phone's GPS
       _uiState.update { it.copy(verification = metrics) }
     }
   }
 
-  private fun announceStoppageIfChanged() {
+  private fun publishGpsIfDue(trainNo: String, trainName: String?, sample: GpsSample) {
+    val now = System.currentTimeMillis()
+    if (now - lastPublishTimeMillis >= GPS_MS) {
+      lastPublishTimeMillis = now
+      scope.launch {
+        repository.publishGps(trainNo, trainName, sample)
+      }
+    }
+  }
+
+  private fun announceStoppageIfChanged(force: Boolean = false) {
     val state = _uiState.value
     if (!state.running) return
     val loc = state.locatedTrain ?: return
-    val curStation = loc.name.trim()
-    if (curStation.isBlank() || curStation == currentStrings().unknownStation) return
-    val nxtStation = loc.next.trim()
-    val stopKey = "${state.trainNoInput}|$curStation|$nxtStation"
-    if (stopKey == lastAnnouncedStopKey) return
+    val rawCurStation = loc.name.trim()
+    if (rawCurStation.isBlank() || rawCurStation == currentStrings().unknownStation) return
+    val rawNxtStation = loc.next.trim()
+    val stopKey = "${state.trainNoInput}|${state.languageCode}|$rawCurStation|$rawNxtStation"
+    if (!force && stopKey == lastAnnouncedStopKey) return
     lastAnnouncedStopKey = stopKey
 
-    val spokenText = currentStrings().announceStop(curStation, nxtStation)
+    val spokenCurrent = state.localizeName(rawCurStation)
+    val spokenNext = if (rawNxtStation.isNotBlank()) state.localizeName(rawNxtStation) else ""
+    val spokenText = currentStrings().announceStop(spokenCurrent, spokenNext)
     voiceAnnouncer.announce(spokenText, state.languageCode)
   }
 
@@ -771,24 +960,40 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     if (!state.running) return
     val strings = currentStrings()
     val trainNo = state.trainNoInput.trim()
-    val title = state.trainName?.let { "🚆 $trainNo • $it" } ?: "🚆 $trainNo"
+    val localizedTrainName = state.trainName?.let { state.localizeName(it) }
+    val title = localizedTrainName?.let { "🚆 $trainNo • $it" } ?: "🚆 $trainNo"
     val loc = state.locatedTrain
+    val distances = state.stoppageDistances
 
-    val currentStation = loc?.name?.takeIf { it.isNotBlank() } ?: strings.waitingLabel
-    val nextStation = loc?.next?.takeIf { it.isNotBlank() } ?: "—"
-    val destinationStation = state.route.lastOrNull()?.let { st ->
+    val rawCurrent = loc?.name?.takeIf { it.isNotBlank() }
+    val localizedCurrent = rawCurrent?.let { state.localizeName(it) } ?: strings.waitingLabel
+    val currentText = if (rawCurrent != null && distances.passedFromCurrentKm != null) {
+      "$localizedCurrent (${strings.formatPassedDistance(distances.passedFromCurrentKm)})"
+    } else {
+      localizedCurrent
+    }
+
+    val rawNext = loc?.next?.takeIf { it.isNotBlank() }
+    val localizedNext = rawNext?.let { state.localizeName(it) } ?: "—"
+    val nextText = if (rawNext != null && distances.remainingToNextKm != null) {
+      "$localizedNext (${strings.formatDistance(distances.remainingToNextKm)})"
+    } else {
+      localizedNext
+    }
+
+    val rawDest = state.route.lastOrNull()?.let { st ->
       st.stationName.ifBlank { st.stationCode }
     }?.takeIf { it.isNotBlank() }
       ?: state.toResolvedStation?.name
       ?: state.toInput.trim().takeIf { it.isNotBlank() }
-      ?: "—"
+    val destinationStation = rawDest?.let { state.localizeName(it) } ?: "—"
 
     val info = TrackingNotificationContent(
       title = title,
       currentLabel = strings.notifCurrentLabel,
-      currentStation = currentStation,
+      currentStation = currentText,
       nextLabel = strings.notifNextLabel,
-      nextStation = nextStation,
+      nextStation = nextText,
       destLabel = strings.notifDestinationLabel,
       destStation = destinationStation,
       stopLabel = strings.stopTrackingBtn,

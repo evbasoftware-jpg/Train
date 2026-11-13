@@ -3,6 +3,7 @@ package com.example.data
 import com.example.model.LocalizedStrings
 import com.example.model.stringsForCode
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -18,13 +19,15 @@ class TranslationRepository(private val cacheDir: File?) {
     .readTimeout(10, TimeUnit.SECONDS)
     .build()
 
+  private val dynamicCacheByLang = ConcurrentHashMap<String, ConcurrentHashMap<String, String>>()
+
   suspend fun getStringsForLanguage(langCode: String): LocalizedStrings {
     if (langCode == "bn" || langCode == "en" || langCode == "hi") {
       return stringsForCode(langCode)
     }
 
     return withContext(Dispatchers.IO) {
-      val cacheFile = cacheDir?.let { File(it, "lang_v2_${langCode.replace("/", "_")}.json") }
+      val cacheFile = cacheDir?.let { File(it, "lang_v3_${langCode.replace("/", "_")}.json") }
       val english = stringsForCode("en")
       val keys = buildTranslatableMap(english)
 
@@ -43,9 +46,43 @@ class TranslationRepository(private val cacheDir: File?) {
     }
   }
 
+  suspend fun translateDynamicNames(
+    langCode: String,
+    rawNames: Collection<String>,
+  ): Map<String, String> {
+    if (langCode == "en" || rawNames.isEmpty()) return emptyMap()
+    val cleanUnique = rawNames.asSequence()
+      .map { it.trim() }
+      .filter { it.isNotBlank() && it != "—" && it.any { c -> c.isLetter() } }
+      .distinct()
+      .toList()
+    if (cleanUnique.isEmpty()) return emptyMap()
+
+    return withContext(Dispatchers.IO) {
+      val langMap = dynamicCacheByLang.getOrPut(langCode) {
+        loadDynamicMapFromDisk(langCode)
+      }
+      val missing = cleanUnique.filter { !langMap.containsKey(it) }
+      if (missing.isNotEmpty()) {
+        missing.chunked(40).forEach { chunk ->
+          val translated = translateListWithGoogle(langCode, chunk)
+          if (translated != null && translated.size == chunk.size) {
+            chunk.forEachIndexed { idx, original ->
+              val v = translated[idx].trim()
+              if (v.isNotEmpty()) langMap[original] = v
+            }
+          }
+        }
+        saveDynamicMapToDisk(langCode, langMap)
+      }
+      langMap.toMap()
+    }
+  }
+
   private fun buildTranslatableMap(en: LocalizedStrings): LinkedHashMap<String, String> =
     linkedMapOf(
       "appTitle" to en.appTitle,
+      "appSubtitle" to en.appSubtitle,
       "languageLabel" to en.languageLabel,
       "searchLanguageHint" to en.searchLanguageHint,
       "fromStationLabel" to en.fromStationLabel,
@@ -90,6 +127,12 @@ class TranslationRepository(private val cacheDir: File?) {
       "notifDestinationLabel" to en.notifDestinationLabel,
       "announceCurrentNextTemplate" to en.announceCurrentNextTemplate,
       "announceCurrentOnlyTemplate" to en.announceCurrentOnlyTemplate,
+      "passedDistanceTemplate" to en.passedDistanceTemplate,
+      "labelPassedCurrent" to en.labelPassedCurrent,
+      "labelRemainingNext" to en.labelRemainingNext,
+      "meterUnit" to en.meterUnit,
+      "kmUnit" to en.kmUnit,
+      "kmPerHourUnit" to en.kmPerHourUnit,
       "distanceMovementTitle" to en.distanceMovementTitle,
       "searchingLiveTemplate" to en.searchingLiveTemplate,
       "retryingSignal" to en.retryingSignal,
@@ -117,6 +160,8 @@ class TranslationRepository(private val cacheDir: File?) {
       "labelHeadingDiff" to en.labelHeadingDiff,
       "unknownStation" to en.unknownStation,
       "userPopupLabel" to en.userPopupLabel,
+      "closeLabel" to en.closeLabel,
+      "clearLabel" to en.clearLabel,
     )
 
   private fun applyTranslatedMap(
@@ -124,6 +169,7 @@ class TranslationRepository(private val cacheDir: File?) {
     m: Map<String, String>,
   ): LocalizedStrings = base.copy(
     appTitle = m["appTitle"] ?: base.appTitle,
+    appSubtitle = m["appSubtitle"] ?: base.appSubtitle,
     languageLabel = m["languageLabel"] ?: base.languageLabel,
     searchLanguageHint = m["searchLanguageHint"] ?: base.searchLanguageHint,
     fromStationLabel = m["fromStationLabel"] ?: base.fromStationLabel,
@@ -168,6 +214,12 @@ class TranslationRepository(private val cacheDir: File?) {
     notifDestinationLabel = m["notifDestinationLabel"] ?: base.notifDestinationLabel,
     announceCurrentNextTemplate = m["announceCurrentNextTemplate"] ?: base.announceCurrentNextTemplate,
     announceCurrentOnlyTemplate = m["announceCurrentOnlyTemplate"] ?: base.announceCurrentOnlyTemplate,
+    passedDistanceTemplate = m["passedDistanceTemplate"] ?: base.passedDistanceTemplate,
+    labelPassedCurrent = m["labelPassedCurrent"] ?: base.labelPassedCurrent,
+    labelRemainingNext = m["labelRemainingNext"] ?: base.labelRemainingNext,
+    meterUnit = m["meterUnit"] ?: base.meterUnit,
+    kmUnit = m["kmUnit"] ?: base.kmUnit,
+    kmPerHourUnit = m["kmPerHourUnit"] ?: base.kmPerHourUnit,
     distanceMovementTitle = m["distanceMovementTitle"] ?: base.distanceMovementTitle,
     searchingLiveTemplate = m["searchingLiveTemplate"] ?: base.searchingLiveTemplate,
     retryingSignal = m["retryingSignal"] ?: base.retryingSignal,
@@ -195,15 +247,31 @@ class TranslationRepository(private val cacheDir: File?) {
     labelHeadingDiff = m["labelHeadingDiff"] ?: base.labelHeadingDiff,
     unknownStation = m["unknownStation"] ?: base.unknownStation,
     userPopupLabel = m["userPopupLabel"] ?: base.userPopupLabel,
+    closeLabel = m["closeLabel"] ?: base.closeLabel,
+    clearLabel = m["clearLabel"] ?: base.clearLabel,
   )
 
   private fun translateBatchWithGoogle(
     targetLang: String,
     keys: LinkedHashMap<String, String>,
   ): Map<String, String>? {
+    val entries = keys.entries.toList()
+    val translated = translateListWithGoogle(targetLang, entries.map { it.value }) ?: return null
+    if (translated.size != entries.size) return null
+    val result = LinkedHashMap<String, String>(entries.size)
+    entries.forEachIndexed { idx, entry ->
+      result[entry.key] = translated[idx].trim().ifEmpty { entry.value }
+    }
+    return result
+  }
+
+  private fun translateListWithGoogle(
+    targetLang: String,
+    items: List<String>,
+  ): List<String>? {
+    if (items.isEmpty()) return emptyList()
     return try {
-      val entries = keys.entries.toList()
-      val joined = entries.joinToString("\n") { it.value.replace("\n", " ") }
+      val joined = items.joinToString("\n") { it.replace("\n", " ") }
       val url = "https://translate.googleapis.com/translate_a/single".toHttpUrl().newBuilder()
         .addQueryParameter("client", "gtx")
         .addQueryParameter("sl", "en")
@@ -229,12 +297,7 @@ class TranslationRepository(private val cacheDir: File?) {
           sb.append(seg)
         }
         val lines = sb.toString().split("\n")
-        if (lines.size != entries.size) return null
-        val result = LinkedHashMap<String, String>(entries.size)
-        entries.forEachIndexed { idx, entry ->
-          result[entry.key] = lines[idx].trim().ifEmpty { entry.value }
-        }
-        result
+        if (lines.size != items.size) null else lines
       }
     } catch (_: Exception) {
       null
@@ -254,6 +317,32 @@ class TranslationRepository(private val cacheDir: File?) {
 
   private fun saveToCache(file: File?, map: Map<String, String>) {
     if (file == null) return
+    try {
+      file.parentFile?.mkdirs()
+      val obj = JSONObject()
+      map.forEach { (k, v) -> obj.put(k, v) }
+      file.writeText(obj.toString())
+    } catch (_: Exception) {
+    }
+  }
+
+  private fun loadDynamicMapFromDisk(langCode: String): ConcurrentHashMap<String, String> {
+    val map = ConcurrentHashMap<String, String>()
+    val file = cacheDir?.let { File(it, "names_v1_${langCode.replace("/", "_")}.json") } ?: return map
+    if (!file.exists()) return map
+    try {
+      val obj = JSONObject(file.readText())
+      obj.keys().forEach { k ->
+        val v = obj.optString(k, "").trim()
+        if (v.isNotEmpty()) map[k] = v
+      }
+    } catch (_: Exception) {
+    }
+    return map
+  }
+
+  private fun saveDynamicMapToDisk(langCode: String, map: Map<String, String>) {
+    val file = cacheDir?.let { File(it, "names_v1_${langCode.replace("/", "_")}.json") } ?: return
     try {
       file.parentFile?.mkdirs()
       val obj = JSONObject()
