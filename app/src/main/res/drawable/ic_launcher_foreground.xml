@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Express train silhouette centered within 66dp safe zone -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M42,23 C38.7,23 36,25.7 36,29 L36,61 C36,65.4 39.6,69 44,69 L64,69 C68.4,69 72,65.4 72,61 L72,29 C72,25.7 69.3,23 66,23 Z M41,31 L67,31 L67,46 L41,46 Z M44.5,54 A3.5,3.5 0 1,0 44.5,61 A3.5,3.5 0 1,0 44.5,54 Z M63.5,54 A3.5,3.5 0 1,0 63.5,61 A3.5,3.5 0 1,0 63.5,54 Z" />
+    <!-- Top destination display bar -->
+    <path
+        android:fillColor="#FFD54F"
+        android:pathData="M47,26 L61,26 L61,28.5 L47,28.5 Z" />
+    <!-- Headlights glow -->
+    <path
+        android:fillColor="#FFD54F"
+        android:pathData="M44.5,55 A2.5,2.5 0 1,1 44.49,55 Z" />
+    <path
+        android:fillColor="#FFD54F"
+        android:pathData="M63.5,55 A2.5,2.5 0 1,1 63.49,55 Z" />
+    <!-- Railway tracks below train -->
+    <path
+        android:fillColor="#E3F2FD"
+        android:pathData="M41.5,71 L32,85 L37.5,85 L46,71 Z M66.5,71 L76,85 L70.5,85 L62,71 Z M38,75.5 L70,75.5 L70,78 L38,78 Z M34.5,80.5 L73.5,80.5 L73.5,83 L34.5,83 Z" />
+</vector>
