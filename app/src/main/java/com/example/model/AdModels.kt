@@ -45,17 +45,20 @@ data class AdItem(
 
     val start = timeStartMinutes
     val stop = timeStopMinutes
-    if (start != null && stop != null) {
-      val inWindow = if (start <= stop) {
-        nowTimeMinutes in start..stop
-      } else {
-        nowTimeMinutes >= start || nowTimeMinutes <= stop
+    val hasTimeBounds = !(start == 0 && stop == 0)
+    if (hasTimeBounds) {
+      if (start != null && stop != null) {
+        val inWindow = if (start <= stop) {
+          nowTimeMinutes in start..stop
+        } else {
+          nowTimeMinutes >= start || nowTimeMinutes <= stop
+        }
+        if (!inWindow) return false
+      } else if (start != null) {
+        if (nowTimeMinutes < start) return false
+      } else if (stop != null) {
+        if (nowTimeMinutes > stop) return false
       }
-      if (!inWindow) return false
-    } else if (start != null) {
-      if (nowTimeMinutes < start) return false
-    } else if (stop != null) {
-      if (nowTimeMinutes > stop) return false
     }
 
     val adLat = latitude

@@ -68,4 +68,6 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
   fun setMapFullscreen(fullscreen: Boolean) = coordinator.setMapFullscreen(fullscreen)
 
   fun triggerRecenterMap() = coordinator.triggerRecenterMap()
+
+  fun refreshAdsNow() = coordinator.refreshAdsNow()
 }

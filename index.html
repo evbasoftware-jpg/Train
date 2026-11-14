@@ -1619,20 +1619,24 @@
         return arr[0].map(p => (Array.isArray(p) && p[0]) ? p[0] : '').join('');
       }
 
+      function normalizeTranslatedPlaceholders(text) {
+        return String(text || '').replace(/\[\s*([A-Za-z]+)\s*\]/g, (_, k) => `{${k.toUpperCase()}}`);
+      }
+
       async function translateBatch(items, targetLang) {
         const out = {};
         if (!items.length || targetLang === 'en') return out;
-        const sep = '\n@@@\n';
+        const sep = '\n###SEP###\n';
         const chunk = [];
         let len = 0;
         for (const item of items) {
-          if (len + item.length > 1400 && chunk.length) {
+          if (len + item.length > 1300 && chunk.length) {
             await runChunk(chunk, sep, targetLang, out);
             chunk.length = 0;
             len = 0;
           }
           chunk.push(item);
-          len += item.length + 5;
+          len += item.length + sep.length;
         }
         if (chunk.length) await runChunk(chunk, sep, targetLang, out);
         return out;
@@ -1642,7 +1646,7 @@
         try {
           const joined = chunk.join(sep);
           const translated = await googleTranslateText(joined, lang);
-          const parts = translated.split(/\s*@@@\s*/);
+          const parts = translated.split(/\s*###\s*SEP\s*###\s*/i);
           if (parts.length === chunk.length) {
             chunk.forEach((orig, idx) => {
               const v = (parts[idx] || '').trim();
@@ -1651,47 +1655,75 @@
             return;
           }
         } catch (_) {}
-        for (const orig of chunk) {
-          try {
-            out[orig] = await googleTranslateText(orig, lang);
-          } catch (_) {}
+        const concurrency = 5;
+        for (let i = 0; i < chunk.length; i += concurrency) {
+          const slice = chunk.slice(i, i + concurrency);
+          await Promise.all(slice.map(async (orig) => {
+            try {
+              const v = await googleTranslateText(orig, lang);
+              if (v && v.trim()) out[orig] = v.trim();
+            } catch (_) {}
+          }));
         }
       }
 
+      function resolveLanguageTuple(code) {
+        const target = String(code || 'bn').toLowerCase();
+        return GOOGLE_LANGUAGES.find(l => l[0].toLowerCase() === target) ||
+               GOOGLE_LANGUAGES.find(l => l[0].toLowerCase().split('-')[0] === target.split('-')[0]) ||
+               GOOGLE_LANGUAGES[0];
+      }
+
       async function applyLanguage(langCode, persist = true) {
-        state.lang = langCode || 'bn';
+        const langObj = resolveLanguageTuple(langCode);
+        state.lang = langObj[0];
+        document.documentElement.lang = state.lang;
         if (persist) localStorage.setItem('tll_lang', state.lang);
-        const langObj = GOOGLE_LANGUAGES.find(l => l.code.toLowerCase() === state.lang.toLowerCase()) || GOOGLE_LANGUAGES[0];
+
         el('lblCurrentLang').textContent = langObj[1].toLowerCase() === langObj[2].toLowerCase()
           ? langObj[1] : `${langObj[1]} (${langObj[2].toUpperCase()})`;
 
         if (BASE_STRINGS[state.lang]) {
           state.strings = { ...BASE_STRINGS[state.lang] };
+          el('langSpinner').classList.add('hidden');
+          renderAllUi();
         } else {
-          el('langSpinner').classList.remove('hidden');
-          const cacheKey = `tll_ui_v5_${state.lang}`;
-          const cached = localStorage.getItem(cacheKey);
-          if (cached) {
-            state.strings = { ...BASE_STRINGS.en, ...JSON.parse(cached) };
+          const cacheKey = `tll_ui_v6_${state.lang}`;
+          let cached = null;
+          try { cached = JSON.parse(localStorage.getItem(cacheKey) || 'null'); } catch (_) {}
+          if (cached && Object.keys(cached).length > 10) {
+            state.strings = { ...BASE_STRINGS.en, ...cached };
+            el('langSpinner').classList.add('hidden');
+            renderAllUi();
           } else {
+            el('langSpinner').classList.remove('hidden');
+            renderAllUi();
             const en = BASE_STRINGS.en;
             const keys = Object.keys(en).filter(k => k !== 'appTitle');
             const vals = keys.map(k => en[k].replace(/\{([A-Z]+)\}/g, '[$1]'));
             const mapped = await translateBatch(vals, state.lang);
             const built = { ...en };
+            let translatedCount = 0;
             keys.forEach((k, i) => {
               const tr = mapped[vals[i]];
-              if (tr) built[k] = tr.replace(/\[([A-Z]+)\]/g, '{$1}');
+              if (tr && tr.trim()) {
+                built[k] = normalizeTranslatedPlaceholders(tr);
+                translatedCount++;
+              }
             });
-            localStorage.setItem(cacheKey, JSON.stringify(built));
+            if (translatedCount >= Math.floor(keys.length / 2)) {
+              try { localStorage.setItem(cacheKey, JSON.stringify(built)); } catch (_) {}
+            }
             state.strings = built;
+            el('langSpinner').classList.add('hidden');
           }
         }
-        el('langSpinner').classList.add('hidden');
+
         state.translatedNames = {};
+        state.lastAnnouncedKey = '';
         await refreshDynamicTranslations();
         renderAllUi();
-        if (state.running) announceStoppage(true);
+        if (state.running && state.locatedTrain) announceStoppage(true);
       }
 
       async function refreshDynamicTranslations() {
@@ -1715,26 +1747,38 @@
         const dest = resolveDestinationRaw();
         if (dest) names.add(dest);
 
-        const cacheKey = `tll_dyn_v5_${state.lang}`;
+        const cacheKey = `tll_dyn_v6_${state.lang}`;
         let cachedMap = {};
         try { cachedMap = JSON.parse(localStorage.getItem(cacheKey) || '{}'); } catch (_) {}
         const missing = [...names].filter(n => n && !cachedMap[n]);
         Object.assign(state.translatedNames, cachedMap);
         if (missing.length) {
           const fresh = await translateBatch(missing, state.lang);
-          Object.assign(cachedMap, fresh);
-          Object.assign(state.translatedNames, fresh);
-          try { localStorage.setItem(cacheKey, JSON.stringify(cachedMap)); } catch (_) {}
+          if (Object.keys(fresh).length) {
+            Object.assign(cachedMap, fresh);
+            Object.assign(state.translatedNames, fresh);
+            try { localStorage.setItem(cacheKey, JSON.stringify(cachedMap)); } catch (_) {}
+          }
           renderAllUi();
         }
       }
 
       // Soft Female Web Speech Voice
+      const SPEECH_LANG_FALLBACKS = {
+        bn: 'bn-IN', hi: 'hi-IN', ta: 'ta-IN', te: 'te-IN', mr: 'mr-IN',
+        gu: 'gu-IN', kn: 'kn-IN', ml: 'ml-IN', pa: 'pa-IN', or: 'or-IN',
+        ur: 'ur-PK', as: 'as-IN', ne: 'ne-NP', si: 'si-LK', en: 'en-IN'
+      };
+
       function pickSweetFemaleVoice(langCode) {
         if (!('speechSynthesis' in window)) return { voice: null, female: false, male: false };
         const voices = window.speechSynthesis.getVoices() || [];
-        const base = langCode.split('-')[0].toLowerCase();
-        const matches = voices.filter(v => (v.lang || '').toLowerCase().startsWith(base));
+        const norm = (langCode || 'bn').toLowerCase();
+        const base = norm.split('-')[0];
+        let matches = voices.filter(v => (v.lang || '').toLowerCase() === norm);
+        if (!matches.length) {
+          matches = voices.filter(v => (v.lang || '').toLowerCase().split('-')[0] === base);
+        }
         if (!matches.length) return { voice: null, female: false, male: false };
         const fHints = ['female','woman','girl','bnf','bna','bnc','bne','ban','hia','hic','hie','end','enc','ena','tanisha','lekha','kalpana','heera','swara','wavenet-a','wavenet-c','neural2-a','google বাংলা','google हिन्दी'];
         const mHints = ['male','man','boy','bnm','bnd','bnb','bam','hid','hib','ene','enm','bashkar','prabhat','hemant','wavenet-b','wavenet-d'];
@@ -1776,7 +1820,8 @@
             utt.voice = pick.voice;
             utt.lang = pick.voice.lang;
           } else {
-            utt.lang = state.lang === 'bn' ? 'bn-IN' : state.lang === 'hi' ? 'hi-IN' : state.lang;
+            const base = state.lang.split('-')[0].toLowerCase();
+            utt.lang = SPEECH_LANG_FALLBACKS[base] || state.lang;
           }
           utt.pitch = pick.female ? 1.14 : (pick.male ? 1.32 : (state.lang === 'bn' ? 1.24 : 1.18));
           utt.rate = 0.85;
@@ -1786,7 +1831,12 @@
       }
 
       if ('speechSynthesis' in window) {
-        window.speechSynthesis.onvoiceschanged = () => {};
+        window.speechSynthesis.getVoices();
+        window.speechSynthesis.onvoiceschanged = () => {
+          if (state.running && state.locatedTrain && !state.lastAnnouncedKey) {
+            announceStoppage(true);
+          }
+        };
       }
 
       // Stations Database Load & Search
@@ -2381,12 +2431,30 @@
         return h * 60 + min;
       }
 
+      let adsImageEpoch = Date.now();
+      let lastAdsFetchMs = 0;
+      const adImgStateCache = {};
+
+      function isHtmlOrInvalidAds(text) {
+        const clean = (text || '').trimStart().toLowerCase();
+        return clean.startsWith('<!doctype') || clean.startsWith('<html') || clean.includes('<title>google sheets') || clean.includes('accounts.google.com');
+      }
+
+      function hasAdsCsvHeader(csvText) {
+        const rows = parseCsv(csvText);
+        if (!rows.length) return false;
+        const normCols = new Set(rows[0].map(c => c.replace(/^\uFEFF/, '').toLowerCase().replace(/[_\s-]/g, '')));
+        const hasImg = normCols.has('imagename') || normCols.has('image') || normCols.has('img');
+        const hasArea = normCols.has('adsareainapp') || normCols.has('adsarea') || normCols.has('area') || normCols.has('slot');
+        return hasImg && hasArea;
+      }
+
       function parseDateYmd(raw) {
         const s = (raw || '').trim();
         if (!s) return null;
-        let m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+        let m = s.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
         if (m) return Number(m[1]) * 10000 + Number(m[2]) * 100 + Number(m[3]);
-        m = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+        m = s.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/);
         if (m) {
           let d = Number(m[1]), mo = Number(m[2]), y = Number(m[3]);
           if (mo > 12 && d <= 12) [d, mo] = [mo, d];
@@ -2399,7 +2467,36 @@
         return null;
       }
 
+      function buildAdItemFromFields(fields) {
+        const areas = (fields.areas || '').split(/[,;|\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
+        if (!fields.imageName || !areas.length) return null;
+        const lat = Number(fields.lat);
+        const lon = Number(fields.lon);
+        const rad = Number(fields.rad);
+        let timeStart = parseTimeToMins(fields.timeStart);
+        let timeStop = parseTimeToMins(fields.timeStop);
+        if (timeStart === 0 && timeStop === 0) {
+          timeStart = null;
+          timeStop = null;
+        }
+        return {
+          imageName: fields.imageName,
+          areaKeys: areas,
+          lat: Number.isFinite(lat) && String(fields.lat).trim() !== '' ? lat : null,
+          lon: Number.isFinite(lon) && String(fields.lon).trim() !== '' ? lon : null,
+          radiusKm: Number.isFinite(rad) && rad > 0 ? rad : null,
+          contactNumber: fields.contactNumber || '',
+          link: fields.link || '',
+          address: fields.address || '',
+          timeStart,
+          timeStop,
+          fromDate: parseDateYmd(fields.fromDate),
+          toDate: parseDateYmd(fields.toDate)
+        };
+      }
+
       function parseAdsCsv(csvText) {
+        if (isHtmlOrInvalidAds(csvText)) return [];
         const rows = parseCsv(csvText);
         if (rows.length < 2) return [];
         const headers = {};
@@ -2417,42 +2514,89 @@
         for (let i = 1; i < rows.length; i++) {
           const r = rows[i];
           if (r.every(x => !x.trim())) continue;
-          const imageName = col(r, 'imagename', 'image', 'img');
-          const areas = col(r, 'adsareainapp', 'adsarea', 'area', 'slot')
-            .split(/[,;|\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
-          if (!imageName || !areas.length) continue;
-          const lat = Number(col(r, 'latitude', 'lat'));
-          const lon = Number(col(r, 'longitude', 'lon', 'lng'));
-          const rad = Number(col(r, 'radiuskm', 'radius'));
-          list.push({
-            imageName,
-            areaKeys: areas,
-            lat: Number.isFinite(lat) && col(r, 'latitude', 'lat') !== '' ? lat : null,
-            lon: Number.isFinite(lon) && col(r, 'longitude', 'lon', 'lng') !== '' ? lon : null,
-            radiusKm: Number.isFinite(rad) && rad > 0 ? rad : null,
+          const built = buildAdItemFromFields({
+            imageName: col(r, 'imagename', 'image', 'img'),
+            areas: col(r, 'adsareainapp', 'adsarea', 'area', 'slot'),
+            lat: col(r, 'latitude', 'lat'),
+            lon: col(r, 'longitude', 'lon', 'lng'),
+            rad: col(r, 'radiuskm', 'radius'),
             contactNumber: col(r, 'contactnumber', 'contact', 'phone', 'mobile'),
             link: col(r, 'link', 'url', 'website'),
             address: col(r, 'address', 'location'),
-            timeStart: parseTimeToMins(col(r, 'timetostartads', 'starttime', 'start')),
-            timeStop: parseTimeToMins(col(r, 'timetostopads', 'stoptime', 'endtime', 'stop')),
-            fromDate: parseDateYmd(col(r, 'fromdate', 'startdate')),
-            toDate: parseDateYmd(col(r, 'todate', 'enddate'))
+            timeStart: col(r, 'timetostartads', 'starttime', 'start'),
+            timeStop: col(r, 'timetostopads', 'stoptime', 'endtime', 'stop'),
+            fromDate: col(r, 'fromdate', 'startdate'),
+            toDate: col(r, 'todate', 'enddate')
           });
+          if (built) list.push(built);
         }
         return list;
       }
 
-      function buildAdImageUrls(imageName) {
-        const clean = imageName.trim().replace(/^\/+/, '');
-        if (/^https?:\/\//i.test(clean)) return [clean];
-        const pathPart = clean.toLowerCase().startsWith('ads/') ? clean.slice(4) : clean;
-        const hasExt = /\.[a-z0-9]{2,5}$/i.test(pathPart);
-        const candidates = hasExt ? [pathPart] : [`${pathPart}.png`, `${pathPart}.jpg`, `${pathPart}.jpeg`, `${pathPart}.webp`];
-        const urls = [];
-        for (const c of candidates) {
-          const enc = c.split('/').map(encodeURIComponent).join('/');
-          urls.push(`./Ads/${enc}`, `${GITHUB_ADS_RAW_BASE}${enc}`, `${GITHUB_ADS_CDN_BASE}${enc}`);
+      function parseAdsJson(rawText) {
+        try {
+          const json = JSON.parse(rawText);
+          const arr = Array.isArray(json) ? json : (Array.isArray(json.ads) ? json.ads : (Array.isArray(json.data) ? json.data : null));
+          if (!arr) return null;
+          const out = [];
+          for (const row of arr) {
+            if (!row || typeof row !== 'object') continue;
+            const norm = {};
+            Object.keys(row).forEach(k => { norm[k.toLowerCase().replace(/[_\s-]/g, '')] = row[k] == null ? '' : String(row[k]).trim(); });
+            const col = (...aliases) => {
+              for (const a of aliases) {
+                if (norm[a]) return norm[a];
+              }
+              return '';
+            };
+            const built = buildAdItemFromFields({
+              imageName: col('imagename', 'image', 'img'),
+              areas: col('adsareainapp', 'adsarea', 'area', 'slot'),
+              lat: col('latitude', 'lat'),
+              lon: col('longitude', 'lon', 'lng'),
+              rad: col('radiuskm', 'radius'),
+              contactNumber: col('contactnumber', 'contact', 'phone', 'mobile'),
+              link: col('link', 'url', 'website'),
+              address: col('address', 'location'),
+              timeStart: col('timetostartads', 'starttime', 'start'),
+              timeStop: col('timetostopads', 'stoptime', 'endtime', 'stop'),
+              fromDate: col('fromdate', 'startdate'),
+              toDate: col('todate', 'enddate')
+            });
+            if (built) out.push(built);
+          }
+          return out;
+        } catch (_) {
+          return null;
         }
+      }
+
+      function buildAdImageUrls(imageName, bust = adsImageEpoch) {
+        const clean = imageName.trim().replace(/^\/+/, '');
+        if (/^https?:\/\//i.test(clean)) {
+          const sep = clean.includes('?') ? '&' : '?';
+          return [`${clean}${sep}_t=${bust}`];
+        }
+        const pathPart = clean.toLowerCase().startsWith('ads/') ? clean.slice(4) : clean;
+        const dotIdx = pathPart.lastIndexOf('.');
+        const hasExt = dotIdx > pathPart.lastIndexOf('/') && dotIdx > 0;
+        const exts = ['png', 'jpg', 'jpeg', 'webp'];
+        const stem = hasExt ? pathPart.slice(0, dotIdx) : pathPart;
+        const candidates = [];
+        const addCand = (name) => { if (name && !candidates.includes(name)) candidates.push(name); };
+        if (hasExt) addCand(pathPart);
+        exts.forEach(ext => addCand(`${stem}.${ext}`));
+
+        const urls = [];
+        const addUrl = (u) => { if (!urls.includes(u)) urls.push(u); };
+        // Prefer live GitHub raw first with cache-busting, plus relative ./Ads/ and jsDelivr fallbacks
+        candidates.forEach(c => {
+          const enc = c.split('/').map(encodeURIComponent).join('/');
+          addUrl(`${GITHUB_ADS_RAW_BASE}${enc}?_t=${bust}`);
+          addUrl(`https://raw.githubusercontent.com/evbasoft-jpg/Train/master/Ads/${enc}?_t=${bust}`);
+          addUrl(`./Ads/${enc}?_t=${bust}`);
+          addUrl(`${GITHUB_ADS_CDN_BASE}${enc}`);
+        });
         return urls;
       }
 
@@ -2460,13 +2604,16 @@
         if (!ad.areaKeys.includes(slotKey)) return false;
         if (ad.fromDate != null && nowDate < ad.fromDate) return false;
         if (ad.toDate != null && nowDate > ad.toDate) return false;
-        if (ad.timeStart != null && ad.timeStop != null) {
-          const ok = ad.timeStart <= ad.timeStop
-            ? (nowMin >= ad.timeStart && nowMin <= ad.timeStop)
-            : (nowMin >= ad.timeStart || nowMin <= ad.timeStop);
-          if (!ok) return false;
-        } else if (ad.timeStart != null && nowMin < ad.timeStart) return false;
-        else if (ad.timeStop != null && nowMin > ad.timeStop) return false;
+        const hasTimeBounds = !(ad.timeStart === 0 && ad.timeStop === 0);
+        if (hasTimeBounds) {
+          if (ad.timeStart != null && ad.timeStop != null) {
+            const ok = ad.timeStart <= ad.timeStop
+              ? (nowMin >= ad.timeStart && nowMin <= ad.timeStop)
+              : (nowMin >= ad.timeStart || nowMin <= ad.timeStop);
+            if (!ok) return false;
+          } else if (ad.timeStart != null && nowMin < ad.timeStart) return false;
+          else if (ad.timeStop != null && nowMin > ad.timeStop) return false;
+        }
         if (ad.lat != null && ad.lon != null && ad.radiusKm != null && ad.radiusKm > 0) {
           if (refLat == null || refLon == null) return false;
           if (haversineKm(refLat, refLon, ad.lat, ad.lon) > ad.radiusKm) return false;
@@ -2474,23 +2621,63 @@
         return true;
       }
 
-      async function fetchAdsSheet() {
+      async function fetchAdsSheet(forceBust = false) {
+        const now = Date.now();
+        if (!forceBust && now - lastAdsFetchMs < 2000) return;
+        lastAdsFetchMs = now;
+        adsImageEpoch = now;
+
         const cached = localStorage.getItem('tll_ads_csv');
-        if (cached) {
+        if (cached && !isHtmlOrInvalidAds(cached) && hasAdsCsvHeader(cached) && !state.allAds.length) {
           state.allAds = parseAdsCsv(cached);
           renderAllAds();
         }
-        try {
-          const r = await fetch(`${ADS_CSV_URL}&_t=${Date.now()}`);
-          if (r.ok) {
-            const csv = await r.text();
-            if (csv.trim()) {
-              localStorage.setItem('tll_ads_csv', csv);
-              state.allAds = parseAdsCsv(csv);
-              renderAllAds();
+
+        const endpoints = [
+          `${ADS_CSV_URL}&_t=${now}`,
+          `https://docs.google.com/spreadsheets/d/${ADS_SHEET_ID}/export?format=csv&_t=${now}`,
+          `${API_URL}?action=ads&_t=${now}`
+        ];
+        for (const url of endpoints) {
+          try {
+            const r = await fetch(url, { cache: 'no-store' });
+            if (!r.ok) continue;
+            const body = await r.text();
+            if (!body.trim() || isHtmlOrInvalidAds(body)) continue;
+            const trimmed = body.trimStart();
+            if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+              const parsedJson = parseAdsJson(trimmed);
+              if (parsedJson) {
+                state.allAds = parsedJson;
+                renderAllAds();
+                return;
+              }
+              continue;
             }
+            if (!hasAdsCsvHeader(body)) continue;
+            localStorage.setItem('tll_ads_csv', body);
+            state.allAds = parseAdsCsv(body);
+            renderAllAds();
+            return;
+          } catch (_) {}
+        }
+        renderAllAds();
+      }
+
+      function loadFirstWorkingImage(urls, onSuccess, onAllFailed) {
+        let idx = 0;
+        const tryNext = () => {
+          if (idx >= urls.length) {
+            if (onAllFailed) onAllFailed();
+            return;
           }
-        } catch (_) {}
+          const targetUrl = urls[idx++];
+          const probe = new Image();
+          probe.onload = () => onSuccess(targetUrl);
+          probe.onerror = tryNext;
+          probe.src = targetUrl;
+        };
+        tryNext();
       }
 
       function renderAllAds() {
@@ -2506,41 +2693,57 @@
           if (!eligible.length) {
             box.innerHTML = '';
             box.classList.add('hidden');
+            delete adImgStateCache[slotKey];
             return;
           }
           const idx = state.adRotationIdx[slotKey] % eligible.length;
           const active = eligible[idx];
-          const urls = buildAdImageUrls(active.imageName);
-          box.classList.remove('hidden');
-          box.innerHTML = '';
-          const card = document.createElement('div');
-          card.className = 'ad-card';
-          card.onclick = () => openAdModal(active, urls);
-          const img = document.createElement('img');
-          img.alt = active.address || state.strings.adBadgeLabel;
-          let uIdx = 0;
-          img.src = urls[0];
-          img.onerror = () => {
-            uIdx++;
-            if (uIdx < urls.length) img.src = urls[uIdx];
-            else { box.innerHTML = ''; box.classList.add('hidden'); }
-          };
-          const badge = document.createElement('span');
-          badge.className = 'ad-badge';
-          badge.textContent = state.strings.adBadgeLabel;
-          card.append(img, badge);
+          const urls = buildAdImageUrls(active.imageName, adsImageEpoch);
+          const signature = `${active.imageName}|${idx}|${eligible.length}|${state.strings.adBadgeLabel}`;
 
-          if (eligible.length > 1) {
-            const dots = document.createElement('div');
-            dots.className = 'ad-dots';
-            eligible.forEach((_, di) => {
-              const d = document.createElement('span');
-              d.className = 'ad-dot' + (di === idx ? ' active' : '');
-              dots.appendChild(d);
-            });
-            card.appendChild(dots);
+          let imgEl = box.querySelector('img');
+          if (adImgStateCache[slotKey]?.signature !== signature || !imgEl) {
+            box.classList.remove('hidden');
+            box.innerHTML = '';
+            const card = document.createElement('div');
+            card.className = 'ad-card';
+            card.onclick = () => openAdModal(active, urls);
+            imgEl = document.createElement('img');
+            imgEl.alt = active.address || state.strings.adBadgeLabel;
+            const badge = document.createElement('span');
+            badge.className = 'ad-badge';
+            badge.textContent = state.strings.adBadgeLabel;
+            card.append(imgEl, badge);
+            if (eligible.length > 1) {
+              const dots = document.createElement('div');
+              dots.className = 'ad-dots';
+              eligible.forEach((_, di) => {
+                const d = document.createElement('span');
+                d.className = 'ad-dot' + (di === idx ? ' active' : '');
+                dots.appendChild(d);
+              });
+              card.appendChild(dots);
+            }
+            box.appendChild(card);
+            adImgStateCache[slotKey] = { signature, epoch: 0 };
+          } else {
+            box.querySelector('.ad-card').onclick = () => openAdModal(active, urls);
           }
-          box.appendChild(card);
+
+          if (adImgStateCache[slotKey].epoch !== adsImageEpoch) {
+            adImgStateCache[slotKey].epoch = adsImageEpoch;
+            loadFirstWorkingImage(urls, (workingUrl) => {
+              if (box.contains(imgEl) && imgEl.src !== workingUrl) {
+                imgEl.src = workingUrl;
+                box.classList.remove('hidden');
+              }
+            }, () => {
+              if (!imgEl.getAttribute('src')) {
+                box.innerHTML = '';
+                box.classList.add('hidden');
+              }
+            });
+          }
         });
       }
 
@@ -2641,6 +2844,16 @@
         el('lblMapFsExit').textContent = s.mapExitFullscreenBtn;
         el('lblLangModalTitle').textContent = `🌐 ${s.languageLabel} (${GOOGLE_LANGUAGES.length}+)`;
         el('langSearchInput').placeholder = s.searchLanguageHint;
+
+        el('lblAdModalTitle').textContent = s.adDetailsTitle;
+        el('btnAdModalCloseFoot').textContent = s.closeLabel;
+
+        if (!el('fromSuggestions').classList.contains('hidden')) {
+          renderSuggestions(el('fromSuggestions'), filterSuggestions(state.fromInput), true);
+        }
+        if (!el('toSuggestions').classList.contains('hidden')) {
+          renderSuggestions(el('toSuggestions'), filterSuggestions(state.toInput), false);
+        }
 
         renderStationFields();
         renderSavedChips();
@@ -3246,7 +3459,11 @@
         renderAllAds();
       }, 6000);
 
-      setInterval(fetchAdsSheet, 300000);
+      setInterval(() => fetchAdsSheet(true), 15000);
+      window.addEventListener('focus', () => fetchAdsSheet(true));
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) fetchAdsSheet(true);
+      });
     })();
   </script>
 </body>

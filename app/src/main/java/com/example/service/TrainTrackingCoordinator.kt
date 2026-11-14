@@ -64,7 +64,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   private val locationClient = LocationClient(appContext)
   private val voiceAnnouncer = VoiceAnnouncer(appContext)
   val tileLoader = OsmTileLoader(appContext.cacheDir)
-  val adImageLoader = AdImageLoader(appContext.cacheDir)
+  val adImageLoader = AdImageLoader(appContext.cacheDir, appContext.assets)
 
   private val _uiState = MutableStateFlow(TrackerUiState())
   val uiState: StateFlow<TrackerUiState> = _uiState.asStateFlow()
@@ -88,6 +88,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   private var stationaryConfirmCount = 0
   private var startToken = 0
   private var loadedLanguageCode = "bn"
+  private var lastAdRefreshMs = 0L
 
   init {
     TrainTrackingService.onStopRequestedFromNotification = {
@@ -130,12 +131,26 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         _uiState.update { it.copy(allAds = cachedAds) }
       }
       while (true) {
-        val freshAds = adRepository.fetchAds()
-        if (freshAds.isNotEmpty() || _uiState.value.allAds.isEmpty()) {
-          _uiState.update { it.copy(allAds = freshAds) }
-        }
-        delay(300_000L) // Refresh ads sheet every 5 minutes
+        performAdsRefresh()
+        delay(15_000L) // Refresh ads sheet and images every 15 seconds for near-instant updates
       }
+    }
+  }
+
+  private suspend fun performAdsRefresh() {
+    lastAdRefreshMs = System.currentTimeMillis()
+    val res = adRepository.fetchAdsWithStatus()
+    if (res.verifiedFromRemote || _uiState.value.allAds.isEmpty()) {
+      _uiState.update { it.copy(allAds = res.ads) }
+    }
+    adImageLoader.refreshImages()
+  }
+
+  fun refreshAdsNow() {
+    val now = System.currentTimeMillis()
+    if (now - lastAdRefreshMs < 2_000L) return
+    scope.launch {
+      performAdsRefresh()
     }
   }
 

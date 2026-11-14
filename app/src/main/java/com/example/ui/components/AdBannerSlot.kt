@@ -84,7 +84,7 @@ fun AdBannerSlot(
 
   LaunchedEffect(Unit) {
     while (true) {
-      delay(30_000L)
+      delay(10_000L)
       timeTick++
     }
   }

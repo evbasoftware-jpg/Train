@@ -105,6 +105,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.model.AdItem
@@ -169,6 +171,10 @@ fun TrainTrackerScreen(
     contract = ActivityResultContracts.RequestPermission(),
   ) {
     viewModel.onNotificationPermissionHandled()
+  }
+
+  LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+    viewModel.refreshAdsNow()
   }
 
   LaunchedEffect(Unit) {

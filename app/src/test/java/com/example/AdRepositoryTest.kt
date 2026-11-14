@@ -91,4 +91,36 @@ class AdRepositoryTest {
     val zeroPrefixed = AdItem("a.png", setOf("ads5"), null, null, null, "09876543210", "", "", null, null, null, null)
     assertEquals("919876543210", zeroPrefixed.cleanPhoneForWhatsApp())
   }
+
+  @Test
+  fun parseAdsCsv_handlesZeroTimesAsAllDayAndRejectsHtmlLoginPages() {
+    val csvWithZeros = """
+      Image_name,Ads_area_in_App,Latitude,Longitude,Radius_KM,Contact_Number,link,Address,Time_to_Start_ads,Time_to_Stop_ads,From_Date,To_Date
+      img1.jpg,ads1,,,,,,0,0,,
+      img2.png,ads2,,,,,,,12:35:00 AM,11:40:00 PM,,
+    """.trimIndent()
+
+    // Verify exact column alignment (12 columns) with 0 and 0 times
+    val alignedCsv = """
+      Image_name,Ads_area_in_App,Latitude,Longitude,Radius_KM,Contact_Number,link,Address,Time_to_Start_ads,Time_to_Stop_ads,From_Date,To_Date
+      img1.jpg,ads1,,,,,,,0,0,12-11-2026,13-11-2026
+      img2.png,ads2,,,,,,,12:35:00 AM,11:40:00 PM,,
+    """.trimIndent()
+
+    val parsed = repo.parseAdsCsv(alignedCsv)
+    assertEquals(2, parsed.size)
+    val zeroAd = parsed[0]
+    assertNull(zeroAd.timeStartMinutes)
+    assertNull(zeroAd.timeStopMinutes)
+    assertTrue(zeroAd.isEligible("ads1", 20261113, 14 * 60, null, null))
+
+    val timedAd = parsed[1]
+    assertEquals(35, timedAd.timeStartMinutes)
+    assertEquals(23 * 60 + 40, timedAd.timeStopMinutes)
+    assertTrue(timedAd.isEligible("ads2", 20261114, 14 * 60, null, null))
+
+    val htmlLogin = "<!DOCTYPE html><html><head><title>Google Sheets - Sign in</title></head><body></body></html>"
+    assertTrue(repo.parseAdsCsv(htmlLogin).isEmpty())
+    assertTrue(repo.parseAdsCsv(csvWithZeros).size <= 2)
+  }
 }
