@@ -3459,19 +3459,31 @@
         const hasExt = dotIdx > pathPart.lastIndexOf('/') && dotIdx > 0;
         const exts = ['png', 'jpg', 'jpeg', 'webp'];
         const stem = hasExt ? pathPart.slice(0, dotIdx) : pathPart;
+        const stemLower = stem.toLowerCase();
         const candidates = [];
         const addCand = (name) => { if (name && !candidates.includes(name)) candidates.push(name); };
-        if (hasExt) addCand(pathPart);
+        if (hasExt) {
+          addCand(pathPart);
+          addCand(pathPart.toLowerCase());
+        }
         exts.forEach(ext => addCand(`${stem}.${ext}`));
+        if (stemLower !== stem) exts.forEach(ext => addCand(`${stemLower}.${ext}`));
 
+        const encodedCands = candidates.map(c => c.split('/').map(encodeURIComponent).join('/'));
         const urls = [];
         const addUrl = (u) => { if (!urls.includes(u)) urls.push(u); };
-        // Prefer live GitHub raw first with cache-busting, plus relative ./Ads/ and jsDelivr fallbacks
-        candidates.forEach(c => {
-          const enc = c.split('/').map(encodeURIComponent).join('/');
-          addUrl(`${GITHUB_ADS_RAW_BASE}${enc}?_t=${bust}`);
-          addUrl(`https://raw.githubusercontent.com/evbasoft-jpg/Train/master/Ads/${enc}?_t=${bust}`);
+        // 1. Live GitHub main (cache-busted) first so remote updates appear immediately
+        encodedCands.forEach(enc => addUrl(`${GITHUB_ADS_RAW_BASE}${enc}?_t=${bust}`));
+        // 2. Local ./Ads/ and bundled Android assets/Ads/ next for instant fallback
+        encodedCands.forEach(enc => {
           addUrl(`./Ads/${enc}?_t=${bust}`);
+          addUrl(`./Ads/${enc}`);
+          addUrl(`./app/src/main/assets/Ads/${enc}?_t=${bust}`);
+          addUrl(`./app/src/main/assets/Ads/${enc}`);
+        });
+        // 3. GitHub master and jsDelivr CDN fallbacks
+        encodedCands.forEach(enc => {
+          addUrl(`https://raw.githubusercontent.com/evbasoft-jpg/Train/master/Ads/${enc}?_t=${bust}`);
           addUrl(`${GITHUB_ADS_CDN_BASE}${enc}`);
         });
         return urls;
@@ -3498,6 +3510,80 @@
         return true;
       }
 
+      function fetchAdsViaJsonp(stamp) {
+        return new Promise((resolve) => {
+          const cbName = `__tllAdsCb_${stamp}_${Math.floor(Math.random() * 10000)}`;
+          const script = document.createElement('script');
+          let settled = false;
+          const cleanup = () => {
+            try { delete window[cbName]; } catch (_) { window[cbName] = undefined; }
+            if (script.parentNode) script.parentNode.removeChild(script);
+          };
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(null);
+          }, 10000);
+          window[cbName] = (payload) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            try {
+              const table = payload?.table;
+              const cols = Array.isArray(table?.cols) ? table.cols : [];
+              const rows = Array.isArray(table?.rows) ? table.rows : [];
+              const colNames = cols.map(c => String(c?.label || c?.id || '').trim().toLowerCase().replace(/[_\s-]/g, ''));
+              const out = [];
+              for (const row of rows) {
+                const cells = Array.isArray(row?.c) ? row.c : [];
+                const norm = {};
+                colNames.forEach((cn, idx) => {
+                  if (!cn) return;
+                  const cell = cells[idx];
+                  const rawVal = cell ? (cell.f != null && String(cell.f).trim() !== '' ? String(cell.f) : (cell.v != null ? String(cell.v) : '')) : '';
+                  norm[cn] = rawVal.trim();
+                });
+                const col = (...aliases) => {
+                  for (const a of aliases) {
+                    if (norm[a]) return norm[a];
+                  }
+                  return '';
+                };
+                const built = buildAdItemFromFields({
+                  imageName: col('imagename', 'image', 'img'),
+                  areas: col('adsareainapp', 'adsarea', 'area', 'slot'),
+                  lat: col('latitude', 'lat'),
+                  lon: col('longitude', 'lon', 'lng'),
+                  rad: col('radiuskm', 'radius'),
+                  contactNumber: col('contactnumber', 'contact', 'phone', 'mobile'),
+                  link: col('link', 'url', 'website'),
+                  address: col('address', 'location'),
+                  timeStart: col('timetostartads', 'starttime', 'start'),
+                  timeStop: col('timetostopads', 'stoptime', 'endtime', 'stop'),
+                  fromDate: col('fromdate', 'startdate'),
+                  toDate: col('todate', 'enddate')
+                });
+                if (built) out.push(built);
+              }
+              resolve(out);
+            } catch (_) {
+              resolve(null);
+            }
+          };
+          script.onerror = () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            cleanup();
+            resolve(null);
+          };
+          script.src = `https://docs.google.com/spreadsheets/d/${ADS_SHEET_ID}/gviz/tq?tqx=${encodeURIComponent(`out:json;responseHandler:${cbName}`)}&headers=1&sheet=ads&_t=${stamp}`;
+          document.head.appendChild(script);
+        });
+      }
+
       async function fetchAdsSheet(forceBust = false) {
         const now = Date.now();
         if (!forceBust && now - lastAdsFetchMs < 2000) return;
@@ -3508,6 +3594,17 @@
         if (cached && !isHtmlOrInvalidAds(cached) && hasAdsCsvHeader(cached) && !state.allAds.length) {
           state.allAds = parseAdsCsv(cached);
           renderAllAds();
+        } else {
+          try {
+            const cachedJson = localStorage.getItem('tll_ads_json_v1');
+            if (cachedJson && !state.allAds.length) {
+              const parsed = JSON.parse(cachedJson);
+              if (Array.isArray(parsed) && parsed.length) {
+                state.allAds = parsed;
+                renderAllAds();
+              }
+            }
+          } catch (_) {}
         }
 
         const endpoints = [
@@ -3526,6 +3623,7 @@
               const parsedJson = parseAdsJson(trimmed);
               if (parsedJson) {
                 state.allAds = parsedJson;
+                try { localStorage.setItem('tll_ads_json_v1', JSON.stringify(parsedJson)); } catch (_) {}
                 renderAllAds();
                 return;
               }
@@ -3537,6 +3635,13 @@
             renderAllAds();
             return;
           } catch (_) {}
+        }
+
+        // Fallback via gviz JSONP (works even from file:// origins where CORS blocks fetch)
+        const jsonpAds = await fetchAdsViaJsonp(now);
+        if (Array.isArray(jsonpAds)) {
+          state.allAds = jsonpAds;
+          try { localStorage.setItem('tll_ads_json_v1', JSON.stringify(jsonpAds)); } catch (_) {}
         }
         renderAllAds();
       }
@@ -4467,8 +4572,20 @@
           heading: Number.isFinite(c.heading) && c.heading >= 0 ? c.heading : null,
           time: Date.now()
         };
+        try { localStorage.setItem('tll_last_gps', JSON.stringify(state.latestUserGps)); } catch (_) {}
         renderAllAds();
         renderMap();
+      }
+
+      function restoreRecentPassiveLocation() {
+        try {
+          const raw = localStorage.getItem('tll_last_gps');
+          if (!raw || state.latestUserGps) return;
+          const saved = JSON.parse(raw);
+          if (saved && Number.isFinite(saved.lat) && Number.isFinite(saved.lon) && (Date.now() - (saved.time || 0) < 1800000)) {
+            state.latestUserGps = saved;
+          }
+        } catch (_) {}
       }
 
       function refreshPassiveLocation() {
@@ -4490,8 +4607,8 @@
       initMap();
       bindEvents();
       applyLanguage(state.lang, false);
+      restoreRecentPassiveLocation();
       loadStationsDb();
-      fetchSheetTrains();
       fetchAdsSheet();
       refreshPassiveLocation();
 
