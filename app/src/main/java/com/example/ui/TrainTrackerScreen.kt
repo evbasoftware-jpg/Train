@@ -99,6 +99,7 @@ import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -106,6 +107,8 @@ import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
+import com.example.model.AdItem
+import com.example.model.AdSlot
 import com.example.model.BannerType
 import com.example.model.GoogleLanguages
 import com.example.model.LocalizedStrings
@@ -115,6 +118,8 @@ import com.example.model.StationAlarmState
 import com.example.model.StationDbEntry
 import com.example.model.StatusBanner
 import com.example.model.TrainBetweenItem
+import com.example.ui.components.AdBannerSlot
+import com.example.ui.components.AdDetailsDialog
 import com.example.ui.components.OsmMapSection
 import com.example.ui.components.RouteTimelineCard
 import com.example.ui.components.TrainLiveCard
@@ -148,6 +153,9 @@ fun TrainTrackerScreen(
   val coroutineScope = rememberCoroutineScope()
   var mapSectionOffsetPx by remember { mutableIntStateOf(0) }
   var languageDialogOpen by remember { mutableStateOf(false) }
+  var selectedAdForDialog by remember { mutableStateOf<AdItem?>(null) }
+  val adRefLat = state.latestUserGps?.lat ?: state.locatedTrain?.lat
+  val adRefLon = state.latestUserGps?.lon ?: state.locatedTrain?.lon
 
   val locationPermissionLauncher = rememberLauncherForActivityResult(
     contract = ActivityResultContracts.RequestMultiplePermissions(),
@@ -234,7 +242,29 @@ fun TrainTrackerScreen(
               .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
           ) {
-            BrandLogoBannerCard()
+            BrandLogoBannerCard(
+              onOpenWebsite = {
+                try {
+                  val intent = Intent(
+                    Intent.ACTION_VIEW,
+                    Uri.parse("https://aionline.in.net"),
+                  )
+                  context.startActivity(intent)
+                } catch (_: Throwable) {
+                }
+              },
+            )
+
+            // ads1: right above "Train Live Location"
+            AdBannerSlot(
+              slotKey = AdSlot.ADS1.key,
+              ads = state.allAds,
+              userLat = adRefLat,
+              userLon = adRefLon,
+              imageLoader = viewModel.adImageLoader,
+              strings = strings,
+              onAdClick = { selectedAdForDialog = it },
+            )
 
             SearchAndControlPanel(
               appTitle = strings.appTitle,
@@ -294,6 +324,18 @@ fun TrainTrackerScreen(
                 } catch (_: Throwable) {
                 }
               },
+              adSlot2Content = {
+                // ads2: right above "ট্রেন নম্বর লিখুন"
+                AdBannerSlot(
+                  slotKey = AdSlot.ADS2.key,
+                  ads = state.allAds,
+                  userLat = adRefLat,
+                  userLon = adRefLon,
+                  imageLoader = viewModel.adImageLoader,
+                  strings = strings,
+                  onAdClick = { selectedAdForDialog = it },
+                )
+              },
             )
 
             // Destination Alarm Banner
@@ -343,6 +385,17 @@ fun TrainTrackerScreen(
               onToggleStationAlarm = viewModel::toggleStationAlarm,
             )
 
+            // ads3: right above "ট্রেনের লাইভ তথ্য"
+            AdBannerSlot(
+              slotKey = AdSlot.ADS3.key,
+              ads = state.allAds,
+              userLat = adRefLat,
+              userLon = adRefLon,
+              imageLoader = viewModel.adImageLoader,
+              strings = strings,
+              onAdClick = { selectedAdForDialog = it },
+            )
+
             // Train Live Data
             TrainLiveCard(
               trainNo = state.trainNoInput,
@@ -355,6 +408,17 @@ fun TrainTrackerScreen(
               movementStats = state.movementStats,
               strings = strings,
               localizeName = state::localizeName,
+            )
+
+            // ads4: right above "ম্যাপ"
+            AdBannerSlot(
+              slotKey = AdSlot.ADS4.key,
+              ads = state.allAds,
+              userLat = adRefLat,
+              userLon = adRefLon,
+              imageLoader = viewModel.adImageLoader,
+              strings = strings,
+              onAdClick = { selectedAdForDialog = it },
             )
 
             // Live Map Section (OpenStreetMap)
@@ -391,6 +455,17 @@ fun TrainTrackerScreen(
               )
             }
 
+            // ads5: right below "ম্যাপ"
+            AdBannerSlot(
+              slotKey = AdSlot.ADS5.key,
+              ads = state.allAds,
+              userLat = adRefLat,
+              userLon = adRefLon,
+              imageLoader = viewModel.adImageLoader,
+              strings = strings,
+              onAdClick = { selectedAdForDialog = it },
+            )
+
             Spacer(modifier = Modifier.height(10.dp))
           }
         }
@@ -410,6 +485,15 @@ fun TrainTrackerScreen(
         viewModel.setLanguage(code)
       },
       onDismiss = { languageDialogOpen = false },
+    )
+  }
+
+  selectedAdForDialog?.let { ad ->
+    AdDetailsDialog(
+      ad = ad,
+      imageLoader = viewModel.adImageLoader,
+      strings = strings,
+      onDismiss = { selectedAdForDialog = null },
     )
   }
 }
@@ -512,7 +596,9 @@ private fun TrackerHeader(
 }
 
 @Composable
-private fun BrandLogoBannerCard() {
+private fun BrandLogoBannerCard(
+  onOpenWebsite: () -> Unit,
+) {
   Card(
     modifier = Modifier
       .fillMaxWidth()
@@ -554,6 +640,12 @@ private fun BrandLogoBannerCard() {
           color = Color.White,
           fontSize = 15.sp,
           fontWeight = FontWeight.Bold,
+          textDecoration = TextDecoration.None,
+          modifier = Modifier
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(onClick = onOpenWebsite)
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+            .testTag("brand_website_link"),
         )
       }
     }
@@ -738,6 +830,7 @@ private fun SearchAndControlPanel(
   onStartTracking: () -> Unit,
   onStopTracking: () -> Unit,
   onOpenNtes: () -> Unit,
+  adSlot2Content: @Composable () -> Unit,
 ) {
   val isDark = isSystemInDarkTheme()
   Card(
@@ -820,54 +913,86 @@ private fun SearchAndControlPanel(
           )
         }
       } else {
-        StationInputWithSuggestions(
-          label = strings.fromStationLabel,
-          placeholder = strings.stationPlaceholder,
-          clearLabel = strings.clearLabel,
-          value = fromInput,
-          resolvedStation = fromResolvedStation,
-          suggestions = fromSuggestions,
-          localizeName = localizeName,
-          onValueChange = onFromChanged,
-          onSuggestionClick = { onStationSelected(true, it) },
-          testTag = "from_station_input",
-        )
-
-        Box(
+        Column(
           modifier = Modifier.fillMaxWidth(),
-          contentAlignment = Alignment.CenterEnd,
+          verticalArrangement = Arrangement.spacedBy(3.dp),
         ) {
-          Surface(
-            onClick = onSwapStations,
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.primaryContainer,
+          StationInputWithSuggestions(
+            label = strings.fromStationLabel,
+            placeholder = strings.stationPlaceholder,
+            clearLabel = strings.clearLabel,
+            value = fromInput,
+            resolvedStation = fromResolvedStation,
+            suggestions = fromSuggestions,
+            localizeName = localizeName,
+            onValueChange = onFromChanged,
+            onSuggestionClick = { onStationSelected(true, it) },
+            testTag = "from_station_input",
+            showResolvedChip = false,
+          )
+
+          Row(
             modifier = Modifier
-              .size(40.dp)
-              .testTag("swap_stations_button"),
+              .fillMaxWidth()
+              .padding(top = 1.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween,
           ) {
-            Box(contentAlignment = Alignment.Center) {
-              Icon(
-                imageVector = Icons.Filled.SwapVert,
-                contentDescription = strings.swapStationsDesc,
-                tint = CobaltPrimary,
-                modifier = Modifier.size(20.dp),
-              )
+            if (fromResolvedStation != null && fromInput.isNotBlank()) {
+              Surface(
+                onClick = { onStationSelected(true, fromResolvedStation) },
+                shape = RoundedCornerShape(8.dp),
+                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.55f),
+                modifier = Modifier.weight(1f, fill = false),
+              ) {
+                Text(
+                  text = "🚉 ${localizeName(fromResolvedStation.name)} (${fromResolvedStation.code})",
+                  fontSize = 12.sp,
+                  fontWeight = FontWeight.Bold,
+                  color = CobaltPrimary,
+                  maxLines = 1,
+                  overflow = TextOverflow.Ellipsis,
+                  modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+              }
+            } else {
+              Spacer(modifier = Modifier.width(1.dp))
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Surface(
+              onClick = onSwapStations,
+              shape = CircleShape,
+              color = MaterialTheme.colorScheme.primaryContainer,
+              modifier = Modifier
+                .size(34.dp)
+                .testTag("swap_stations_button"),
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Icon(
+                  imageVector = Icons.Filled.SwapVert,
+                  contentDescription = strings.swapStationsDesc,
+                  tint = CobaltPrimary,
+                  modifier = Modifier.size(18.dp),
+                )
+              }
             }
           }
-        }
 
-        StationInputWithSuggestions(
-          label = strings.toStationLabel,
-          placeholder = strings.stationPlaceholder,
-          clearLabel = strings.clearLabel,
-          value = toInput,
-          resolvedStation = toResolvedStation,
-          suggestions = toSuggestions,
-          localizeName = localizeName,
-          onValueChange = onToChanged,
-          onSuggestionClick = { onStationSelected(false, it) },
-          testTag = "to_station_input",
-        )
+          StationInputWithSuggestions(
+            label = strings.toStationLabel,
+            placeholder = strings.stationPlaceholder,
+            clearLabel = strings.clearLabel,
+            value = toInput,
+            resolvedStation = toResolvedStation,
+            suggestions = toSuggestions,
+            localizeName = localizeName,
+            onValueChange = onToChanged,
+            onSuggestionClick = { onStationSelected(false, it) },
+            testTag = "to_station_input",
+          )
+        }
       }
 
       // Recent Routes Quick Chips
@@ -977,6 +1102,8 @@ private fun SearchAndControlPanel(
       }
 
       HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f))
+
+      adSlot2Content()
 
       // 5-digit Train Number Input + Favorite Star
       OutlinedTextField(
@@ -1256,6 +1383,7 @@ private fun StationInputWithSuggestions(
   onSuggestionClick: (StationDbEntry) -> Unit,
   testTag: String,
   modifier: Modifier = Modifier,
+  showResolvedChip: Boolean = true,
 ) {
   Column(modifier = modifier) {
     OutlinedTextField(
@@ -1277,7 +1405,7 @@ private fun StationInputWithSuggestions(
         .testTag(testTag),
     )
 
-    if (resolvedStation != null && value.isNotBlank()) {
+    if (showResolvedChip && resolvedStation != null && value.isNotBlank()) {
       Surface(
         onClick = { onSuggestionClick(resolvedStation) },
         shape = RoundedCornerShape(8.dp),

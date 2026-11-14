@@ -2,6 +2,7 @@ package com.example.viewmodel
 
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
+import com.example.data.AdImageLoader
 import com.example.data.OsmTileLoader
 import com.example.model.MapSizePreset
 import com.example.model.SavedRoutePair
@@ -16,6 +17,7 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
 
   val uiState: StateFlow<TrackerUiState> = coordinator.uiState
   val tileLoader: OsmTileLoader = coordinator.tileLoader
+  val adImageLoader: AdImageLoader = coordinator.adImageLoader
 
   fun setLanguage(languageCode: String) = coordinator.setLanguage(languageCode)
 

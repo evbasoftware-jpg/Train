@@ -115,6 +115,13 @@ data class LocalizedStrings(
   val userPopupLabel: String,
   val closeLabel: String,
   val clearLabel: String,
+  val adBadgeLabel: String,
+  val adDetailsTitle: String,
+  val adAddressLabel: String,
+  val adContactLabel: String,
+  val adCallBtn: String,
+  val adWhatsAppBtn: String,
+  val adOpenLinkBtn: String,
 ) {
   fun noTrainsFound(from: String, to: String): String =
     noTrainsFoundTemplate.replace("{FROM}", from).replace("{TO}", to)
@@ -241,6 +248,13 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     userPopupLabel = "আপনার বর্তমান অবস্থান",
     closeLabel = "বন্ধ করুন",
     clearLabel = "মুছুন",
+    adBadgeLabel = "বিজ্ঞাপন",
+    adDetailsTitle = "বিজ্ঞাপনের তথ্য",
+    adAddressLabel = "ঠিকানা",
+    adContactLabel = "যোগাযোগ নম্বর",
+    adCallBtn = "কল করুন",
+    adWhatsAppBtn = "WhatsApp",
+    adOpenLinkBtn = "ওয়েবসাইট খুলুন",
   )
 
   "hi" -> LocalizedStrings(
@@ -325,6 +339,13 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     userPopupLabel = "आपकी वर्तमान स्थिति",
     closeLabel = "बंद करें",
     clearLabel = "साफ़ करें",
+    adBadgeLabel = "विज्ञापन",
+    adDetailsTitle = "विज्ञापन विवरण",
+    adAddressLabel = "पता",
+    adContactLabel = "संपर्क नंबर",
+    adCallBtn = "कॉल करें",
+    adWhatsAppBtn = "WhatsApp",
+    adOpenLinkBtn = "वेबसाइट खोलें",
   )
 
   else -> LocalizedStrings(
@@ -409,6 +430,13 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     userPopupLabel = "Your Current Location",
     closeLabel = "Close",
     clearLabel = "Clear",
+    adBadgeLabel = "Ad",
+    adDetailsTitle = "Ad Details",
+    adAddressLabel = "Address",
+    adContactLabel = "Contact Number",
+    adCallBtn = "Call",
+    adWhatsAppBtn = "WhatsApp",
+    adOpenLinkBtn = "Visit Website",
   )
 }
 
@@ -555,6 +583,7 @@ data class TrackerUiState(
   val mapSizePreset: MapSizePreset = MapSizePreset.SMALL,
   val mapFullscreen: Boolean = false,
   val recenterSignal: Int = 0,
+  val allAds: List<AdItem> = emptyList(),
 ) {
   fun localizeName(raw: String): String =
     raw.takeIf { it.isNotBlank() }?.let { translatedNames[it] ?: it } ?: raw

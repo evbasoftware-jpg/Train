@@ -160,4 +160,44 @@ class LocationClient(context: Context) {
       }
     }
   }
+
+  @SuppressLint("MissingPermission")
+  fun fetchLastKnownLocation(onFix: (GpsSample) -> Unit) {
+    val hasFine = ContextCompat.checkSelfPermission(
+      appContext,
+      Manifest.permission.ACCESS_FINE_LOCATION,
+    ) == PackageManager.PERMISSION_GRANTED
+    val hasCoarse = ContextCompat.checkSelfPermission(
+      appContext,
+      Manifest.permission.ACCESS_COARSE_LOCATION,
+    ) == PackageManager.PERMISSION_GRANTED
+    if (!hasFine && !hasCoarse) return
+
+    fun deliver(location: Location) {
+      if (!location.latitude.isFinite() || !location.longitude.isFinite()) return
+      onFix(
+        GpsSample(
+          lat = location.latitude,
+          lon = location.longitude,
+          accuracy = if (location.hasAccuracy()) location.accuracy else 999f,
+          speedMetersPerSec = if (location.hasSpeed()) location.speed else null,
+          headingDegrees = if (location.hasBearing()) location.bearing else null,
+          timeMillis = if (location.time > 0L) location.time else System.currentTimeMillis(),
+        ),
+      )
+    }
+
+    try {
+      fusedClient.lastLocation
+        .addOnSuccessListener { last ->
+          if (last != null) {
+            deliver(last)
+          } else {
+            fusedClient.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
+              .addOnSuccessListener { cur -> if (cur != null) deliver(cur) }
+          }
+        }
+    } catch (_: Throwable) {
+    }
+  }
 }

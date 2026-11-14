@@ -27,7 +27,7 @@ class TranslationRepository(private val cacheDir: File?) {
     }
 
     return withContext(Dispatchers.IO) {
-      val cacheFile = cacheDir?.let { File(it, "lang_v4_${langCode.replace("/", "_")}.json") }
+      val cacheFile = cacheDir?.let { File(it, "lang_v5_${langCode.replace("/", "_")}.json") }
       val english = stringsForCode("en")
       val keys = buildTranslatableMap(english)
 
@@ -162,6 +162,13 @@ class TranslationRepository(private val cacheDir: File?) {
       "userPopupLabel" to en.userPopupLabel,
       "closeLabel" to en.closeLabel,
       "clearLabel" to en.clearLabel,
+      "adBadgeLabel" to en.adBadgeLabel,
+      "adDetailsTitle" to en.adDetailsTitle,
+      "adAddressLabel" to en.adAddressLabel,
+      "adContactLabel" to en.adContactLabel,
+      "adCallBtn" to en.adCallBtn,
+      "adWhatsAppBtn" to en.adWhatsAppBtn,
+      "adOpenLinkBtn" to en.adOpenLinkBtn,
     )
 
   private fun applyTranslatedMap(
@@ -249,6 +256,13 @@ class TranslationRepository(private val cacheDir: File?) {
     userPopupLabel = m["userPopupLabel"] ?: base.userPopupLabel,
     closeLabel = m["closeLabel"] ?: base.closeLabel,
     clearLabel = m["clearLabel"] ?: base.clearLabel,
+    adBadgeLabel = m["adBadgeLabel"] ?: base.adBadgeLabel,
+    adDetailsTitle = m["adDetailsTitle"] ?: base.adDetailsTitle,
+    adAddressLabel = m["adAddressLabel"] ?: base.adAddressLabel,
+    adContactLabel = m["adContactLabel"] ?: base.adContactLabel,
+    adCallBtn = m["adCallBtn"] ?: base.adCallBtn,
+    adWhatsAppBtn = m["adWhatsAppBtn"] ?: base.adWhatsAppBtn,
+    adOpenLinkBtn = m["adOpenLinkBtn"] ?: base.adOpenLinkBtn,
   )
 
   private fun translateBatchWithGoogle(

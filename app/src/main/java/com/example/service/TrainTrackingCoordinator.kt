@@ -2,6 +2,8 @@ package com.example.service
 
 import android.content.Context
 import android.os.Build
+import com.example.data.AdImageLoader
+import com.example.data.AdRepository
 import com.example.data.LocationClient
 import com.example.data.LocationEvent
 import com.example.data.OsmTileLoader
@@ -56,11 +58,13 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
 
   private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
   private val repository = TrainRepository(appContext.cacheDir)
+  private val adRepository = AdRepository(appContext.cacheDir)
   private val preferences = TrackerPreferences(appContext)
   private val translationRepository = TranslationRepository(appContext.cacheDir)
   private val locationClient = LocationClient(appContext)
   private val voiceAnnouncer = VoiceAnnouncer(appContext)
   val tileLoader = OsmTileLoader(appContext.cacheDir)
+  val adImageLoader = AdImageLoader(appContext.cacheDir)
 
   private val _uiState = MutableStateFlow(TrackerUiState())
   val uiState: StateFlow<TrackerUiState> = _uiState.asStateFlow()
@@ -117,6 +121,20 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       if (fresh.isNotEmpty()) {
         stationDb = fresh
         refreshStationMatches()
+      }
+    }
+
+    scope.launch {
+      val cachedAds = adRepository.loadCachedAds()
+      if (cachedAds.isNotEmpty()) {
+        _uiState.update { it.copy(allAds = cachedAds) }
+      }
+      while (true) {
+        val freshAds = adRepository.fetchAds()
+        if (freshAds.isNotEmpty() || _uiState.value.allAds.isEmpty()) {
+          _uiState.update { it.copy(allAds = freshAds) }
+        }
+        delay(300_000L) // Refresh ads sheet every 5 minutes
       }
     }
   }
@@ -244,10 +262,19 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         needsLocationPermissionPrompt = false,
       )
     }
-    if (granted && _uiState.value.running) {
-      if (gpsJob == null) startGpsCollection()
-      updateTrackingNotification()
-    } else if (!granted && wasGranted != granted && _uiState.value.running) {
+    if (granted) {
+      if (_uiState.value.latestUserGps == null) {
+        locationClient.fetchLastKnownLocation { sample ->
+          _uiState.update { cur ->
+            cur.copy(latestUserGps = cur.latestUserGps ?: sample)
+          }
+        }
+      }
+      if (_uiState.value.running) {
+        if (gpsJob == null) startGpsCollection()
+        updateTrackingNotification()
+      }
+    } else if (wasGranted != granted && _uiState.value.running) {
       _uiState.update {
         it.copy(statusBanner = StatusBanner(currentStrings().gpsPermissionDenied, BannerType.BAD))
       }
