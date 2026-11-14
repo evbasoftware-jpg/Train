@@ -244,9 +244,9 @@ class AdRepository(private val cacheDir: File? = null) {
 
     if (imageName.isBlank() || areaKeys.isEmpty()) return null
 
-    val lat = rawLat.toDoubleOrNull()?.takeIf { it.isFinite() }
-    val lon = rawLon.toDoubleOrNull()?.takeIf { it.isFinite() }
-    val radiusKm = rawRadius.toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 }
+    val lat = rawLat.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() }
+    val lon = rawLon.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() }
+    val radiusKm = rawRadius.trim().replace(',', '.').toDoubleOrNull()?.takeIf { it.isFinite() && it > 0.0 }
     var startTime = parseTimeToMinutes(rawStart)
     var stopTime = parseTimeToMinutes(rawStop)
     // Sheet rows commonly enter 0 and 0 as placeholder for all-day active ads

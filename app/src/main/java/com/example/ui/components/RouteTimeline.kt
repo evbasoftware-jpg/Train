@@ -78,6 +78,7 @@ import com.example.ui.theme.VerifiedEmeraldContainer
 import com.example.ui.theme.VerifiedEmeraldDark
 import com.example.util.GeoMath
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 @Composable
 fun RouteTimelineCard(
@@ -356,9 +357,32 @@ private fun RouteTrackStrip(
     locatedTrain?.speedKmh ?: 0.0
   }
 
-  LaunchedEffect(activeIdx, route.size) {
-    if (locatedTrain != null && activeIdx in route.indices) {
+  suspend fun centerTrainIconInViewport() {
+    if (locatedTrain == null || activeIdx !in route.indices) return
+    val viewportWidth = listState.layoutInfo.viewportSize.width
+    if (viewportWidth > 0) {
+      val trainCenterInsideItem = nodeWidthPx * (0.5f + rawProgress)
+      val scrollOffset = (trainCenterInsideItem - viewportWidth / 2f).roundToInt()
+      listState.animateScrollToItem(index = activeIdx, scrollOffset = scrollOffset)
+    } else {
       listState.animateScrollToItem((activeIdx - 1).coerceAtLeast(0))
+    }
+  }
+
+  LaunchedEffect(activeIdx, route.size, locatedTrain != null) {
+    if (locatedTrain != null && activeIdx in route.indices) {
+      centerTrainIconInViewport()
+    }
+  }
+
+  LaunchedEffect(locatedTrain != null, route.size) {
+    if (locatedTrain != null) {
+      while (true) {
+        delay(60_000L)
+        if (!listState.isScrollInProgress) {
+          centerTrainIconInViewport()
+        }
+      }
     }
   }
 

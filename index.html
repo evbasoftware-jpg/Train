@@ -809,21 +809,53 @@
       overflow: hidden;
       background: var(--surface);
       box-shadow: var(--shadow);
-      cursor: pointer;
       border: 1px solid rgba(148, 163, 184, 0.18);
     }
 
-    .ad-card img {
+    .ad-carousel-track {
+      display: flex;
+      width: 100%;
+      overflow-x: auto;
+      scroll-snap-type: x mandatory;
+      scroll-behavior: smooth;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+      -webkit-overflow-scrolling: touch;
+      touch-action: pan-x pan-y;
+    }
+
+    .ad-carousel-track::-webkit-scrollbar {
+      display: none;
+    }
+
+    .ad-slide {
+      flex: 0 0 100%;
+      width: 100%;
+      min-width: 100%;
+      scroll-snap-align: center;
+      scroll-snap-stop: always;
+      cursor: pointer;
+      position: relative;
+    }
+
+    .ad-slide img {
       width: 100%;
       max-height: 190px;
       object-fit: cover;
       display: block;
+      opacity: 1;
+      transition: opacity 0.25s ease;
+      pointer-events: none;
+      user-select: none;
+      -webkit-user-drag: none;
     }
 
     .ad-badge {
       position: absolute;
       top: 0;
       right: 0;
+      z-index: 2;
+      pointer-events: none;
       background: rgba(15, 23, 42, 0.68);
       color: #FFFFFF;
       font-size: 10px;
@@ -837,24 +869,27 @@
       bottom: 6px;
       left: 50%;
       transform: translateX(-50%);
+      z-index: 2;
       background: rgba(0, 0, 0, 0.53);
-      padding: 3px 8px;
+      padding: 4px 9px;
       border-radius: 10px;
       display: flex;
-      gap: 5px;
+      gap: 6px;
       align-items: center;
     }
 
     .ad-dot {
-      width: 5px;
-      height: 5px;
+      width: 6px;
+      height: 6px;
       border-radius: 50%;
       background: rgba(255, 255, 255, 0.55);
+      cursor: pointer;
+      transition: all 0.2s ease;
     }
 
     .ad-dot.active {
-      width: 7px;
-      height: 7px;
+      width: 8px;
+      height: 8px;
       background: #FFFFFF;
     }
 
@@ -1544,6 +1579,9 @@
         recentRoutes: JSON.parse(localStorage.getItem('tll_recent_routes') || '[]'),
         allAds: [],
         adRotationIdx: { ads1: 0, ads2: 0, ads3: 0, ads4: 0, ads5: 0 },
+        lastAdInteraction: { ads1: 0, ads2: 0, ads3: 0, ads4: 0, ads5: 0 },
+        lastCenteredStopKey: '',
+        lastRouteScrollTouchTs: 0,
         mapFullscreen: false,
         mapSize: 'small',
         lastAnnouncedKey: '',
@@ -2016,6 +2054,7 @@
         state.gpsHistory = [];
         state.stationaryCount = 0;
         state.lastAnnouncedKey = '';
+        state.lastCenteredStopKey = '';
         saveRecentTrain(num, prefilledName);
         setStatusBanner(state.strings.searchingLiveTemplate.replace('{TR}', num), 'info');
         requestNotificationPermissionIfNeeded();
@@ -2059,6 +2098,7 @@
         state.stoppageDistances = { passedKm: null, remainingKm: null };
         state.lastAnnouncedKey = '';
         state.lastAutoTrainNo = '';
+        state.lastCenteredStopKey = '';
         if ('speechSynthesis' in window) window.speechSynthesis.cancel();
         setStatusBanner(null);
         renderAllUi();
@@ -2217,7 +2257,6 @@
         if (!navigator.geolocation || state.watchId !== null) return;
         state.watchId = navigator.geolocation.watchPosition(pos => {
           const c = pos.coords;
-          if (c.accuracy > MAX_ACC) return;
           const sample = {
             lat: c.latitude,
             lon: c.longitude,
@@ -2226,6 +2265,14 @@
             heading: Number.isFinite(c.heading) && c.heading >= 0 ? c.heading : null,
             time: Date.now()
           };
+          if (c.accuracy > MAX_ACC) {
+            if (!state.latestUserGps || c.accuracy <= 5000) {
+              state.latestUserGps = sample;
+              renderAllAds();
+              renderMap();
+            }
+            return;
+          }
           state.latestUserGps = sample;
           state.gpsHistory.push(sample);
           if (state.gpsHistory.length > 20) state.gpsHistory.shift();
@@ -2434,6 +2481,15 @@
       let adsImageEpoch = Date.now();
       let lastAdsFetchMs = 0;
       const adImgStateCache = {};
+      const adResolvedUrlByImage = {};
+      const adProbeStateByKey = {};
+
+      function parseGeoNum(raw) {
+        const s = String(raw ?? '').trim().replace(/,/g, '.');
+        if (!s) return null;
+        const n = Number(s);
+        return Number.isFinite(n) ? n : null;
+      }
 
       function isHtmlOrInvalidAds(text) {
         const clean = (text || '').trimStart().toLowerCase();
@@ -2469,10 +2525,11 @@
 
       function buildAdItemFromFields(fields) {
         const areas = (fields.areas || '').split(/[,;|\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
-        if (!fields.imageName || !areas.length) return null;
-        const lat = Number(fields.lat);
-        const lon = Number(fields.lon);
-        const rad = Number(fields.rad);
+        const imageName = (fields.imageName || '').trim();
+        if (!imageName || !areas.length) return null;
+        const lat = parseGeoNum(fields.lat);
+        const lon = parseGeoNum(fields.lon);
+        const radRaw = parseGeoNum(fields.rad);
         let timeStart = parseTimeToMins(fields.timeStart);
         let timeStop = parseTimeToMins(fields.timeStop);
         if (timeStart === 0 && timeStop === 0) {
@@ -2480,11 +2537,11 @@
           timeStop = null;
         }
         return {
-          imageName: fields.imageName,
+          imageName,
           areaKeys: areas,
-          lat: Number.isFinite(lat) && String(fields.lat).trim() !== '' ? lat : null,
-          lon: Number.isFinite(lon) && String(fields.lon).trim() !== '' ? lon : null,
-          radiusKm: Number.isFinite(rad) && rad > 0 ? rad : null,
+          lat,
+          lon,
+          radiusKm: radRaw != null && radRaw > 0 ? radRaw : null,
           contactNumber: fields.contactNumber || '',
           link: fields.link || '',
           address: fields.address || '',
@@ -2680,6 +2737,53 @@
         tryNext();
       }
 
+      function updateLoadedAdSlideImages(imageName, workingUrl) {
+        document.querySelectorAll('.ad-slide').forEach(slide => {
+          if (slide.dataset.imageName === imageName) {
+            const img = slide.querySelector('img');
+            if (img && img.src !== workingUrl) {
+              img.src = workingUrl;
+            }
+          }
+        });
+      }
+
+      function preloadAdImage(ad) {
+        const key = `${ad.imageName}|${adsImageEpoch}`;
+        if (adProbeStateByKey[key] === 'loading' || adProbeStateByKey[key] === 'ready') return;
+        adProbeStateByKey[key] = 'loading';
+        const urls = buildAdImageUrls(ad.imageName, adsImageEpoch);
+        loadFirstWorkingImage(urls, (workingUrl) => {
+          adProbeStateByKey[key] = 'ready';
+          const isNew = adResolvedUrlByImage[ad.imageName] !== workingUrl;
+          adResolvedUrlByImage[ad.imageName] = workingUrl;
+          updateLoadedAdSlideImages(ad.imageName, workingUrl);
+          if (isNew) renderAllAds();
+        }, () => {
+          adProbeStateByKey[key] = 'failed';
+        });
+      }
+
+      function syncAdDots(slotKey, activeIdx) {
+        const box = el(`adSlot_${slotKey}`);
+        if (!box) return;
+        box.querySelectorAll('.ad-dot').forEach((dot, i) => {
+          dot.classList.toggle('active', i === activeIdx);
+        });
+      }
+
+      function scrollAdSlotToIndex(slotKey, targetIdx, smooth = true) {
+        const box = el(`adSlot_${slotKey}`);
+        const track = box?.querySelector('.ad-carousel-track');
+        if (!track || track.clientWidth <= 0) return;
+        const count = track.children.length;
+        if (!count) return;
+        const safeIdx = ((targetIdx % count) + count) % count;
+        state.adRotationIdx[slotKey] = safeIdx;
+        track.scrollTo({ left: safeIdx * track.clientWidth, behavior: smooth ? 'smooth' : 'auto' });
+        syncAdDots(slotKey, safeIdx);
+      }
+
       function renderAllAds() {
         const now = new Date();
         const nowDate = now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate();
@@ -2696,53 +2800,111 @@
             delete adImgStateCache[slotKey];
             return;
           }
-          const idx = state.adRotationIdx[slotKey] % eligible.length;
-          const active = eligible[idx];
-          const urls = buildAdImageUrls(active.imageName, adsImageEpoch);
-          const signature = `${active.imageName}|${idx}|${eligible.length}|${state.strings.adBadgeLabel}`;
 
-          let imgEl = box.querySelector('img');
-          if (adImgStateCache[slotKey]?.signature !== signature || !imgEl) {
-            box.classList.remove('hidden');
-            box.innerHTML = '';
-            const card = document.createElement('div');
-            card.className = 'ad-card';
-            card.onclick = () => openAdModal(active, urls);
-            imgEl = document.createElement('img');
-            imgEl.alt = active.address || state.strings.adBadgeLabel;
-            const badge = document.createElement('span');
-            badge.className = 'ad-badge';
-            badge.textContent = state.strings.adBadgeLabel;
-            card.append(imgEl, badge);
-            if (eligible.length > 1) {
-              const dots = document.createElement('div');
-              dots.className = 'ad-dots';
-              eligible.forEach((_, di) => {
-                const d = document.createElement('span');
-                d.className = 'ad-dot' + (di === idx ? ' active' : '');
-                dots.appendChild(d);
-              });
-              card.appendChild(dots);
-            }
-            box.appendChild(card);
-            adImgStateCache[slotKey] = { signature, epoch: 0 };
-          } else {
-            box.querySelector('.ad-card').onclick = () => openAdModal(active, urls);
+          // Preload every eligible ad in this slot so swipes and rotations never vanish
+          eligible.forEach(preloadAdImage);
+          const readySlides = eligible.filter(a => !!adResolvedUrlByImage[a.imageName]);
+          if (!readySlides.length) {
+            return;
           }
 
-          if (adImgStateCache[slotKey].epoch !== adsImageEpoch) {
-            adImgStateCache[slotKey].epoch = adsImageEpoch;
-            loadFirstWorkingImage(urls, (workingUrl) => {
-              if (box.contains(imgEl) && imgEl.src !== workingUrl) {
-                imgEl.src = workingUrl;
-                box.classList.remove('hidden');
+          const idx = ((state.adRotationIdx[slotKey] || 0) % readySlides.length + readySlides.length) % readySlides.length;
+          state.adRotationIdx[slotKey] = idx;
+          const signature = `${readySlides.map(a => a.imageName).join('|')}::${state.strings.adBadgeLabel}`;
+
+          const existingTrack = box.querySelector('.ad-carousel-track');
+          if (adImgStateCache[slotKey]?.signature === signature && existingTrack) {
+            adImgStateCache[slotKey].slides = readySlides;
+            box.classList.remove('hidden');
+            return;
+          }
+
+          box.classList.remove('hidden');
+          box.innerHTML = '';
+          const card = document.createElement('div');
+          card.className = 'ad-card';
+
+          const track = document.createElement('div');
+          track.className = 'ad-carousel-track';
+
+          let dragStartX = 0;
+          let dragScrollLeft = 0;
+          let mouseDragging = false;
+          let movedWhileDrag = false;
+
+          readySlides.forEach((adItem, slideIdx) => {
+            const slide = document.createElement('div');
+            slide.className = 'ad-slide';
+            slide.dataset.imageName = adItem.imageName;
+            const imgEl = document.createElement('img');
+            imgEl.alt = adItem.address || state.strings.adBadgeLabel;
+            imgEl.src = adResolvedUrlByImage[adItem.imageName];
+            slide.appendChild(imgEl);
+            slide.onclick = () => {
+              if (movedWhileDrag) {
+                movedWhileDrag = false;
+                return;
               }
-            }, () => {
-              if (!imgEl.getAttribute('src')) {
-                box.innerHTML = '';
-                box.classList.add('hidden');
-              }
+              const latestSlide = adImgStateCache[slotKey]?.slides?.[slideIdx] || adItem;
+              openAdModal(latestSlide, buildAdImageUrls(latestSlide.imageName, adsImageEpoch));
+            };
+            track.appendChild(slide);
+          });
+
+          const markUserTouch = () => { state.lastAdInteraction[slotKey] = Date.now(); };
+          track.addEventListener('touchstart', markUserTouch, { passive: true });
+          track.addEventListener('mousedown', e => {
+            markUserTouch();
+            mouseDragging = true;
+            movedWhileDrag = false;
+            dragStartX = e.pageX;
+            dragScrollLeft = track.scrollLeft;
+          });
+          track.addEventListener('mousemove', e => {
+            if (!mouseDragging) return;
+            const dx = e.pageX - dragStartX;
+            if (Math.abs(dx) > 6) movedWhileDrag = true;
+            track.scrollLeft = dragScrollLeft - dx;
+          });
+          const stopDrag = () => { mouseDragging = false; };
+          track.addEventListener('mouseup', stopDrag);
+          track.addEventListener('mouseleave', stopDrag);
+
+          track.addEventListener('scroll', () => {
+            const w = track.clientWidth;
+            if (w <= 0) return;
+            const newIdx = Math.max(0, Math.min(readySlides.length - 1, Math.round(track.scrollLeft / w)));
+            if (state.adRotationIdx[slotKey] !== newIdx) {
+              state.adRotationIdx[slotKey] = newIdx;
+              syncAdDots(slotKey, newIdx);
+            }
+          }, { passive: true });
+
+          const badge = document.createElement('span');
+          badge.className = 'ad-badge';
+          badge.textContent = state.strings.adBadgeLabel;
+          card.append(track, badge);
+
+          if (readySlides.length > 1) {
+            const dots = document.createElement('div');
+            dots.className = 'ad-dots';
+            readySlides.forEach((_, di) => {
+              const d = document.createElement('span');
+              d.className = 'ad-dot' + (di === idx ? ' active' : '');
+              d.onclick = e => {
+                e.stopPropagation();
+                state.lastAdInteraction[slotKey] = Date.now();
+                scrollAdSlotToIndex(slotKey, di, true);
+              };
+              dots.appendChild(d);
             });
+            card.appendChild(dots);
+          }
+
+          box.appendChild(card);
+          adImgStateCache[slotKey] = { signature, slides: readySlides };
+          if (idx > 0) {
+            requestAnimationFrame(() => scrollAdSlotToIndex(slotKey, idx, false));
           }
         });
       }
@@ -3036,6 +3198,19 @@
           state.strings.alarmBannerTemplate.replace('{ST}', locName(state.stationAlarm.stationName));
       }
 
+      function centerRouteTimeline(smooth = true) {
+        const scroll = el('routeTimelineScroll');
+        if (!scroll || scroll.classList.contains('hidden') || scroll.clientWidth <= 0) return;
+        const badge = scroll.querySelector('.train-timeline-badge') || scroll.querySelector('.station-dot.active');
+        if (!badge) return;
+        const sRect = scroll.getBoundingClientRect();
+        const bRect = badge.getBoundingClientRect();
+        const centerInScroll = (bRect.left - sRect.left) + (bRect.width / 2) + scroll.scrollLeft;
+        const maxScroll = Math.max(0, scroll.scrollWidth - scroll.clientWidth);
+        const target = Math.max(0, Math.min(maxScroll, centerInScroll - scroll.clientWidth / 2));
+        scroll.scrollTo({ left: target, behavior: smooth ? 'smooth' : 'auto' });
+      }
+
       function renderRouteTimeline() {
         const hint = el('lblTapHint'), empty = el('routeEmptyBox'), scroll = el('routeTimelineScroll'), bar = el('selectedStationBar');
         if (!state.route.length) {
@@ -3046,6 +3221,7 @@
           empty.textContent = state.running ? state.strings.routeNoStations : state.strings.routeEmptyPlaceholder;
           return;
         }
+        const prevScrollLeft = scroll.scrollLeft;
         hint.classList.remove('hidden');
         empty.classList.add('hidden');
         scroll.classList.remove('hidden');
@@ -3146,6 +3322,15 @@
 
           scroll.appendChild(node);
         });
+
+        scroll.scrollLeft = prevScrollLeft;
+        if (loc) {
+          const stopKey = `${state.trainNo}|${activeIdx}`;
+          if (state.lastCenteredStopKey !== stopKey) {
+            state.lastCenteredStopKey = stopKey;
+            requestAnimationFrame(() => centerRouteTimeline(prevScrollLeft > 0));
+          }
+        }
 
         const sel = state.selectedStationIdx != null ? state.route[state.selectedStationIdx] : null;
         if (sel) {
@@ -3412,6 +3597,12 @@
 
         el('btnCloseAdModal').onclick = () => el('adDetailsModal').classList.remove('open');
         el('btnAdModalCloseFoot').onclick = () => el('adDetailsModal').classList.remove('open');
+
+        const routeScroll = el('routeTimelineScroll');
+        const markTimelineScroll = () => { state.lastRouteScrollTouchTs = Date.now(); };
+        routeScroll.addEventListener('touchstart', markTimelineScroll, { passive: true });
+        routeScroll.addEventListener('mousedown', markTimelineScroll, { passive: true });
+        routeScroll.addEventListener('scroll', markTimelineScroll, { passive: true });
       }
 
       function renderLangList(q) {
@@ -3438,31 +3629,91 @@
           });
       }
 
+      function applyPassiveGeoPosition(pos) {
+        const c = pos?.coords;
+        if (!c) return;
+        const prev = state.latestUserGps;
+        const nextAcc = Number.isFinite(c.accuracy) ? c.accuracy : 9999;
+        if (prev && (Date.now() - prev.time < 25000) && (prev.accuracy || 9999) < nextAcc && nextAcc > 500) {
+          return;
+        }
+        state.latestUserGps = {
+          lat: c.latitude,
+          lon: c.longitude,
+          accuracy: nextAcc,
+          speedMs: Number.isFinite(c.speed) && c.speed >= 0 ? c.speed : null,
+          heading: Number.isFinite(c.heading) && c.heading >= 0 ? c.heading : null,
+          time: Date.now()
+        };
+        renderAllAds();
+        renderMap();
+      }
+
+      function refreshPassiveLocation() {
+        if (!navigator.geolocation) return;
+        navigator.geolocation.getCurrentPosition(
+          applyPassiveGeoPosition,
+          () => {
+            navigator.geolocation.getCurrentPosition(
+              applyPassiveGeoPosition,
+              () => {},
+              { enableHighAccuracy: false, maximumAge: 300000, timeout: 20000 }
+            );
+          },
+          { enableHighAccuracy: true, maximumAge: 60000, timeout: 15000 }
+        );
+      }
+
       // Bootstrap
       initMap();
       bindEvents();
       applyLanguage(state.lang, false);
       loadStationsDb();
       fetchAdsSheet();
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(pos => {
-          if (!state.latestUserGps) {
-            state.latestUserGps = { lat: pos.coords.latitude, lon: pos.coords.longitude, accuracy: pos.coords.accuracy, speedMs: null, heading: null, time: Date.now() };
-            renderAllAds();
-            renderMap();
-          }
-        }, () => {}, { maximumAge: 60000, timeout: 6000 });
+      refreshPassiveLocation();
+
+      if (navigator.permissions && navigator.permissions.query) {
+        navigator.permissions.query({ name: 'geolocation' }).then(perm => {
+          perm.onchange = () => {
+            if (perm.state === 'granted') refreshPassiveLocation();
+          };
+        }).catch(() => {});
       }
 
+      // Auto-advance ads smoothly via horizontal track scrolling (pauses after manual finger swipe)
       setInterval(() => {
-        ['ads1','ads2','ads3','ads4','ads5'].forEach(k => state.adRotationIdx[k]++);
-        renderAllAds();
+        const now = Date.now();
+        ['ads1','ads2','ads3','ads4','ads5'].forEach(k => {
+          const box = el(`adSlot_${k}`);
+          const track = box?.querySelector('.ad-carousel-track');
+          if (!track || track.children.length <= 1) return;
+          if (now - (state.lastAdInteraction[k] || 0) < 5000) return;
+          const nextIdx = ((state.adRotationIdx[k] || 0) + 1) % track.children.length;
+          scrollAdSlotToIndex(k, nextIdx, true);
+        });
       }, 6000);
 
+      // Re-center train icon in route timeline every 1 minute
+      setInterval(() => {
+        if (state.running && state.locatedTrain && (Date.now() - state.lastRouteScrollTouchTs > 3000)) {
+          centerRouteTimeline(true);
+        }
+      }, 60000);
+
+      setInterval(() => {
+        if (!document.hidden && !state.running) refreshPassiveLocation();
+      }, 30000);
+
       setInterval(() => fetchAdsSheet(true), 15000);
-      window.addEventListener('focus', () => fetchAdsSheet(true));
+      window.addEventListener('focus', () => {
+        fetchAdsSheet(true);
+        refreshPassiveLocation();
+      });
       document.addEventListener('visibilitychange', () => {
-        if (!document.hidden) fetchAdsSheet(true);
+        if (!document.hidden) {
+          fetchAdsSheet(true);
+          refreshPassiveLocation();
+        }
       });
     })();
   </script>

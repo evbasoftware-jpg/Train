@@ -89,6 +89,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   private var startToken = 0
   private var loadedLanguageCode = "bn"
   private var lastAdRefreshMs = 0L
+  private var hasAutoPromptedLocationForAds = false
 
   init {
     TrainTrackingService.onStopRequestedFromNotification = {
@@ -144,10 +145,29 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       _uiState.update { it.copy(allAds = res.ads) }
     }
     adImageLoader.refreshImages()
+    val hasGeoAds = res.ads.any { it.latitude != null && it.longitude != null && it.radiusKm != null }
+    if (hasGeoAds) {
+      if (_uiState.value.locationPermissionGranted) {
+        refreshAmbientLocation()
+      } else if (!hasAutoPromptedLocationForAds) {
+        hasAutoPromptedLocationForAds = true
+        _uiState.update { it.copy(needsLocationPermissionPrompt = true) }
+      }
+    }
+  }
+
+  private fun refreshAmbientLocation() {
+    if (!_uiState.value.locationPermissionGranted) return
+    locationClient.fetchCurrentOrLastLocation { sample ->
+      _uiState.update { cur -> cur.copy(latestUserGps = sample) }
+    }
   }
 
   fun refreshAdsNow() {
     val now = System.currentTimeMillis()
+    if (_uiState.value.locationPermissionGranted) {
+      refreshAmbientLocation()
+    }
     if (now - lastAdRefreshMs < 2_000L) return
     scope.launch {
       performAdsRefresh()
@@ -278,13 +298,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       )
     }
     if (granted) {
-      if (_uiState.value.latestUserGps == null) {
-        locationClient.fetchLastKnownLocation { sample ->
-          _uiState.update { cur ->
-            cur.copy(latestUserGps = cur.latestUserGps ?: sample)
-          }
-        }
-      }
+      refreshAmbientLocation()
       if (_uiState.value.running) {
         if (gpsJob == null) startGpsCollection()
         updateTrackingNotification()
@@ -304,11 +318,12 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       )
     }
     if (granted) {
+      refreshAmbientLocation()
       if (_uiState.value.running) {
         startGpsCollection()
         updateTrackingNotification()
       }
-    } else {
+    } else if (_uiState.value.running) {
       _uiState.update {
         it.copy(statusBanner = StatusBanner(currentStrings().gpsPermissionDenied, BannerType.BAD))
       }
@@ -537,7 +552,6 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         stationAlarm = null,
         alarmAlertMessage = null,
         focusedMapStation = null,
-        latestUserGps = null,
         movementStats = MovementStats(0.0, 0.0),
         verification = null,
         lowAccuracyMeters = null,
@@ -605,7 +619,6 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         running = false,
         insideTrain = false,
         stoppageDistances = StoppageDistances(null, null),
-        latestUserGps = null,
         verification = null,
         lowAccuracyMeters = null,
         statusBanner = null,
@@ -800,7 +813,12 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
           is LocationEvent.Fix -> {
             val s = event.sample
             if (s.accuracy > MAX_ACC) {
-              _uiState.update { it.copy(lowAccuracyMeters = s.accuracy.toInt()) }
+              _uiState.update { state ->
+                state.copy(
+                  latestUserGps = if (state.latestUserGps == null || s.accuracy <= 5000f) s else state.latestUserGps,
+                  lowAccuracyMeters = s.accuracy.toInt(),
+                )
+              }
               return@collect
             }
             gpsHistory.add(s)

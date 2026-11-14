@@ -162,7 +162,10 @@ class LocationClient(context: Context) {
   }
 
   @SuppressLint("MissingPermission")
-  fun fetchLastKnownLocation(onFix: (GpsSample) -> Unit) {
+  fun fetchLastKnownLocation(onFix: (GpsSample) -> Unit) = fetchCurrentOrLastLocation(onFix)
+
+  @SuppressLint("MissingPermission")
+  fun fetchCurrentOrLastLocation(onFix: (GpsSample) -> Unit) {
     val hasFine = ContextCompat.checkSelfPermission(
       appContext,
       Manifest.permission.ACCESS_FINE_LOCATION,
@@ -187,17 +190,88 @@ class LocationClient(context: Context) {
       )
     }
 
+    var deliveredBestTime = -1L
+    fun deliverIfFresher(loc: Location?) {
+      if (loc == null) return
+      val t = if (loc.time > 0L) loc.time else System.currentTimeMillis()
+      if (t >= deliveredBestTime) {
+        deliveredBestTime = t
+        deliver(loc)
+      }
+    }
+
+    // Seed from platform LocationManager cached providers right away
+    try {
+      val lm = locationManager
+      if (lm != null) {
+        val candidates = listOfNotNull(
+          runCatching { lm.getLastKnownLocation(LocationManager.GPS_PROVIDER) }.getOrNull(),
+          runCatching { lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER) }.getOrNull(),
+          runCatching { lm.getLastKnownLocation(LocationManager.PASSIVE_PROVIDER) }.getOrNull(),
+        )
+        candidates.maxByOrNull { it.time }?.let { deliverIfFresher(it) }
+      }
+    } catch (_: Throwable) {
+    }
+
+    // Request fresh active fix via FusedLocationProviderClient + LocationManager fallback
     try {
       fusedClient.lastLocation
-        .addOnSuccessListener { last ->
-          if (last != null) {
-            deliver(last)
+        .addOnSuccessListener { last -> deliverIfFresher(last) }
+        .addOnFailureListener { }
+
+      val priority = if (hasFine) {
+        Priority.PRIORITY_HIGH_ACCURACY
+      } else {
+        Priority.PRIORITY_BALANCED_POWER_ACCURACY
+      }
+      fusedClient.getCurrentLocation(priority, null)
+        .addOnSuccessListener { cur ->
+          if (cur != null) {
+            deliverIfFresher(cur)
           } else {
-            fusedClient.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, null)
-              .addOnSuccessListener { cur -> if (cur != null) deliver(cur) }
+            requestSinglePlatformFix(::deliverIfFresher)
           }
         }
+        .addOnFailureListener {
+          requestSinglePlatformFix(::deliverIfFresher)
+        }
     } catch (_: Throwable) {
+      requestSinglePlatformFix(::deliverIfFresher)
+    }
+  }
+
+  @SuppressLint("MissingPermission")
+  private fun requestSinglePlatformFix(onLocation: (Location?) -> Unit) {
+    val lm = locationManager ?: return
+    val providers = buildList {
+      if (lm.isProviderEnabled(LocationManager.GPS_PROVIDER)) add(LocationManager.GPS_PROVIDER)
+      if (lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) add(LocationManager.NETWORK_PROVIDER)
+    }
+    if (providers.isEmpty()) return
+
+    var completed = false
+    lateinit var listener: LocationListener
+    listener = object : LocationListener {
+      override fun onLocationChanged(location: Location) {
+        if (!completed) {
+          completed = true
+          try { lm.removeUpdates(listener) } catch (_: Throwable) {}
+          onLocation(location)
+        }
+      }
+
+      @Deprecated("Deprecated in Java")
+      override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) {}
+      override fun onProviderEnabled(provider: String) {}
+      override fun onProviderDisabled(provider: String) {}
+    }
+
+    providers.forEach { p ->
+      try {
+        lm.requestLocationUpdates(p, 0L, 0f, listener, Looper.getMainLooper())
+      } catch (_: Throwable) {
+      }
     }
   }
 }

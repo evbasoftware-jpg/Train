@@ -2,6 +2,9 @@ package com.example.ui.components
 
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,6 +20,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -44,11 +49,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -66,6 +73,12 @@ import com.example.model.LocalizedStrings
 import com.example.ui.theme.CobaltPrimary
 import com.example.ui.theme.VerifiedEmerald
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+
+private data class ReadyAdSlide(
+  val ad: AdItem,
+  val bitmap: ImageBitmap,
+)
 
 @Composable
 fun AdBannerSlot(
@@ -80,7 +93,7 @@ fun AdBannerSlot(
 ) {
   val imageRev by imageLoader.imageRevision.collectAsStateWithLifecycle()
   var timeTick by remember { mutableIntStateOf(0) }
-  var rotateIndex by remember(slotKey) { mutableIntStateOf(0) }
+  val scope = rememberCoroutineScope()
 
   LaunchedEffect(Unit) {
     while (true) {
@@ -95,45 +108,63 @@ fun AdBannerSlot(
     ads.filter { it.isEligible(slotKey, nowDate, nowMin, userLat, userLon) }
   }
 
-  LaunchedEffect(eligibleAds.size) {
-    if (eligibleAds.size > 1) {
-      while (true) {
-        delay(6_000L)
-        rotateIndex = (rotateIndex + 1) % eligibleAds.size
+  val readySlides = remember(eligibleAds, imageRev) {
+    eligibleAds.mapNotNull { ad ->
+      when (val st = imageLoader.getStatus(ad.imageName)) {
+        is AdImageStatus.Ready -> ReadyAdSlide(ad, st.bitmap)
+        else -> null
       }
-    } else {
-      rotateIndex = 0
     }
   }
 
-  if (eligibleAds.isEmpty()) return
-  val activeAd = eligibleAds[rotateIndex % eligibleAds.size]
+  if (readySlides.isEmpty()) return
 
-  val imgStatus = remember(activeAd.imageName, imageRev) {
-    imageLoader.getStatus(activeAd.imageName)
+  val pagerState = rememberPagerState(
+    initialPage = 0,
+    pageCount = { readySlides.size },
+  )
+
+  LaunchedEffect(readySlides.size, pagerState.currentPage, pagerState.isScrollInProgress) {
+    if (readySlides.size > 1 && !pagerState.isScrollInProgress) {
+      delay(6_000L)
+      val nextPage = (pagerState.currentPage + 1) % readySlides.size
+      pagerState.animateScrollToPage(
+        page = nextPage,
+        animationSpec = tween(durationMillis = 550, easing = FastOutSlowInEasing),
+      )
+    }
   }
-
-  if (imgStatus !is AdImageStatus.Ready) return
 
   Card(
     modifier = modifier
       .fillMaxWidth()
       .clip(RoundedCornerShape(14.dp))
-      .clickable { onAdClick(activeAd) }
       .testTag("ad_slot_$slotKey"),
     shape = RoundedCornerShape(14.dp),
     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
   ) {
-    Box(modifier = Modifier.fillMaxWidth()) {
-      Image(
-        bitmap = imgStatus.bitmap,
-        contentDescription = activeAd.address.ifBlank { strings.adBadgeLabel },
-        contentScale = ContentScale.FillWidth,
-        modifier = Modifier
-          .fillMaxWidth()
-          .heightIn(max = 180.dp),
-      )
+    Box(
+      modifier = Modifier
+        .fillMaxWidth()
+        .animateContentSize(animationSpec = tween(durationMillis = 250)),
+    ) {
+      HorizontalPager(
+        state = pagerState,
+        beyondViewportPageCount = 1,
+        modifier = Modifier.fillMaxWidth(),
+      ) { page ->
+        val slide = readySlides[page]
+        Image(
+          bitmap = slide.bitmap,
+          contentDescription = slide.ad.address.ifBlank { strings.adBadgeLabel },
+          contentScale = ContentScale.FillWidth,
+          modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(max = 185.dp)
+            .clickable { onAdClick(slide.ad) },
+        )
+      }
 
       Surface(
         shape = RoundedCornerShape(bottomStart = 8.dp),
@@ -149,7 +180,8 @@ fun AdBannerSlot(
         )
       }
 
-      if (eligibleAds.size > 1) {
+      if (readySlides.size > 1) {
+        val currentIdx = pagerState.currentPage.coerceIn(0, readySlides.lastIndex)
         Row(
           modifier = Modifier
             .align(Alignment.BottomCenter)
@@ -158,15 +190,22 @@ fun AdBannerSlot(
             .background(Color(0x88000000))
             .padding(horizontal = 8.dp, vertical = 3.dp),
           horizontalArrangement = Arrangement.spacedBy(5.dp),
+          verticalAlignment = Alignment.CenterVertically,
         ) {
-          eligibleAds.indices.forEach { idx ->
+          readySlides.indices.forEach { idx ->
             Box(
               modifier = Modifier
-                .size(if (idx == (rotateIndex % eligibleAds.size)) 7.dp else 5.dp)
+                .size(if (idx == currentIdx) 7.dp else 5.dp)
                 .clip(CircleShape)
-                .background(
-                  if (idx == (rotateIndex % eligibleAds.size)) Color.White else Color(0x88FFFFFF),
-                ),
+                .background(if (idx == currentIdx) Color.White else Color(0x88FFFFFF))
+                .clickable {
+                  scope.launch {
+                    pagerState.animateScrollToPage(
+                      page = idx,
+                      animationSpec = tween(durationMillis = 400, easing = FastOutSlowInEasing),
+                    )
+                  }
+                },
             )
           }
         }
