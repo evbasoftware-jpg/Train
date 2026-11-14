@@ -1415,7 +1415,9 @@
           adWhatsAppBtn: 'WhatsApp',
           adOpenLinkBtn: 'ওয়েবসাইট খুলুন',
           advertiseWhatsAppBtn: 'বিজ্ঞাপনের জন্য WhatsApp এ যোগাযোগ করুন',
-          advertiseWhatsAppMsg: 'আমি ট্রেন লাইভ লোকেশন অ্যাপে বিজ্ঞাপন দিতে চাই'
+          advertiseWhatsAppMsg: 'আমি ট্রেন লাইভ লোকেশন অ্যাপে বিজ্ঞাপন দিতে চাই',
+          geoAdLocationPrompt: '📍 আপনার এলাকার বিজ্ঞাপন দেখতে লোকেশন অনুমতি দিন',
+          enableLocationBtn: 'লোকেশন চালু করুন'
         },
         hi: {
           appTitle: 'Train Live Location',
@@ -1492,7 +1494,9 @@
           adWhatsAppBtn: 'WhatsApp',
           adOpenLinkBtn: 'वेबसाइट खोलें',
           advertiseWhatsAppBtn: 'विज्ञापन के लिए WhatsApp पर संपर्क करें',
-          advertiseWhatsAppMsg: 'मैं ट्रेन लाइव लोकेशन ऐप में विज्ञापन देना चाहता हूँ'
+          advertiseWhatsAppMsg: 'मैं ट्रेन लाइव लोकेशन ऐप में विज्ञापन देना चाहता हूँ',
+          geoAdLocationPrompt: '📍 अपने क्षेत्र के विज्ञापन देखने के लिए लोकेशन अनुमति दें',
+          enableLocationBtn: 'लोकेशन चालू करें'
         },
         en: {
           appTitle: 'Train Live Location',
@@ -1569,7 +1573,9 @@
           adWhatsAppBtn: 'WhatsApp',
           adOpenLinkBtn: 'Visit Website',
           advertiseWhatsAppBtn: 'Contact on WhatsApp for Advertising',
-          advertiseWhatsAppMsg: 'I want to advertise in the Train Live Location app'
+          advertiseWhatsAppMsg: 'I want to advertise in the Train Live Location app',
+          geoAdLocationPrompt: '📍 Allow Location access to see nearby ads',
+          enableLocationBtn: 'Allow Location'
         }
       };
 
@@ -1751,7 +1757,7 @@
           el('langSpinner').classList.add('hidden');
           renderAllUi();
         } else {
-          const cacheKey = `tll_ui_v7_${state.lang}`;
+          const cacheKey = `tll_ui_v8_${state.lang}`;
           let cached = null;
           try { cached = JSON.parse(localStorage.getItem(cacheKey) || 'null'); } catch (_) {}
           if (cached && Object.keys(cached).length > 10) {
@@ -3460,32 +3466,40 @@
         const exts = ['png', 'jpg', 'jpeg', 'webp'];
         const stem = hasExt ? pathPart.slice(0, dotIdx) : pathPart;
         const stemLower = stem.toLowerCase();
-        const candidates = [];
-        const addCand = (name) => { if (name && !candidates.includes(name)) candidates.push(name); };
-        if (hasExt) {
-          addCand(pathPart);
-          addCand(pathPart.toLowerCase());
-        }
-        exts.forEach(ext => addCand(`${stem}.${ext}`));
-        if (stemLower !== stem) exts.forEach(ext => addCand(`${stemLower}.${ext}`));
 
-        const encodedCands = candidates.map(c => c.split('/').map(encodeURIComponent).join('/'));
+        const exactCands = [];
+        const altCands = [];
+        const addExact = (name) => { if (name && !exactCands.includes(name)) exactCands.push(name); };
+        const addAlt = (name) => { if (name && !exactCands.includes(name) && !altCands.includes(name)) altCands.push(name); };
+
+        if (hasExt) {
+          addExact(pathPart);
+          addExact(pathPart.toLowerCase());
+        }
+        exts.forEach(ext => addAlt(`${stem}.${ext}`));
+        if (stemLower !== stem) exts.forEach(ext => addAlt(`${stemLower}.${ext}`));
+
         const urls = [];
         const addUrl = (u) => { if (!urls.includes(u)) urls.push(u); };
-        // 1. Live GitHub main (cache-busted) first so remote updates appear immediately
-        encodedCands.forEach(enc => addUrl(`${GITHUB_ADS_RAW_BASE}${enc}?_t=${bust}`));
-        // 2. Local ./Ads/ and bundled Android assets/Ads/ next for instant fallback
-        encodedCands.forEach(enc => {
-          addUrl(`./Ads/${enc}?_t=${bust}`);
-          addUrl(`./Ads/${enc}`);
-          addUrl(`./app/src/main/assets/Ads/${enc}?_t=${bust}`);
-          addUrl(`./app/src/main/assets/Ads/${enc}`);
-        });
-        // 3. GitHub master and jsDelivr CDN fallbacks
-        encodedCands.forEach(enc => {
-          addUrl(`https://raw.githubusercontent.com/evbasoft-jpg/Train/master/Ads/${enc}?_t=${bust}`);
-          addUrl(`${GITHUB_ADS_CDN_BASE}${enc}`);
-        });
+        const encodeName = (c) => c.split('/').map(encodeURIComponent).join('/');
+        const appendTier = (list) => {
+          const encs = list.map(encodeName);
+          encs.forEach(enc => addUrl(`${GITHUB_ADS_RAW_BASE}${enc}?_t=${bust}`));
+          encs.forEach(enc => {
+            addUrl(`./Ads/${enc}?_t=${bust}`);
+            addUrl(`./Ads/${enc}`);
+            addUrl(`./app/src/main/assets/Ads/${enc}?_t=${bust}`);
+            addUrl(`./app/src/main/assets/Ads/${enc}`);
+          });
+          encs.forEach(enc => {
+            addUrl(`https://raw.githubusercontent.com/evbasoft-jpg/Train/master/Ads/${enc}?_t=${bust}`);
+            addUrl(`${GITHUB_ADS_CDN_BASE}${enc}`);
+          });
+        };
+
+        // Check exact filename first across remote + local before trying alternate extensions
+        appendTier(exactCands);
+        appendTier(altCands);
         return urls;
       }
 
@@ -3644,6 +3658,7 @@
           try { localStorage.setItem('tll_ads_json_v1', JSON.stringify(jsonpAds)); } catch (_) {}
         }
         renderAllAds();
+        maybePromptLocationForGeoAds();
       }
 
       function loadFirstWorkingImage(urls, onSuccess, onAllFailed) {
@@ -3654,9 +3669,21 @@
             return;
           }
           const targetUrl = urls[idx++];
+          const isRemote = /^https?:\/\//i.test(targetUrl);
           const probe = new Image();
-          probe.onload = () => onSuccess(targetUrl);
-          probe.onerror = tryNext;
+          let settled = false;
+          const finish = (ok) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            probe.onload = null;
+            probe.onerror = null;
+            if (ok) onSuccess(targetUrl);
+            else tryNext();
+          };
+          const timer = setTimeout(() => finish(false), isRemote ? 3500 : 5000);
+          probe.onload = () => finish(probe.naturalWidth > 0);
+          probe.onerror = () => finish(false);
           probe.src = targetUrl;
         };
         tryNext();
@@ -3771,7 +3798,11 @@
                 return;
               }
               const latestSlide = adImgStateCache[slotKey]?.slides?.[slideIdx] || adItem;
-              openAdModal(latestSlide, buildAdImageUrls(latestSlide.imageName, adsImageEpoch));
+              const resolvedUrl = adResolvedUrlByImage[latestSlide.imageName];
+              const modalUrls = buildAdImageUrls(latestSlide.imageName, adsImageEpoch);
+              if (resolvedUrl && !modalUrls.includes(resolvedUrl)) modalUrls.unshift(resolvedUrl);
+              else if (resolvedUrl) modalUrls.unshift(resolvedUrl);
+              openAdModal(latestSlide, [...new Set(modalUrls)]);
             };
             track.appendChild(slide);
           });
@@ -4107,11 +4138,28 @@
         el('btnStopTracking').disabled = !state.running;
       }
 
-      function setStatusBanner(msg, type = 'info') {
+      let statusBannerTag = '';
+      function setStatusBanner(msg, type = 'info', actionText = '', onAction = null, tag = '') {
         const box = el('statusBanner');
-        if (!msg) { box.classList.add('hidden'); return; }
+        const btn = el('btnGrantLocation');
+        if (!msg) {
+          statusBannerTag = '';
+          box.classList.add('hidden');
+          btn.classList.add('hidden');
+          btn.onclick = null;
+          return;
+        }
+        statusBannerTag = tag || '';
         box.className = `status-banner banner-${type}`;
         el('statusBannerText').textContent = msg;
+        if (actionText && typeof onAction === 'function') {
+          btn.textContent = actionText;
+          btn.classList.remove('hidden');
+          btn.onclick = onAction;
+        } else {
+          btn.classList.add('hidden');
+          btn.onclick = null;
+        }
       }
 
       function renderAlarmBanner() {
@@ -4558,10 +4606,10 @@
 
       function applyPassiveGeoPosition(pos) {
         const c = pos?.coords;
-        if (!c) return;
+        if (!c || !Number.isFinite(c.latitude) || !Number.isFinite(c.longitude)) return;
         const prev = state.latestUserGps;
         const nextAcc = Number.isFinite(c.accuracy) ? c.accuracy : 9999;
-        if (prev && (Date.now() - prev.time < 25000) && (prev.accuracy || 9999) < nextAcc && nextAcc > 500) {
+        if (prev && !prev.isApprox && (Date.now() - prev.time < 25000) && (prev.accuracy || 9999) < nextAcc && nextAcc > 500) {
           return;
         }
         state.latestUserGps = {
@@ -4570,15 +4618,26 @@
           accuracy: nextAcc,
           speedMs: Number.isFinite(c.speed) && c.speed >= 0 ? c.speed : null,
           heading: Number.isFinite(c.heading) && c.heading >= 0 ? c.heading : null,
+          isApprox: Boolean(pos?.isApprox),
           time: Date.now()
         };
-        try { localStorage.setItem('tll_last_gps', JSON.stringify(state.latestUserGps)); } catch (_) {}
+        if (!pos?.isApprox) {
+          try { localStorage.setItem('tll_last_gps', JSON.stringify(state.latestUserGps)); } catch (_) {}
+          if (statusBannerTag === 'geo_ad_prompt' && !state.running) setStatusBanner(null);
+        }
         renderAllAds();
         renderMap();
       }
 
       function restoreRecentPassiveLocation() {
         try {
+          const qs = new URLSearchParams(window.location.search);
+          const qLat = Number(qs.get('lat'));
+          const qLon = Number(qs.get('lon'));
+          if (Number.isFinite(qLat) && Number.isFinite(qLon) && Math.abs(qLat) <= 90 && Math.abs(qLon) <= 180 && (qLat !== 0 || qLon !== 0)) {
+            state.latestUserGps = { lat: qLat, lon: qLon, accuracy: 25, speedMs: null, heading: null, time: Date.now() };
+            return;
+          }
           const raw = localStorage.getItem('tll_last_gps');
           if (!raw || state.latestUserGps) return;
           const saved = JSON.parse(raw);
@@ -4588,18 +4647,101 @@
         } catch (_) {}
       }
 
-      function refreshPassiveLocation() {
-        if (!navigator.geolocation) return;
+      let ipGeoAttempted = false;
+      async function tryIpGeolocationFallback() {
+        if (ipGeoAttempted || (state.latestUserGps && !state.latestUserGps.isApprox)) return;
+        ipGeoAttempted = true;
+        const providers = [
+          async () => {
+            const r = await fetch('https://get.geojs.io/v1/ip/geo.json', { cache: 'no-store' });
+            const j = await r.json();
+            return { lat: Number(j.latitude), lon: Number(j.longitude) };
+          },
+          async () => {
+            const r = await fetch('https://ipwho.is/', { cache: 'no-store' });
+            const j = await r.json();
+            return j.success === false ? null : { lat: Number(j.latitude), lon: Number(j.longitude) };
+          }
+        ];
+        for (const fn of providers) {
+          try {
+            const pt = await fn();
+            if (pt && Number.isFinite(pt.lat) && Number.isFinite(pt.lon)) {
+              if (!state.latestUserGps) {
+                applyPassiveGeoPosition({
+                  coords: { latitude: pt.lat, longitude: pt.lon, accuracy: 20000 },
+                  isApprox: true
+                });
+              }
+              return;
+            }
+          } catch (_) {}
+        }
+      }
+
+      let geoPassiveWatchId = null;
+      function startPassiveGeoWatchIfGranted() {
+        if (!navigator.geolocation || geoPassiveWatchId != null) return;
+        try {
+          geoPassiveWatchId = navigator.geolocation.watchPosition(
+            applyPassiveGeoPosition,
+            () => {},
+            { enableHighAccuracy: false, maximumAge: 60000, timeout: 15000 }
+          );
+        } catch (_) {}
+      }
+
+      function hasActiveGeoTargetedAds() {
+        const now = new Date();
+        const nowDate = now.getFullYear() * 10000 + (now.getMonth() + 1) * 100 + now.getDate();
+        const nowMin = now.getHours() * 60 + now.getMinutes();
+        return state.allAds.some(ad => {
+          if (ad.lat == null || ad.lon == null || !(ad.radiusKm > 0)) return false;
+          return isAdEligible(ad, ad.areaKeys[0], nowDate, nowMin, ad.lat, ad.lon);
+        });
+      }
+
+      function maybePromptLocationForGeoAds() {
+        if (state.running) return;
+        if (state.latestUserGps && !state.latestUserGps.isApprox) {
+          if (statusBannerTag === 'geo_ad_prompt') setStatusBanner(null);
+          return;
+        }
+        if (state.locatedTrain) return;
+        if (!hasActiveGeoTargetedAds()) return;
+        setStatusBanner(
+          state.strings.geoAdLocationPrompt,
+          'info',
+          state.strings.enableLocationBtn,
+          () => refreshPassiveLocation(true),
+          'geo_ad_prompt'
+        );
+      }
+
+      function refreshPassiveLocation(fromUserGesture = false) {
+        if (!navigator.geolocation) {
+          tryIpGeolocationFallback();
+          maybePromptLocationForGeoAds();
+          return;
+        }
+        let anyFailed = 0;
+        const onGeoErr = () => {
+          anyFailed++;
+          if (anyFailed >= 2 && (!state.latestUserGps || state.latestUserGps.isApprox)) {
+            tryIpGeolocationFallback();
+            maybePromptLocationForGeoAds();
+          }
+        };
+        // Fast network/cached position immediately + high-accuracy GPS in parallel
         navigator.geolocation.getCurrentPosition(
           applyPassiveGeoPosition,
-          () => {
-            navigator.geolocation.getCurrentPosition(
-              applyPassiveGeoPosition,
-              () => {},
-              { enableHighAccuracy: false, maximumAge: 300000, timeout: 20000 }
-            );
-          },
-          { enableHighAccuracy: true, maximumAge: 60000, timeout: 15000 }
+          onGeoErr,
+          { enableHighAccuracy: false, maximumAge: fromUserGesture ? 0 : 600000, timeout: 5000 }
+        );
+        navigator.geolocation.getCurrentPosition(
+          applyPassiveGeoPosition,
+          onGeoErr,
+          { enableHighAccuracy: true, maximumAge: fromUserGesture ? 0 : 60000, timeout: 15000 }
         );
       }
 
@@ -4610,12 +4752,20 @@
       restoreRecentPassiveLocation();
       loadStationsDb();
       fetchAdsSheet();
-      refreshPassiveLocation();
+      refreshPassiveLocation(false);
 
       if (navigator.permissions && navigator.permissions.query) {
         navigator.permissions.query({ name: 'geolocation' }).then(perm => {
+          if (perm.state === 'granted') {
+            startPassiveGeoWatchIfGranted();
+          } else if (perm.state === 'prompt' || perm.state === 'denied') {
+            setTimeout(maybePromptLocationForGeoAds, 1800);
+          }
           perm.onchange = () => {
-            if (perm.state === 'granted') refreshPassiveLocation();
+            if (perm.state === 'granted') {
+              startPassiveGeoWatchIfGranted();
+              refreshPassiveLocation(false);
+            }
           };
         }).catch(() => {});
       }
