@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Straighten
 import androidx.compose.material.icons.filled.Train
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -34,12 +33,10 @@ import com.example.model.LocalizedStrings
 import com.example.model.LocatedTrain
 import com.example.model.MovementStats
 import com.example.model.StoppageDistances
-import com.example.model.VerificationMetrics
 import com.example.ui.theme.CobaltPrimary
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.NtesOrange
 import java.util.Locale
-import kotlin.math.roundToInt
 
 @Composable
 fun TrainLiveCard(
@@ -47,6 +44,7 @@ fun TrainLiveCard(
   trainName: String?,
   locatedTrain: LocatedTrain?,
   stoppageDistances: StoppageDistances,
+  destinationRaw: String?,
   rawSource: String?,
   insideTrain: Boolean,
   movementStats: MovementStats,
@@ -76,6 +74,9 @@ fun TrainLiveCard(
         ?.let(localizeName)
         ?: strings.unknownStation
       val nextStationName = locatedTrain.next.takeIf { it.isNotBlank() }
+        ?.let(localizeName)
+        ?: "—"
+      val destinationName = destinationRaw?.takeIf { it.isNotBlank() }
         ?.let(localizeName)
         ?: "—"
 
@@ -113,6 +114,7 @@ fun TrainLiveCard(
           )
         }
 
+        KeyValueRow(strings.notifDestinationLabel, destinationName)
         KeyValueRow(strings.labelSource, sourceLabel)
         KeyValueRow(
           strings.labelSpeed,
@@ -155,69 +157,6 @@ private fun DistanceSubBadge(
         color = highlightColor,
         modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
       )
-    }
-  }
-}
-
-@Composable
-fun MovementDistanceCard(
-  verification: VerificationMetrics?,
-  movementStats: MovementStats,
-  locatedTrain: LocatedTrain?,
-  strings: LocalizedStrings,
-  modifier: Modifier = Modifier,
-) {
-  TelemetryCardShell(
-    title = strings.distanceMovementTitle,
-    icon = Icons.Filled.Straighten,
-    modifier = modifier.testTag("movement_distance_card"),
-  ) {
-    if (verification == null || locatedTrain == null) {
-      Text(
-        text = strings.waitingLabel,
-        style = MaterialTheme.typography.bodyMedium,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-      )
-    } else {
-      val distKm = verification.distanceKm.takeIf { it.isFinite() } ?: 0.0
-      val crossKm = verification.crossTrackKm.takeIf { it.isFinite() } ?: 0.0
-      val alongKm = verification.alongTrackKm.takeIf { it.isFinite() } ?: 0.0
-      val userSpd = movementStats.speedKmh.takeIf { it.isFinite() } ?: 0.0
-      val trainSpd = locatedTrain.speedKmh.takeIf { it.isFinite() } ?: 0.0
-      val headDiff = (verification.headingDiffDeg.takeIf { it.isFinite() } ?: 0.0).roundToInt()
-
-      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        KeyValueRow(
-          strings.labelTrainDistance,
-          strings.formatDistance(distKm),
-          mono = true,
-        )
-        KeyValueRow(
-          strings.labelTrackOffset,
-          strings.formatDistance(crossKm),
-          mono = true,
-        )
-        KeyValueRow(
-          strings.labelLengthOffset,
-          strings.formatDistance(alongKm),
-          mono = true,
-        )
-        KeyValueRow(
-          strings.labelUserSpeed,
-          "${String.format(Locale.US, "%.1f", userSpd)} ${strings.kmPerHourUnit}",
-          mono = true,
-        )
-        KeyValueRow(
-          strings.labelTrainSpeed,
-          "${String.format(Locale.US, "%.1f", trainSpd)} ${strings.kmPerHourUnit}",
-          mono = true,
-        )
-        KeyValueRow(
-          strings.labelHeadingDiff,
-          "$headDiff°",
-          mono = true,
-        )
-      }
     }
   }
 }

@@ -108,7 +108,6 @@ import com.example.model.StationAlarmState
 import com.example.model.StationDbEntry
 import com.example.model.StatusBanner
 import com.example.model.TrainBetweenItem
-import com.example.ui.components.MovementDistanceCard
 import com.example.ui.components.OsmMapSection
 import com.example.ui.components.RouteTimelineCard
 import com.example.ui.components.TrainLiveCard
@@ -169,7 +168,7 @@ fun TrainTrackerScreen(
     viewModel.setLocationPermissionState(fine || coarse)
   }
 
-  LaunchedEffect(state.needsLocationPermissionPrompt) {
+  LaunchedEffect(state.needsLocationPermissionPrompt, state.needsNotificationPermissionPrompt) {
     if (state.needsLocationPermissionPrompt) {
       locationPermissionLauncher.launch(
         arrayOf(
@@ -177,11 +176,7 @@ fun TrainTrackerScreen(
           Manifest.permission.ACCESS_COARSE_LOCATION,
         ),
       )
-    }
-  }
-
-  LaunchedEffect(state.needsNotificationPermissionPrompt) {
-    if (state.needsNotificationPermissionPrompt) {
+    } else if (state.needsNotificationPermissionPrompt) {
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
         val already = ContextCompat.checkSelfPermission(
           context,
@@ -344,6 +339,7 @@ fun TrainTrackerScreen(
               trainName = state.trainName,
               locatedTrain = state.locatedTrain,
               stoppageDistances = state.stoppageDistances,
+              destinationRaw = state.resolveDestinationRaw(),
               rawSource = state.rawSource,
               insideTrain = state.insideTrain,
               movementStats = state.movementStats,
@@ -384,14 +380,6 @@ fun TrainTrackerScreen(
                 onRecenter = viewModel::triggerRecenterMap,
               )
             }
-
-            // Distance & Movement Card (Confidence Score, User GPS, GPS Samples omitted per request)
-            MovementDistanceCard(
-              verification = state.verification,
-              movementStats = state.movementStats,
-              locatedTrain = state.locatedTrain,
-              strings = strings,
-            )
 
             Spacer(modifier = Modifier.height(10.dp))
           }

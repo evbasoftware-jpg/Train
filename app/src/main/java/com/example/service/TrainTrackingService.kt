@@ -120,6 +120,7 @@ class TrainTrackingService : Service() {
         startForeground(TrainNotificationHelper.TRACKING_NOTIFICATION_ID, notification)
       }
     } catch (_: Throwable) {
+      TrainNotificationHelper.postFallbackTrackingNotification(this, info)
       stopSelf()
       return START_NOT_STICKY
     }

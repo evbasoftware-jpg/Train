@@ -119,67 +119,113 @@ class VoiceAnnouncer(context: Context) {
         }
       }
 
-      // Soft, pleasant, slightly elevated female cadence
-      engine.setPitch(1.18f)
-      engine.setSpeechRate(0.84f)
+      val targetLang = chosenLocale?.language ?: preferredLocale.language
+      val availableVoices = engine.voices
+      var selectedFemaleVoice: Voice? = null
+      var confirmedFemale = false
+      var looksMale = false
+
+      if (!availableVoices.isNullOrEmpty()) {
+        val pick = selectSweetFemaleVoice(availableVoices, targetLang)
+        selectedFemaleVoice = pick.voice
+        confirmedFemale = pick.isConfirmedFemale
+        looksMale = pick.isLikelyMale
+        if (selectedFemaleVoice != null) {
+          engine.language = selectedFemaleVoice.locale
+          engine.voice = selectedFemaleVoice
+        }
+      }
+
+      // Sweet soft female cadence; elevate slightly more only if device lacked a confirmed female voice
+      val pitch = when {
+        confirmedFemale -> 1.14f
+        looksMale -> 1.32f
+        langCode.equals("bn", ignoreCase = true) -> 1.24f
+        else -> 1.18f
+      }
+      engine.setPitch(pitch)
+      engine.setSpeechRate(0.85f)
       engine.setAudioAttributes(
         AudioAttributes.Builder()
           .setUsage(AudioAttributes.USAGE_ASSISTANCE_NAVIGATION_GUIDANCE)
           .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
           .build(),
       )
-
-      val targetLang = chosenLocale?.language ?: preferredLocale.language
-      val availableVoices = engine.voices
-      if (!availableVoices.isNullOrEmpty()) {
-        val femaleVoice = selectSweetFemaleVoice(availableVoices, targetLang)
-        if (femaleVoice != null) {
-          engine.voice = femaleVoice
-        }
-      }
       configuredForLang = langCode
     } catch (_: Throwable) {
     }
   }
 
-  private fun selectSweetFemaleVoice(voices: Set<Voice>, targetLanguage: String): Voice? {
+  private data class VoicePick(
+    val voice: Voice?,
+    val isConfirmedFemale: Boolean,
+    val isLikelyMale: Boolean,
+  )
+
+  private fun selectSweetFemaleVoice(voices: Set<Voice>, targetLanguage: String): VoicePick {
     val langMatches = voices.filter {
       it.locale.language.equals(targetLanguage, ignoreCase = true)
     }
-    if (langMatches.isEmpty()) return null
+    if (langMatches.isEmpty()) return VoicePick(null, isConfirmedFemale = false, isLikelyMale = false)
 
-    // Google TTS voice codes: bnf / ban / bnd = Bengali Female; hia / hic / hie / cfn = Hindi Female;
-    // end / enc / ena / sfg / tpf / iog / gba = English Female.
-    // bnm / hid / ene / enm / iob / iom / gbd = Male voices to avoid.
+    // Google Speech Services voice codes:
+    // Bengali Female: bnf (India), bna (India A), bnc (India C), bne (India E), ban (Bangladesh)
+    // Bengali Male: bnm (India Male), bnd (India D Male), bnb (India B Male), bam (Bangladesh Male)
+    // Hindi Female: hia, hic, hie, cfn; Male: hid, hib
+    // English Female: end, enc, ena, sfg, tpf, iog, tpd, gba, gbb; Male: ene, enm, iob, iom, gbd
     val femaleHints = listOf(
       "female", "woman", "girl", "f00", "f01", "f02", "-f-", "_f_",
-      "bnf", "bnd", "ban", "hia", "hic", "hie", "cfn",
+      "bnf", "bna", "bnc", "bne", "ban",
+      "hia", "hic", "hie", "cfn",
       "end", "enc", "ena", "sfg", "tpf", "iog", "tpd", "gba", "gbb",
       "wavenet-a", "wavenet-c", "wavenet-e", "neural2-a", "neural2-c", "standard-a", "standard-c",
     )
     val maleHints = listOf(
       "male", "man", "boy", "m00", "m01", "-m-", "_m_",
-      "bnm", "hid", "ene", "enm", "iob", "iom", "gbd",
-      "wavenet-b", "wavenet-d", "neural2-d", "standard-b", "standard-d",
+      "bnm", "bnd", "bnb", "bam",
+      "hid", "hib", "ene", "enm", "iob", "iom", "gbd",
+      "wavenet-b", "wavenet-d", "neural2-b", "neural2-d", "standard-b", "standard-d",
     )
 
-    fun score(v: Voice): Int {
+    fun isFemale(v: Voice): Boolean {
       val name = v.name.lowercase(Locale.US)
       val feats = v.features?.joinToString(" ")?.lowercase(Locale.US) ?: ""
+      return femaleHints.any { name.contains(it) || feats.contains(it) } &&
+        !maleHints.any { name.contains(it) || feats.contains(it) }
+    }
+
+    fun isMale(v: Voice): Boolean {
+      val name = v.name.lowercase(Locale.US)
+      val feats = v.features?.joinToString(" ")?.lowercase(Locale.US) ?: ""
+      return maleHints.any { name.contains(it) || feats.contains(it) }
+    }
+
+    fun score(v: Voice): Int {
       var s = 0
-      if (femaleHints.any { name.contains(it) || feats.contains(it) }) s += 100
-      if (maleHints.any { name.contains(it) || feats.contains(it) }) s -= 120
-      if (!v.isNetworkConnectionRequired) s += 15
+      if (isFemale(v)) s += 400
+      if (isMale(v)) s -= 500
+      // Within same gender tier, prefer bn-IN / bn-BD local high-quality voices
+      if (v.locale.country.equals("IN", ignoreCase = true)) s += 30
+      if (v.locale.country.equals("BD", ignoreCase = true)) s += 20
+      if (!v.isNetworkConnectionRequired) s += 20
       if (v.quality >= Voice.QUALITY_HIGH) s += 10
       return s
     }
 
-    return langMatches.maxByOrNull { score(it) }
+    val best = langMatches.maxByOrNull { score(it) } ?: return VoicePick(null, false, false)
+    return VoicePick(
+      voice = best,
+      isConfirmedFemale = isFemale(best),
+      isLikelyMale = isMale(best),
+    )
   }
 
   private fun speakNow(text: String) {
     val engine = tts ?: return
     try {
+      if (configuredForLang != currentLangCode) {
+        configureVoiceIfNeeded(currentLangCode)
+      }
       val params = Bundle().apply {
         putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 0.88f)
       }

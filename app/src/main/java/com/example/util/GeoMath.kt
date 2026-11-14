@@ -455,12 +455,13 @@ object GeoMath {
     val a = route[idx]
     val b = route[idx + 1]
     if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) return 0.0
+    if (!train.lat.isFinite() || !train.lon.isFinite()) return 0.0
     val totalDist = haversineKm(a.lat, a.lon, b.lat, b.lon)
+    if (totalDist <= 0.01) return 0.0
     val coveredDist = haversineKm(a.lat, a.lon, train.lat, train.lon)
-    return if (totalDist > 0.0 && coveredDist < totalDist) {
-      (coveredDist / totalDist).coerceIn(0.0, 0.95)
-    } else {
-      0.0
-    }
+    val segBearing = bearingDegrees(a.lat, a.lon, b.lat, b.lon)
+    val trainBearing = bearingDegrees(a.lat, a.lon, train.lat, train.lon)
+    val projDist = coveredDist * cos(Math.toRadians(trainBearing - segBearing))
+    return (projDist / totalDist).coerceIn(0.0, 1.0)
   }
 }

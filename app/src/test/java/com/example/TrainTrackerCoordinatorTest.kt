@@ -91,4 +91,60 @@ class TrainTrackerCoordinatorTest {
     assertFalse(coordinator.uiState.value.running)
     assertEquals(null, coordinator.uiState.value.statusBanner)
   }
+
+  @Test
+  fun resolveDestinationUsesToWhenFromAndToSetOtherwiseFinalRouteStation() {
+    val route = listOf(
+      com.example.model.RouteStation("HWH", "Howrah", 1, 22.58, 88.34, null, null, null),
+      com.example.model.RouteStation("BWN", "Barddhaman", 2, 23.25, 87.87, null, null, null),
+      com.example.model.RouteStation("SCL", "Silchar", 3, 24.83, 92.78, null, null, null),
+    )
+
+    val withoutFromTo = com.example.model.TrackerUiState(
+      fromInput = "",
+      toInput = "",
+      route = route,
+    )
+    assertEquals("Silchar", withoutFromTo.resolveDestinationRaw())
+
+    val withToOnly = com.example.model.TrackerUiState(
+      fromInput = "",
+      toInput = "BARDDHAMAN (BWN)",
+      route = route,
+    )
+    assertEquals("Silchar", withToOnly.resolveDestinationRaw())
+
+    val withBoth = com.example.model.TrackerUiState(
+      fromInput = "HOWRAH JN (HWH)",
+      toInput = "BARDDHAMAN (BWN)",
+      route = route,
+    )
+    assertEquals("Barddhaman", withBoth.resolveDestinationRaw())
+  }
+
+  @Test
+  fun enteringTrainNoWithoutFromToAutoStartsNotificationAndAllowsRestart() {
+    val context = ApplicationProvider.getApplicationContext<Context>()
+    val coordinator = TrainTrackingCoordinator.getInstance(context)
+    coordinator.stopTracking()
+    coordinator.onFromInputChanged("")
+    coordinator.onToInputChanged("")
+    coordinator.onTrainNoChanged("")
+
+    coordinator.onTrainNoChanged("13175")
+    // Allow 250ms debounce in Dispatchers.Main.immediate under Robolectric
+    org.robolectric.shadows.ShadowLooper.idleMainLooper(350, java.util.concurrent.TimeUnit.MILLISECONDS)
+
+    assertTrue(coordinator.uiState.value.running)
+    assertEquals("13175", coordinator.uiState.value.trainNoInput)
+
+    coordinator.stopTracking()
+    assertFalse(coordinator.uiState.value.running)
+
+    // Re-entering same train number after stop also activates notification/tracking
+    coordinator.onTrainNoChanged("13175")
+    org.robolectric.shadows.ShadowLooper.idleMainLooper(350, java.util.concurrent.TimeUnit.MILLISECONDS)
+    assertTrue(coordinator.uiState.value.running)
+    coordinator.stopTracking()
+  }
 }

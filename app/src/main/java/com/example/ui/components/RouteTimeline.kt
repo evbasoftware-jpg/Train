@@ -1,6 +1,9 @@
 package com.example.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -13,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -39,18 +43,25 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import kotlin.math.abs
+import kotlin.math.floor
+import kotlin.math.roundToInt
 import com.example.model.DelayStatus
 import com.example.model.LocalizedStrings
 import com.example.model.LocatedTrain
@@ -302,11 +313,42 @@ private fun RouteTrackStrip(
     0
   }
 
-  val progress = if (locatedTrain != null) {
-    GeoMath.computeSegmentProgress(locatedTrain.copy(idx = activeIdx), route)
+  val rawProgress = if (locatedTrain != null && activeIdx < route.lastIndex) {
+    GeoMath.computeSegmentProgress(locatedTrain.copy(idx = activeIdx), route).toFloat().coerceIn(0f, 1f)
   } else {
-    0.0
-  }.toFloat().coerceIn(0f, 0.9f)
+    0f
+  }
+  val targetRoutePos = if (locatedTrain != null) {
+    activeIdx.toFloat() + rawProgress
+  } else {
+    0f
+  }
+  val routePosAnim = remember(
+    route.size,
+    route.firstOrNull()?.stationCode,
+    route.lastOrNull()?.stationCode,
+  ) {
+    Animatable(targetRoutePos)
+  }
+  LaunchedEffect(targetRoutePos, locatedTrain != null) {
+    if (locatedTrain == null) {
+      routePosAnim.snapTo(0f)
+    } else if (abs(targetRoutePos - routePosAnim.value) > 2.5f) {
+      routePosAnim.snapTo(targetRoutePos)
+    } else {
+      routePosAnim.animateTo(
+        targetValue = targetRoutePos,
+        animationSpec = tween(durationMillis = 800, easing = FastOutSlowInEasing),
+      )
+    }
+  }
+
+  val animRoutePos = routePosAnim.value.coerceIn(0f, route.lastIndex.toFloat().coerceAtLeast(0f))
+  val visualActiveIdx = floor(animRoutePos).toInt().coerceIn(0, route.lastIndex)
+  val segFrac = (animRoutePos - visualActiveIdx).coerceIn(0f, 1f)
+
+  val nodeWidthDp = 132.dp
+  val nodeWidthPx = with(LocalDensity.current) { nodeWidthDp.toPx() }
 
   val effectiveSpeed = if (insideTrain && userSpeedKmh > 0.0) {
     userSpeedKmh
@@ -337,6 +379,8 @@ private fun RouteTrackStrip(
       val isPassed = locatedTrain != null && index < activeIdx
       val isActive = locatedTrain != null && index == activeIdx
       val isNext = locatedTrain != null && index == activeIdx + 1
+      val isVisualCurrent = locatedTrain != null && index == visualActiveIdx
+      val isVisualNext = locatedTrain != null && index == visualActiveIdx + 1
       val isSelected = selectedStationIndex == index
       val rawStName = station.stationName.ifBlank { station.stationCode }
       val stName = localizeName(rawStName)
@@ -369,14 +413,29 @@ private fun RouteTrackStrip(
         DelayStatus.Unknown
       }
 
+      val showTrainHere = when {
+        locatedTrain == null -> false
+        isVisualCurrent && (segFrac <= 0.5f || visualActiveIdx == route.lastIndex) -> true
+        isVisualNext && segFrac > 0.5f -> true
+        else -> false
+      }
+      val trainOffsetX = if (isVisualCurrent) {
+        (nodeWidthPx * segFrac).roundToInt()
+      } else {
+        (-nodeWidthPx * (1f - segFrac)).roundToInt()
+      }
+
       Column(
         modifier = Modifier
-          .width(132.dp)
-          .clip(RoundedCornerShape(10.dp))
+          .width(nodeWidthDp)
+          .zIndex(if (showTrainHere || isVisualCurrent || isVisualNext) 2f else 0f)
           .then(
             if (isSelected) {
               Modifier
-                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f))
+                .background(
+                  MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
+                  RoundedCornerShape(10.dp),
+                )
                 .border(1.dp, CobaltPrimary.copy(alpha = 0.5f), RoundedCornerShape(10.dp))
             } else {
               Modifier
@@ -405,60 +464,42 @@ private fun RouteTrackStrip(
             val strokePx = 4.dp.toPx()
 
             if (index > 0) {
-              val leftColor = if (locatedTrain != null && index <= activeIdx) {
-                passedColor
-              } else {
-                trackColor
-              }
+              val leftFullGreen = locatedTrain != null && index <= visualActiveIdx
               drawLine(
-                color = leftColor,
+                color = if (leftFullGreen) passedColor else trackColor,
                 start = Offset(0f, lineY),
                 end = Offset(centerX, lineY),
                 strokeWidth = strokePx,
                 cap = StrokeCap.Butt,
               )
+              val leftHalfFrac = ((segFrac - 0.5f) * 2f).coerceIn(0f, 1f)
+              if (isVisualNext && leftHalfFrac > 0f) {
+                drawLine(
+                  color = passedColor,
+                  start = Offset(0f, lineY),
+                  end = Offset(centerX * leftHalfFrac, lineY),
+                  strokeWidth = strokePx,
+                  cap = StrokeCap.Butt,
+                )
+              }
             }
             if (index < route.lastIndex) {
-              val rightColor = if (locatedTrain != null && index < activeIdx) {
-                passedColor
-              } else {
-                trackColor
-              }
+              val rightFullGreen = locatedTrain != null && index < visualActiveIdx
               drawLine(
-                color = rightColor,
+                color = if (rightFullGreen) passedColor else trackColor,
                 start = Offset(centerX, lineY),
                 end = Offset(size.width, lineY),
                 strokeWidth = strokePx,
                 cap = StrokeCap.Butt,
               )
-              if (isActive && progress > 0f) {
+              val rightHalfFrac = (segFrac * 2f).coerceIn(0f, 1f)
+              if (isVisualCurrent && rightHalfFrac > 0f) {
                 drawLine(
                   color = passedColor,
                   start = Offset(centerX, lineY),
-                  end = Offset(centerX + (size.width - centerX) * progress, lineY),
+                  end = Offset(centerX + (size.width - centerX) * rightHalfFrac, lineY),
                   strokeWidth = strokePx,
-                  cap = StrokeCap.Round,
-                )
-              }
-            }
-          }
-
-          if (isActive) {
-            Surface(
-              modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 2.dp)
-                .size(32.dp),
-              shape = CircleShape,
-              color = CobaltPrimary,
-              shadowElevation = 4.dp,
-            ) {
-              Box(contentAlignment = Alignment.Center) {
-                Icon(
-                  imageVector = Icons.Filled.Train,
-                  contentDescription = "Train position",
-                  tint = Color.White,
-                  modifier = Modifier.size(18.dp),
+                  cap = StrokeCap.Butt,
                 )
               }
             }
@@ -478,6 +519,29 @@ private fun RouteTrackStrip(
                 .background(dotColor)
                 .border(2.5.dp, Color.White, CircleShape),
             )
+          }
+
+          if (showTrainHere) {
+            Surface(
+              modifier = Modifier
+                .align(Alignment.TopCenter)
+                .offset { IntOffset(trainOffsetX, 0) }
+                .padding(top = 2.dp)
+                .size(32.dp)
+                .zIndex(3f),
+              shape = CircleShape,
+              color = CobaltPrimary,
+              shadowElevation = 4.dp,
+            ) {
+              Box(contentAlignment = Alignment.Center) {
+                Icon(
+                  imageVector = Icons.Filled.Train,
+                  contentDescription = "Train position",
+                  tint = Color.White,
+                  modifier = Modifier.size(18.dp),
+                )
+              }
+            }
           }
         }
 

@@ -31,7 +31,7 @@ data class TrackingNotificationContent(
 )
 
 object TrainNotificationHelper {
-  const val TRACKING_CHANNEL_ID = "train_live_tracking"
+  const val TRACKING_CHANNEL_ID = "train_live_tracking_v2"
   const val ALARM_CHANNEL_ID = "station_wakeup_alarm"
   const val TRACKING_NOTIFICATION_ID = 2001
   const val ALARM_NOTIFICATION_ID = 2002
@@ -43,9 +43,12 @@ object TrainNotificationHelper {
       val trackingChannel = NotificationChannel(
         TRACKING_CHANNEL_ID,
         "Live Train Tracking",
-        NotificationManager.IMPORTANCE_LOW,
+        NotificationManager.IMPORTANCE_DEFAULT,
       ).apply {
         description = "Shows current stoppage, next stoppage, and destination even when screen is off"
+        setSound(null, null)
+        enableVibration(false)
+        setShowBadge(false)
       }
 
       val alarmChannel = NotificationChannel(
@@ -119,6 +122,8 @@ object TrainNotificationHelper {
       .setStyle(NotificationCompat.DecoratedCustomViewStyle())
       .setOngoing(true)
       .setOnlyAlertOnce(true)
+      .setSilent(true)
+      .setPriority(NotificationCompat.PRIORITY_DEFAULT)
       .setContentIntent(openPendingIntent)
       .addAction(0, info.stopLabel, stopPendingIntent)
       .build()

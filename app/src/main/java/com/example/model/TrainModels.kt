@@ -557,4 +557,24 @@ data class TrackerUiState(
 ) {
   fun localizeName(raw: String): String =
     raw.takeIf { it.isNotBlank() }?.let { translatedNames[it] ?: it } ?: raw
+
+  fun resolveDestinationRaw(): String? {
+    val hasFromAndTo = fromInput.trim().isNotEmpty() && toInput.trim().isNotEmpty()
+    if (hasFromAndTo) {
+      toResolvedStation?.name?.takeIf { it.isNotBlank() }?.let { return it }
+      val parenCode = Regex("""\(\s*([A-Za-z0-9]+)\s*\)""").find(toInput)?.groupValues?.getOrNull(1)
+      val toCodeOrText = (parenCode ?: toInput).trim()
+      if (toCodeOrText.isNotEmpty()) {
+        route.firstOrNull {
+          it.stationCode.equals(toCodeOrText, ignoreCase = true) ||
+            it.stationName.equals(toCodeOrText, ignoreCase = true)
+        }?.stationName?.takeIf { it.isNotBlank() }?.let { return it }
+      }
+      val cleaned = toInput.substringBefore('(').trim()
+      return cleaned.ifBlank { toInput.trim() }
+    }
+    return route.lastOrNull()?.let { st ->
+      st.stationName.ifBlank { st.stationCode }
+    }?.takeIf { it.isNotBlank() }
+  }
 }

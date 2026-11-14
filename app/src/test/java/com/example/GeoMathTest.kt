@@ -188,4 +188,30 @@ class GeoMathTest {
       GeoMath.computeDelayStatus("--:--", "10:30"),
     )
   }
+
+  @Test
+  fun computeSegmentProgress_returnsSmoothContinuousFraction() {
+    val route = listOf(
+      RouteStation("A", "Alpha", 1, 23.000, 88.000, null, null, null),
+      RouteStation("B", "Beta", 2, 23.100, 88.000, null, null, null),
+      RouteStation("C", "Gamma", 3, 23.200, 88.000, null, null, null),
+    )
+
+    val p25 = GeoMath.computeSegmentProgress(
+      LocatedTrain(23.025, 88.000, "Alpha", "Beta", 50.0, 0.0, 0),
+      route,
+    )
+    val p50 = GeoMath.computeSegmentProgress(
+      LocatedTrain(23.050, 88.000, "Alpha", "Beta", 50.0, 0.0, 0),
+      route,
+    )
+    val p85 = GeoMath.computeSegmentProgress(
+      LocatedTrain(23.085, 88.000, "Alpha", "Beta", 50.0, 0.0, 0),
+      route,
+    )
+
+    assertEquals(0.25, p25, 0.02)
+    assertEquals(0.50, p50, 0.02)
+    assertEquals(0.85, p85, 0.02)
+  }
 }

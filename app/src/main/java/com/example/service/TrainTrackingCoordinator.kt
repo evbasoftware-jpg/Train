@@ -158,6 +158,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       if (st.stationName.isNotBlank()) names.add(st.stationName)
     }
     state.stationAlarm?.stationName?.let(names::add)
+    state.resolveDestinationRaw()?.let(names::add)
     return names
   }
 
@@ -322,6 +323,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       )
     }
     scheduleDynamicTranslations()
+    if (_uiState.value.running) updateTrackingNotification()
     maybeSearchBetween()
   }
 
@@ -336,6 +338,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       )
     }
     scheduleDynamicTranslations()
+    if (_uiState.value.running) updateTrackingNotification()
     maybeSearchBetween()
   }
 
@@ -357,6 +360,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       }
     }
     scheduleDynamicTranslations()
+    if (_uiState.value.running) updateTrackingNotification()
     maybeSearchBetween(force = true)
   }
 
@@ -373,6 +377,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     }
     lastBetweenPair = null
     scheduleDynamicTranslations()
+    if (_uiState.value.running) updateTrackingNotification()
     maybeSearchBetween(force = true)
   }
 
@@ -547,6 +552,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   fun stopTracking() {
     cancelTrackingJobs()
     gpsHistory.clear()
+    lastAutoStartedTrainNo = ""
     lastAnnouncedStopKey = ""
     stationaryConfirmCount = 0
     voiceAnnouncer.stop()
@@ -981,11 +987,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       localizedNext
     }
 
-    val rawDest = state.route.lastOrNull()?.let { st ->
-      st.stationName.ifBlank { st.stationCode }
-    }?.takeIf { it.isNotBlank() }
-      ?: state.toResolvedStation?.name
-      ?: state.toInput.trim().takeIf { it.isNotBlank() }
+    val rawDest = state.resolveDestinationRaw()
     val destinationStation = rawDest?.let { state.localizeName(it) } ?: "—"
 
     val info = TrackingNotificationContent(
