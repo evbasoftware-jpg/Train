@@ -1,6 +1,6 @@
 {
-  "name": "Smart Train Tracker",
-  "description": "Smart Live Train Tracker with real-time route timeline, OpenStreetMap live map, station-to-station search, and GPS onboard verification.",
+  "name": "Train Live Location",
+  "description": "Train Live Location with real-time route timeline, OpenStreetMap live map, station-to-station search, and GPS onboard verification.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

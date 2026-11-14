@@ -8,6 +8,7 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -41,6 +42,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Clear
@@ -73,6 +75,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -83,13 +86,16 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -99,6 +105,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.R
 import com.example.model.BannerType
 import com.example.model.GoogleLanguages
 import com.example.model.LocalizedStrings
@@ -224,10 +231,13 @@ fun TrainTrackerScreen(
               .fillMaxSize()
               .verticalScroll(mainScrollState)
               .navigationBarsPadding()
-              .padding(horizontal = 14.dp, vertical = 12.dp),
+              .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
           ) {
+            BrandLogoBannerCard()
+
             SearchAndControlPanel(
+              appTitle = strings.appTitle,
               fromInput = state.fromInput,
               toInput = state.toInput,
               fromResolvedStation = state.fromResolvedStation,
@@ -414,106 +424,137 @@ private fun TrackerHeader(
   val isDark = isSystemInDarkTheme()
   val currentLang = remember(languageCode) { GoogleLanguages.findByCode(languageCode) }
 
-  val headerBrush = if (isDark) {
-    Brush.verticalGradient(listOf(CobaltDark, Color(0xFF0A2A47)))
-  } else {
-    Brush.verticalGradient(listOf(HeaderWarmCream, Color(0xFFFFFDE7)))
-  }
-  val titleColor = if (isDark) Color.White else HeaderIndigo
-  val subtitleColor = if (isDark) Color(0xFFCBD5E1) else Color(0xFF334155)
-
-  Column(
-    modifier = Modifier
-      .fillMaxWidth()
-      .background(headerBrush)
-      .statusBarsPadding()
-      .padding(horizontal = 16.dp, vertical = 10.dp),
+  Surface(
+    color = if (isDark) CobaltDark else Color.White,
+    shadowElevation = 2.dp,
+    modifier = Modifier.fillMaxWidth(),
   ) {
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.SpaceBetween,
-    ) {
+    Column(modifier = Modifier.fillMaxWidth().statusBarsPadding()) {
       Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.weight(1f),
-      ) {
-        Surface(
-          shape = CircleShape,
-          color = CobaltPrimary,
-          shadowElevation = 4.dp,
-          modifier = Modifier.size(38.dp),
-        ) {
-          Box(contentAlignment = Alignment.Center) {
-            Icon(
-              imageVector = Icons.Filled.DirectionsRailway,
-              contentDescription = null,
-              tint = Color.White,
-              modifier = Modifier.size(21.dp),
-            )
-          }
-        }
-        Spacer(modifier = Modifier.width(10.dp))
-        Column {
-          Text(
-            text = strings.appTitle,
-            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
-            color = titleColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
-          Text(
-            text = strings.appSubtitle,
-            style = MaterialTheme.typography.labelSmall,
-            color = subtitleColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
-        }
-      }
-
-      Spacer(modifier = Modifier.width(8.dp))
-
-      Surface(
-        onClick = onOpenLanguagePicker,
-        shape = RoundedCornerShape(20.dp),
-        color = if (isDark) Color(0xFF153452) else Color.White,
-        shadowElevation = 2.dp,
-        modifier = Modifier.testTag("language_selector_button"),
+        horizontalArrangement = Arrangement.SpaceBetween,
       ) {
         Row(
-          modifier = Modifier
-            .border(
-              1.dp,
-              if (isDark) Color(0xFF2D5378) else Color(0xFFCBD5E1),
-              RoundedCornerShape(20.dp),
-            )
-            .padding(horizontal = 10.dp, vertical = 6.dp),
           verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(5.dp),
+          horizontalArrangement = Arrangement.spacedBy(6.dp),
+          modifier = Modifier.weight(1f),
         ) {
-          if (isTranslating) {
-            CircularProgressIndicator(
-              modifier = Modifier.size(14.dp),
-              strokeWidth = 2.dp,
-              color = CobaltPrimary,
-            )
-          } else {
-            Icon(
-              imageVector = Icons.Filled.Language,
-              contentDescription = strings.languageLabel,
-              tint = CobaltPrimary,
-              modifier = Modifier.size(16.dp),
-            )
-          }
+          Icon(
+            imageVector = Icons.Filled.Language,
+            contentDescription = strings.languageLabel,
+            tint = if (isDark) Color(0xFF93C5FD) else CobaltPrimary,
+            modifier = Modifier.size(20.dp),
+          )
           Text(
-            text = currentLang.nativeName,
-            style = MaterialTheme.typography.labelMedium,
+            text = "${strings.languageLabel}:",
+            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
             color = if (isDark) Color.White else Color(0xFF1E293B),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
           )
         }
+
+        Spacer(modifier = Modifier.width(8.dp))
+
+        Surface(
+          onClick = onOpenLanguagePicker,
+          shape = RoundedCornerShape(10.dp),
+          color = if (isDark) Color(0xFF153452) else Color.White,
+          modifier = Modifier
+            .minimumInteractiveComponentSize()
+            .testTag("language_selector_button"),
+        ) {
+          Row(
+            modifier = Modifier
+              .border(
+                width = 1.5.dp,
+                color = if (isDark) Color(0xFF60A5FA) else CobaltPrimary,
+                shape = RoundedCornerShape(10.dp),
+              )
+              .padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+          ) {
+            Text(
+              text = if (currentLang.nativeName.equals(currentLang.englishName, ignoreCase = true)) {
+                currentLang.nativeName
+              } else {
+                "${currentLang.nativeName} (${currentLang.englishName.uppercase(Locale.US)})"
+              },
+              style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+              color = if (isDark) Color.White else Color(0xFF0F172A),
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+            if (isTranslating) {
+              CircularProgressIndicator(
+                modifier = Modifier.size(15.dp),
+                strokeWidth = 2.dp,
+                color = CobaltPrimary,
+              )
+            } else {
+              Icon(
+                imageVector = Icons.Filled.ArrowDropDown,
+                contentDescription = strings.languageLabel,
+                tint = if (isDark) Color(0xFF93C5FD) else CobaltPrimary,
+                modifier = Modifier.size(18.dp),
+              )
+            }
+          }
+        }
+      }
+      HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.35f))
+    }
+  }
+}
+
+@Composable
+private fun BrandLogoBannerCard() {
+  Card(
+    modifier = Modifier
+      .fillMaxWidth()
+      .testTag("brand_logo_banner"),
+    shape = RoundedCornerShape(18.dp),
+    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp),
+  ) {
+    Box(
+      modifier = Modifier
+        .fillMaxWidth()
+        .background(
+          Brush.verticalGradient(
+            listOf(Color(0xFF005AE8), Color(0xFF0045C4)),
+          ),
+        )
+        .padding(horizontal = 16.dp, vertical = 14.dp),
+      contentAlignment = Alignment.Center,
+    ) {
+      Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+      ) {
+        Surface(
+          shape = RoundedCornerShape(12.dp),
+          color = Color(0xFF0057E7),
+          shadowElevation = 6.dp,
+        ) {
+          Image(
+            painter = painterResource(id = R.drawable.brand_logo),
+            contentDescription = "AI Online - Digital Support India",
+            contentScale = ContentScale.FillWidth,
+            modifier = Modifier
+              .fillMaxWidth(0.76f)
+              .clip(RoundedCornerShape(12.dp)),
+          )
+        }
+        Text(
+          text = "https://aionline.in.net",
+          color = Color.White,
+          fontSize = 15.sp,
+          fontWeight = FontWeight.Bold,
+        )
       }
     }
   }
@@ -666,6 +707,7 @@ private fun LanguagePickerDialog(
 
 @Composable
 private fun SearchAndControlPanel(
+  appTitle: String,
   fromInput: String,
   toInput: String,
   fromResolvedStation: StationDbEntry?,
@@ -697,6 +739,7 @@ private fun SearchAndControlPanel(
   onStopTracking: () -> Unit,
   onOpenNtes: () -> Unit,
 ) {
+  val isDark = isSystemInDarkTheme()
   Card(
     modifier = Modifier.fillMaxWidth(),
     shape = RoundedCornerShape(16.dp),
@@ -707,6 +750,29 @@ private fun SearchAndControlPanel(
       modifier = Modifier.padding(16.dp),
       verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .padding(bottom = 2.dp)
+          .testTag("app_title_header"),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
+        Icon(
+          imageVector = Icons.Filled.DirectionsRailway,
+          contentDescription = null,
+          tint = CobaltPrimary,
+          modifier = Modifier.size(22.dp),
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+          text = appTitle,
+          style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.ExtraBold),
+          color = if (isDark) Color.White else HeaderIndigo,
+          maxLines = 1,
+          overflow = TextOverflow.Ellipsis,
+        )
+      }
       if (isWideLayout) {
         Row(
           modifier = Modifier.fillMaxWidth(),

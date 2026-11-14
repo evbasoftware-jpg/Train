@@ -27,7 +27,7 @@ class TranslationRepository(private val cacheDir: File?) {
     }
 
     return withContext(Dispatchers.IO) {
-      val cacheFile = cacheDir?.let { File(it, "lang_v3_${langCode.replace("/", "_")}.json") }
+      val cacheFile = cacheDir?.let { File(it, "lang_v4_${langCode.replace("/", "_")}.json") }
       val english = stringsForCode("en")
       val keys = buildTranslatableMap(english)
 
@@ -168,8 +168,8 @@ class TranslationRepository(private val cacheDir: File?) {
     base: LocalizedStrings,
     m: Map<String, String>,
   ): LocalizedStrings = base.copy(
-    appTitle = m["appTitle"] ?: base.appTitle,
-    appSubtitle = m["appSubtitle"] ?: base.appSubtitle,
+    appTitle = "Train Live Location",
+    appSubtitle = "",
     languageLabel = m["languageLabel"] ?: base.languageLabel,
     searchLanguageHint = m["searchLanguageHint"] ?: base.searchLanguageHint,
     fromStationLabel = m["fromStationLabel"] ?: base.fromStationLabel,

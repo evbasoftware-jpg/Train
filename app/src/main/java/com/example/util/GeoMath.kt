@@ -423,22 +423,25 @@ object GeoMath {
 
     val passedKm = if (cur?.lat != null && cur.lon != null) {
       val distFromCur = haversineKm(cur.lat, cur.lon, train.lat, train.lon)
-      val isBeforeCurrent = if (nxt?.lat != null && nxt.lon != null) {
+      val projKm = if (nxt?.lat != null && nxt.lon != null) {
         val segBearing = bearingDegrees(cur.lat, cur.lon, nxt.lat, nxt.lon)
         val relBearing = bearingDegrees(cur.lat, cur.lon, train.lat, train.lon)
-        val projKm = distFromCur * cos(Math.toRadians(relBearing - segBearing))
-        projKm < -0.15
+        distFromCur * cos(Math.toRadians(relBearing - segBearing))
       } else {
-        false
+        distFromCur
       }
-      if (!isBeforeCurrent && distFromCur >= 0.08) distFromCur else null
+      if (projKm >= -0.25) {
+        if (distFromCur < 0.005) 0.0 else distFromCur
+      } else {
+        0.0
+      }
     } else {
       null
     }
 
     val remainingKm = if (nxt?.lat != null && nxt.lon != null) {
       val distToNext = haversineKm(train.lat, train.lon, nxt.lat, nxt.lon)
-      if (distToNext > 0.08) distToNext else null
+      if (distToNext < 0.005) 0.0 else distToNext
     } else {
       null
     }

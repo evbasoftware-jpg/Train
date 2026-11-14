@@ -214,4 +214,28 @@ class GeoMathTest {
     assertEquals(0.50, p50, 0.02)
     assertEquals(0.85, p85, 0.02)
   }
+
+  @Test
+  fun stoppageDistanceAndBrandStrings_formatMetersUnder1KmAndKmAbove1Km() {
+    val bn = com.example.model.stringsForCode("bn")
+    assertEquals("Train Live Location", bn.appTitle)
+    assertEquals("", bn.appSubtitle)
+
+    assertEquals("0 মিটার পেরিয়ে গেছে", bn.formatPassedDistance(0.0))
+    assertEquals("450 মিটার পেরিয়ে গেছে", bn.formatPassedDistance(0.45))
+    assertEquals("3.30 কিলোমিটার পেরিয়ে গেছে", bn.formatPassedDistance(3.30))
+
+    val route = listOf(
+      RouteStation("PALR", "Palla Road", 1, 23.177, 87.989, null, null, null),
+      RouteStation("SKG", "Saktigarh", 2, 23.214, 87.959, null, null, null),
+    )
+    // Right at Palla Road (distFromCur = 0 km): still shows 0.0 instead of null
+    val atStation = GeoMath.computeStoppageDistances(
+      LocatedTrain(23.177, 87.989, "Palla Road", "Saktigarh", 0.0, 0.0, 0),
+      route,
+    )
+    assertNotNull(atStation.passedFromCurrentKm)
+    assertEquals(0.0, atStation.passedFromCurrentKm!!, 0.001)
+    assertNotNull(atStation.remainingToNextKm)
+  }
 }

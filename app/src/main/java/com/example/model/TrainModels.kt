@@ -146,8 +146,9 @@ data class LocalizedStrings(
 
   fun formatDistance(km: Double): String {
     val safeKm = km.takeIf { it.isFinite() && it >= 0.0 } ?: 0.0
-    return if (safeKm < 1.0) {
-      "${kotlin.math.round(safeKm * 1000.0).toInt()} $meterUnit"
+    val meters = kotlin.math.round(safeKm * 1000.0).toInt()
+    return if (meters < 1000) {
+      "$meters $meterUnit"
     } else {
       "${String.format(java.util.Locale.US, "%.2f", safeKm)} $kmUnit"
     }
@@ -159,8 +160,8 @@ data class LocalizedStrings(
 
 fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
   "bn" -> LocalizedStrings(
-    appTitle = "স্মার্ট লাইভ ট্রেন ট্র্যাকার",
-    appSubtitle = "লাইভ ট্রেন • ব্যবহারকারীর GPS • দূরত্ব • রুট",
+    appTitle = "Train Live Location",
+    appSubtitle = "",
     languageLabel = "ভাষা",
     searchLanguageHint = "ভাষা খুঁজুন (১০০+ ভাষা)...",
     fromStationLabel = "স্টেশন থেকে",
@@ -243,8 +244,8 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
   )
 
   "hi" -> LocalizedStrings(
-    appTitle = "स्मार्ट लाइव ट्रेन ट्रैकर",
-    appSubtitle = "लाइव ट्रेन • यूज़र GPS • दूरी • रूट",
+    appTitle = "Train Live Location",
+    appSubtitle = "",
     languageLabel = "भाषा",
     searchLanguageHint = "भाषा खोजें (100+ भाषाएं)...",
     fromStationLabel = "कहाँ से स्टेशन",
@@ -327,8 +328,8 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
   )
 
   else -> LocalizedStrings(
-    appTitle = "Smart Live Train Tracker",
-    appSubtitle = "Live Train • User GPS • Distance • Route",
+    appTitle = "Train Live Location",
+    appSubtitle = "",
     languageLabel = "Language",
     searchLanguageHint = "Search language (100+ languages)...",
     fromStationLabel = "From Station",
