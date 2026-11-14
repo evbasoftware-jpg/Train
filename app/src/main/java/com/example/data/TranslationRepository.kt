@@ -27,7 +27,7 @@ class TranslationRepository(private val cacheDir: File?) {
     }
 
     return withContext(Dispatchers.IO) {
-      val cacheFile = cacheDir?.let { File(it, "lang_v5_${langCode.replace("/", "_")}.json") }
+      val cacheFile = cacheDir?.let { File(it, "lang_v6_${langCode.replace("/", "_")}.json") }
       val english = stringsForCode("en")
       val keys = buildTranslatableMap(english)
 
@@ -169,6 +169,8 @@ class TranslationRepository(private val cacheDir: File?) {
       "adCallBtn" to en.adCallBtn,
       "adWhatsAppBtn" to en.adWhatsAppBtn,
       "adOpenLinkBtn" to en.adOpenLinkBtn,
+      "advertiseWhatsAppBtn" to en.advertiseWhatsAppBtn,
+      "advertiseWhatsAppMsg" to en.advertiseWhatsAppMsg,
     )
 
   private fun applyTranslatedMap(
@@ -263,6 +265,8 @@ class TranslationRepository(private val cacheDir: File?) {
     adCallBtn = m["adCallBtn"] ?: base.adCallBtn,
     adWhatsAppBtn = m["adWhatsAppBtn"] ?: base.adWhatsAppBtn,
     adOpenLinkBtn = m["adOpenLinkBtn"] ?: base.adOpenLinkBtn,
+    advertiseWhatsAppBtn = m["advertiseWhatsAppBtn"] ?: base.advertiseWhatsAppBtn,
+    advertiseWhatsAppMsg = m["advertiseWhatsAppMsg"] ?: base.advertiseWhatsAppMsg,
   )
 
   private fun translateBatchWithGoogle(

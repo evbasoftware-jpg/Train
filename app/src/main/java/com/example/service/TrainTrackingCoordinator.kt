@@ -26,6 +26,9 @@ import com.example.model.StoppageDistances
 import com.example.model.TrackerUiState
 import com.example.model.stringsForCode
 import com.example.util.GeoMath
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -85,6 +88,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   private var lastBetweenPair: Pair<String, String>? = null
   private var lastPublishTimeMillis = 0L
   private var lastAnnouncedStopKey = ""
+  private var lastObservedSyncKey = ""
   private var stationaryConfirmCount = 0
   private var startToken = 0
   private var loadedLanguageCode = "bn"
@@ -464,7 +468,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       _uiState.update { it.copy(betweenLoading = true, betweenError = null) }
       try {
         delay(250)
-        val trains = repository.fetchTrainsBetween(f, t)
+        val trains = repository.fetchTrainsBetween(f, t, stationDb)
         if (trains.isNotEmpty()) {
           preferences.addRecentRoute(SavedRoutePair(fromLabel, toLabel))
         }
@@ -534,6 +538,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     gpsHistory.clear()
     lastPublishTimeMillis = 0L
     lastAnnouncedStopKey = ""
+    lastObservedSyncKey = ""
     stationaryConfirmCount = 0
 
     val s = currentStrings()
@@ -610,6 +615,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     gpsHistory.clear()
     lastAutoStartedTrainNo = ""
     lastAnnouncedStopKey = ""
+    lastObservedSyncKey = ""
     stationaryConfirmCount = 0
     voiceAnnouncer.stop()
     TrainTrackingService.stop(appContext)
@@ -798,6 +804,14 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     }
 
     scheduleDynamicTranslations()
+    reportLiveObservationIfChanged(
+      trainNo = trainNo,
+      trainName = payload.trainName ?: _uiState.value.trainName,
+      route = payload.route,
+      located = located,
+      passedKm = distances.passedFromCurrentKm,
+      timeMillis = System.currentTimeMillis(),
+    )
     verifyAndSync()
     checkStationAlarmProximity()
     updateTrackingNotification()
@@ -929,6 +943,14 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       val distances = GeoMath.computeStoppageDistances(gpsTrain, route)
 
       publishGpsIfDue(state.trainNoInput.trim(), state.trainName, latestSample)
+      reportLiveObservationIfChanged(
+        trainNo = state.trainNoInput.trim(),
+        trainName = state.trainName,
+        route = route,
+        located = gpsTrain,
+        passedKm = distances.passedFromCurrentKm,
+        timeMillis = latestSample.timeMillis,
+      )
 
       _uiState.update {
         it.copy(
@@ -977,6 +999,14 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       val distances = GeoMath.computeStoppageDistances(gpsTrain, route)
 
       publishGpsIfDue(state.trainNoInput.trim(), state.trainName, latestSample)
+      reportLiveObservationIfChanged(
+        trainNo = state.trainNoInput.trim(),
+        trainName = state.trainName,
+        route = route,
+        located = gpsTrain,
+        passedKm = distances.passedFromCurrentKm,
+        timeMillis = latestSample.timeMillis,
+      )
 
       _uiState.update {
         it.copy(
@@ -992,6 +1022,42 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       // Stationary or off-path GPS: NEVER track train using this phone's GPS
       _uiState.update { it.copy(verification = metrics) }
     }
+  }
+
+  private fun reportLiveObservationIfChanged(
+    trainNo: String,
+    trainName: String?,
+    route: List<RouteStation>,
+    located: LocatedTrain,
+    passedKm: Double?,
+    timeMillis: Long,
+  ) {
+    if (trainNo.isBlank() || route.isEmpty()) return
+    val st = route.getOrNull(located.idx) ?: return
+    val stCode = st.stationCode.trim()
+    val stName = st.stationName.ifBlank { located.name }
+    if (stCode.isBlank() && stName.isBlank()) return
+
+    val atStationNow = passedKm != null && passedKm <= 0.6
+    val obsKey = "$trainNo|${stCode.ifBlank { stName }}|$atStationNow"
+    if (obsKey == lastObservedSyncKey) return
+    lastObservedSyncKey = obsKey
+
+    val obsTime = if (atStationNow) {
+      SimpleDateFormat("HH:mm", Locale.US).format(Date(timeMillis))
+    } else {
+      null
+    }
+
+    repository.reportLiveObservation(
+      trainNo = trainNo,
+      trainName = trainName,
+      observedStationCode = stCode,
+      observedStationName = stName,
+      observedTimeHHmm = obsTime,
+      route = route,
+      stationDb = stationDb,
+    )
   }
 
   private fun publishGpsIfDue(trainNo: String, trainName: String?, sample: GpsSample) {

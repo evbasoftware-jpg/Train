@@ -41,6 +41,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
@@ -135,6 +136,7 @@ import com.example.ui.theme.JetBrainsMonoFontFamily
 import com.example.ui.theme.NtesOrange
 import com.example.ui.theme.StopCrimson
 import com.example.ui.theme.StopCrimsonContainer
+import com.example.ui.theme.VerifiedEmerald
 import com.example.ui.theme.VerifiedEmeraldContainer
 import com.example.ui.theme.VerifiedEmeraldDark
 import com.example.viewmodel.TrainTrackerViewModel
@@ -458,6 +460,40 @@ fun TrainTrackerScreen(
                 onSizePresetSelected = viewModel::setMapSizePreset,
                 onToggleFullscreen = viewModel::setMapFullscreen,
                 onRecenter = viewModel::triggerRecenterMap,
+              )
+            }
+
+            // WhatsApp Advertising Contact Button directly below Map
+            Button(
+              onClick = {
+                try {
+                  val url =
+                    "https://wa.me/919800074626?text=${Uri.encode(strings.advertiseWhatsAppMsg)}"
+                  val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                  context.startActivity(intent)
+                } catch (_: Throwable) {
+                }
+              },
+              shape = RoundedCornerShape(12.dp),
+              colors = ButtonDefaults.buttonColors(
+                containerColor = VerifiedEmerald,
+                contentColor = Color.White,
+              ),
+              contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+              modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .testTag("advertise_whatsapp_button"),
+            ) {
+              Icon(
+                imageVector = Icons.AutoMirrored.Filled.Chat,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp),
+              )
+              Spacer(modifier = Modifier.width(8.dp))
+              Text(
+                text = strings.advertiseWhatsAppBtn,
+                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Bold),
               )
             }
 

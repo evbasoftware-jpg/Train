@@ -122,6 +122,8 @@ data class LocalizedStrings(
   val adCallBtn: String,
   val adWhatsAppBtn: String,
   val adOpenLinkBtn: String,
+  val advertiseWhatsAppBtn: String,
+  val advertiseWhatsAppMsg: String,
 ) {
   fun noTrainsFound(from: String, to: String): String =
     noTrainsFoundTemplate.replace("{FROM}", from).replace("{TO}", to)
@@ -255,6 +257,8 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     adCallBtn = "কল করুন",
     adWhatsAppBtn = "WhatsApp",
     adOpenLinkBtn = "ওয়েবসাইট খুলুন",
+    advertiseWhatsAppBtn = "বিজ্ঞাপনের জন্য WhatsApp এ যোগাযোগ করুন",
+    advertiseWhatsAppMsg = "আমি ট্রেন লাইভ লোকেশন অ্যাপে বিজ্ঞাপন দিতে চাই",
   )
 
   "hi" -> LocalizedStrings(
@@ -346,6 +350,8 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     adCallBtn = "कॉल करें",
     adWhatsAppBtn = "WhatsApp",
     adOpenLinkBtn = "वेबसाइट खोलें",
+    advertiseWhatsAppBtn = "विज्ञापन के लिए WhatsApp पर संपर्क करें",
+    advertiseWhatsAppMsg = "मैं ट्रेन लाइव लोकेशन ऐप में विज्ञापन देना चाहता हूँ",
   )
 
   else -> LocalizedStrings(
@@ -437,6 +443,8 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     adCallBtn = "Call",
     adWhatsAppBtn = "WhatsApp",
     adOpenLinkBtn = "Visit Website",
+    advertiseWhatsAppBtn = "Contact on WhatsApp for Advertising",
+    advertiseWhatsAppMsg = "I want to advertise in the Train Live Location app",
   )
 }
 

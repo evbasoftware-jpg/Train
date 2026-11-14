@@ -1164,6 +1164,14 @@
       <button id="btnMapFsExit" class="map-chip-btn primary" type="button">✕ <span id="lblMapFsExit">বন্ধ করুন</span></button>
     </div>
 
+    <!-- WhatsApp Advertising Contact Button below Map -->
+    <a id="btnAdvertiseWhatsApp" class="btn btn-emerald" target="_blank" rel="noopener noreferrer"
+       style="width:100%;min-height:48px;border-radius:12px;text-decoration:none;font-size:14px;font-weight:700;"
+       href="https://wa.me/919800074626?text=%E0%A6%86%E0%A6%AE%E0%A6%BF%20%E0%A6%9F%E0%A7%8D%E0%A6%B0%E0%A7%87%E0%A6%A8%20%E0%A6%B2%E0%A6%BE%E0%A6%87%E0%A6%AD%20%E0%A6%B2%E0%A7%8B%E0%A6%95%E0%A7%87%E0%A6%B6%E0%A6%A8%20%E0%A6%85%E0%A7%8D%E0%A6%AF%E0%A6%BE%E0%A6%AA%E0%A7%87%20%E0%A6%AC%E0%A6%BF%E0%A6%9C%E0%A7%8D%E0%A6%9E%E0%A6%BE%E0%A6%AA%E0%A6%A8%20%E0%A6%A6%E0%A6%BF%E0%A6%A4%E0%A7%87%20%E0%A6%9A%E0%A6%BE%E0%A6%87">
+      <span>💬</span>
+      <span id="lblAdvertiseWhatsApp">বিজ্ঞাপনের জন্য WhatsApp এ যোগাযোগ করুন</span>
+    </a>
+
     <!-- ads5: Right below "ম্যাপ" -->
     <div id="adSlot_ads5" class="ad-slot-container hidden"></div>
   </main>
@@ -1204,7 +1212,11 @@
       const STATIONS_RAW_URL = 'https://raw.githubusercontent.com/datameet/railways/master/stations.json';
       const TRAIN_CDN_BASE = 'https://raw.githubusercontent.com/datameet/railways/master/trains/';
       const ADS_SHEET_ID = '137CjMlGjFv--aTDfo6V8yftNb6gVc5G-E3opwb84gfA';
-      const ADS_CSV_URL = `https://docs.google.com/spreadsheets/d/${ADS_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=ads`;
+      const BASE_SHEET_GVIZ_URL = `https://docs.google.com/spreadsheets/d/${ADS_SHEET_ID}/gviz/tq?tqx=out:csv`;
+      const ADS_CSV_URL = `${BASE_SHEET_GVIZ_URL}&sheet=ads`;
+      const TRAIN_SHEET_CSV_URL = `${BASE_SHEET_GVIZ_URL}&sheet=Train`;
+      const STATION_SHEET_CSV_URL = `${BASE_SHEET_GVIZ_URL}&sheet=Station`;
+      const SCHEDULE_SHEET_CSV_URL = `${BASE_SHEET_GVIZ_URL}&sheet=Schedule`;
       const GITHUB_ADS_RAW_BASE = 'https://raw.githubusercontent.com/evbasoft-jpg/Train/main/Ads/';
       const GITHUB_ADS_CDN_BASE = 'https://cdn.jsdelivr.net/gh/evbasoft-jpg/Train@main/Ads/';
 
@@ -1394,7 +1406,9 @@
           adContactLabel: 'যোগাযোগ নম্বর',
           adCallBtn: 'কল করুন',
           adWhatsAppBtn: 'WhatsApp',
-          adOpenLinkBtn: 'ওয়েবসাইট খুলুন'
+          adOpenLinkBtn: 'ওয়েবসাইট খুলুন',
+          advertiseWhatsAppBtn: 'বিজ্ঞাপনের জন্য WhatsApp এ যোগাযোগ করুন',
+          advertiseWhatsAppMsg: 'আমি ট্রেন লাইভ লোকেশন অ্যাপে বিজ্ঞাপন দিতে চাই'
         },
         hi: {
           appTitle: 'Train Live Location',
@@ -1469,7 +1483,9 @@
           adContactLabel: 'संपर्क नंबर',
           adCallBtn: 'कॉल करें',
           adWhatsAppBtn: 'WhatsApp',
-          adOpenLinkBtn: 'वेबसाइट खोलें'
+          adOpenLinkBtn: 'वेबसाइट खोलें',
+          advertiseWhatsAppBtn: 'विज्ञापन के लिए WhatsApp पर संपर्क करें',
+          advertiseWhatsAppMsg: 'मैं ट्रेन लाइव लोकेशन ऐप में विज्ञापन देना चाहता हूँ'
         },
         en: {
           appTitle: 'Train Live Location',
@@ -1544,7 +1560,9 @@
           adContactLabel: 'Contact Number',
           adCallBtn: 'Call',
           adWhatsAppBtn: 'WhatsApp',
-          adOpenLinkBtn: 'Visit Website'
+          adOpenLinkBtn: 'Visit Website',
+          advertiseWhatsAppBtn: 'Contact on WhatsApp for Advertising',
+          advertiseWhatsAppMsg: 'I want to advertise in the Train Live Location app'
         }
       };
 
@@ -1726,7 +1744,7 @@
           el('langSpinner').classList.add('hidden');
           renderAllUi();
         } else {
-          const cacheKey = `tll_ui_v6_${state.lang}`;
+          const cacheKey = `tll_ui_v7_${state.lang}`;
           let cached = null;
           try { cached = JSON.parse(localStorage.getItem(cacheKey) || 'null'); } catch (_) {}
           if (cached && Object.keys(cached).length > 10) {
@@ -1877,7 +1895,700 @@
         };
       }
 
+      // Google Sheets (Train + Station + Schedule) Databases, Targeted Queries & Auto-Sync
+      let sheetStationsCache = [];
+      let sheetStationsLoadedMs = 0;
+      const SHEET_TTL_MS = 300000;
+      const sheetSyncSentSigs = new Map();
+      let lastObservedSyncKey = '';
+
+      function normalizeSheetCol(raw) {
+        return String(raw || '').replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[_\s-]+/g, '');
+      }
+
+      function normalizeTrainKey(raw) {
+        const d = String(raw || '').replace(/\D/g, '').replace(/^0+/, '');
+        return d || String(raw || '').trim();
+      }
+
+      function sanitizeTqIdent(raw) {
+        return String(raw || '').replace(/[^A-Za-z0-9\-_ ]/g, '').trim();
+      }
+
+      function buildTrainNumberVariants(digits) {
+        const out = [digits];
+        const noZero = digits.replace(/^0+/, '') || digits;
+        if (!out.includes(noZero)) out.push(noZero);
+        if (digits.length < 5) {
+          const pad = digits.padStart(5, '0');
+          if (!out.includes(pad)) out.push(pad);
+        }
+        return out;
+      }
+
+      async function downloadGvizQuery(sheetName, tq) {
+        try {
+          const url = `${BASE_SHEET_GVIZ_URL}&sheet=${encodeURIComponent(sheetName)}&tq=${encodeURIComponent(tq)}&_t=${Date.now()}`;
+          const r = await fetch(url, { cache: 'no-store' });
+          if (!r.ok) return null;
+          const body = await r.text();
+          if (!body || isHtmlOrInvalidAds(body)) return null;
+          return body;
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function parseSheetStationsCsv(csvText) {
+        if (!csvText || isHtmlOrInvalidAds(csvText)) return [];
+        const rows = parseCsv(csvText);
+        if (rows.length < 2) return [];
+        const headers = {};
+        rows[0].forEach((c, idx) => {
+          const k = normalizeSheetCol(c);
+          if (k && headers[k] == null) headers[k] = idx;
+        });
+        if (!(('stationname' in headers || 'name' in headers) && ('stationcode' in headers || 'code' in headers))) {
+          return [];
+        }
+        const col = (row, ...aliases) => {
+          for (const a of aliases) {
+            const idx = headers[a];
+            if (idx != null && row[idx] != null) return row[idx].trim();
+          }
+          return '';
+        };
+        const out = [];
+        for (let i = 1; i < rows.length; i++) {
+          const r = rows[i];
+          if (r.every(x => !x.trim())) continue;
+          const name = col(r, 'stationname', 'name');
+          const code = col(r, 'stationcode', 'code').toUpperCase();
+          if (!name && !code) continue;
+          out.push({
+            name: name || code,
+            code,
+            lat: parseGeoNum(col(r, 'latitude', 'lat')),
+            lon: parseGeoNum(col(r, 'longitude', 'lon', 'lng'))
+          });
+        }
+        return out;
+      }
+
+      function formatSheetTimeStr(raw) {
+        if (!raw || /^none$/i.test(String(raw).trim())) return null;
+        const mins = parseTimeToMins(raw);
+        if (mins == null) return null;
+        return `${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+      }
+
+      function parseSheetTrainsCsv(csvText) {
+        if (!csvText || isHtmlOrInvalidAds(csvText)) return [];
+        const rows = parseCsv(csvText);
+        if (rows.length < 2) return [];
+        const headers = {};
+        rows[0].forEach((c, idx) => {
+          const k = normalizeSheetCol(c);
+          if (k && headers[k] == null) headers[k] = idx;
+        });
+        if (!('trainnumber' in headers || 'trainno' in headers || 'number' in headers)) {
+          return [];
+        }
+        const col = (row, ...aliases) => {
+          for (const a of aliases) {
+            const idx = headers[a];
+            if (idx != null && row[idx] != null) return row[idx].trim();
+          }
+          return '';
+        };
+        const stopsIdx = headers.trainstops ?? headers.stopstations ?? headers.stops ?? -1;
+        const out = [];
+        for (let r = 1; r < rows.length; r++) {
+          const row = rows[r];
+          if (row.every(x => !x.trim())) continue;
+          const rawNum = col(row, 'trainnumber', 'trainno', 'number');
+          const cleanNum = rawNum.replace(/\D/g, '') || rawNum;
+          if (!cleanNum) continue;
+          const stops = [];
+          const rawStopsStr = (stopsIdx >= 0 && row[stopsIdx] != null) ? row[stopsIdx].trim() : '';
+          if (stopsIdx >= 0) {
+            for (let c = stopsIdx; c < row.length; c++) {
+              const cellVal = (row[c] || '').trim();
+              if (!cellVal) continue;
+              cellVal.split(/[,;|\n\r]+|->|→/).forEach(p => {
+                const t = p.trim();
+                if (t) stops.push(t);
+              });
+            }
+          }
+          out.push({
+            trainNumber: cleanNum,
+            trainName: col(row, 'trainname', 'name'),
+            fromCode: col(row, 'fromstationcode', 'fromcode', 'from').toUpperCase(),
+            fromName: col(row, 'fromstationname', 'fromname'),
+            departureRaw: col(row, 'departure', 'starttime'),
+            toCode: col(row, 'tostationcode', 'tocode', 'to').toUpperCase(),
+            toName: col(row, 'tostationname', 'toname'),
+            arrivalRaw: col(row, 'arrival', 'reachtime'),
+            distanceKm: Number(col(row, 'distancekm', 'distance')) || 0,
+            routePointsCount: parseInt(col(row, 'routepointscount'), 10) || 0,
+            trainStopsRaw: rawStopsStr,
+            stopTokens: stops
+          });
+        }
+        return out;
+      }
+
+      function parseSheetScheduleCsv(csvText) {
+        if (!csvText || isHtmlOrInvalidAds(csvText)) return [];
+        const rows = parseCsv(csvText);
+        if (rows.length < 2) return [];
+        const headers = {};
+        rows[0].forEach((c, idx) => {
+          const k = normalizeSheetCol(c);
+          if (k && headers[k] == null) headers[k] = idx;
+        });
+        const col = (row, ...aliases) => {
+          for (const a of aliases) {
+            const idx = headers[a];
+            if (idx != null && row[idx] != null) return row[idx].trim();
+          }
+          return '';
+        };
+        const out = [];
+        for (let i = 1; i < rows.length; i++) {
+          const r = rows[i];
+          if (r.every(x => !x.trim())) continue;
+          const trainNo = col(r, 'trainnumber', 'trainno', 'number').replace(/\D/g, '');
+          const stCode = col(r, 'stationcode', 'code').toUpperCase();
+          if (!trainNo && !stCode) continue;
+          const sid = Number(col(r, 'scheduleid', 'id'));
+          const dayNum = parseInt(col(r, 'day'), 10);
+          out.push({
+            scheduleId: Number.isFinite(sid) && col(r, 'scheduleid', 'id') !== '' ? sid : null,
+            trainNumber: trainNo,
+            trainName: col(r, 'trainname', 'name'),
+            stationCode: stCode,
+            stationName: col(r, 'stationname', 'name'),
+            arrivalRaw: col(r, 'arrival'),
+            departureRaw: col(r, 'departure'),
+            day: Number.isFinite(dayNum) ? dayNum : null,
+            rowOrder: i
+          });
+        }
+        return out;
+      }
+
+      function sortScheduleRows(rows) {
+        return [...rows].sort((a, b) => {
+          const da = a.day ?? 999999, db = b.day ?? 999999;
+          if (da !== db) return da - db;
+          const ma = parseTimeToMins(a.arrivalRaw) ?? parseTimeToMins(a.departureRaw) ?? 999999;
+          const mb = parseTimeToMins(b.arrivalRaw) ?? parseTimeToMins(b.departureRaw) ?? 999999;
+          if (ma !== mb) return ma - mb;
+          const sa = a.scheduleId ?? Number.MAX_SAFE_INTEGER;
+          const sb = b.scheduleId ?? Number.MAX_SAFE_INTEGER;
+          if (sa !== sb) return sa - sb;
+          return a.rowOrder - b.rowOrder;
+        });
+      }
+
+      function isScheduleRowBefore(fromRow, toRow) {
+        const fm = (fromRow.day ? (fromRow.day - 1) * 1440 : 0) +
+          (parseTimeToMins(fromRow.departureRaw) ?? parseTimeToMins(fromRow.arrivalRaw) ?? -1);
+        const tm = (toRow.day ? (toRow.day - 1) * 1440 : 0) +
+          (parseTimeToMins(toRow.arrivalRaw) ?? parseTimeToMins(toRow.departureRaw) ?? -1);
+        if (fm >= 0 && tm >= 0 && fm !== tm) return tm > fm;
+        if (fromRow.scheduleId != null && toRow.scheduleId != null && fromRow.scheduleId !== toRow.scheduleId) {
+          return toRow.scheduleId > fromRow.scheduleId;
+        }
+        return toRow.rowOrder > fromRow.rowOrder;
+      }
+
+      async function fetchSheetStations(force = false) {
+        const now = Date.now();
+        if (!force && sheetStationsCache.length && now - sheetStationsLoadedMs < SHEET_TTL_MS) {
+          return sheetStationsCache;
+        }
+        const cachedCsv = localStorage.getItem('tll_station_sheet_csv');
+        if (cachedCsv && !sheetStationsCache.length) {
+          const parsedCached = parseSheetStationsCsv(cachedCsv);
+          if (parsedCached.length) sheetStationsCache = parsedCached;
+        }
+        try {
+          const r = await fetch(`${STATION_SHEET_CSV_URL}&_t=${now}`, { cache: 'no-store' });
+          if (r.ok) {
+            const body = await r.text();
+            if (!isHtmlOrInvalidAds(body)) {
+              const parsed = parseSheetStationsCsv(body);
+              if (parsed.length || body.toLowerCase().includes('station_code')) {
+                try { localStorage.setItem('tll_station_sheet_csv', body); } catch (_) {}
+                sheetStationsCache = parsed;
+                sheetStationsLoadedMs = now;
+                return parsed;
+              }
+            }
+          }
+        } catch (_) {}
+        return sheetStationsCache;
+      }
+
+      function parseSheetStopToken(rawToken, fallbackTime = null) {
+        let working = (rawToken || '').trim();
+        if (!working) return null;
+        let embeddedTime = null;
+        const tm = working.match(/(\d{1,2}:\d{2}(?::\d{2})?\s*(?:[AaPp][Mm])?)/);
+        if (tm) {
+          embeddedTime = formatSheetTimeStr(tm[1]);
+          working = working.replace(tm[0], '').replace(/\(\s*\)/g, '').replace(/^[\s\-|:,]+|[\s\-|:,]+$/g, '');
+        }
+        if (!working) return null;
+        const parenM = working.match(/\(\s*([A-Za-z0-9]+)\s*\)/);
+        const parenCode = parenM ? parenM[1].trim().toUpperCase() : null;
+        const textNoParen = working.replace(/\(\s*[A-Za-z0-9]+\s*\)/g, '').replace(/^[\s\-|:]+|[\s\-|:]+$/g, '');
+
+        let resolved = resolveStation(working);
+        if (!resolved && parenCode) resolved = state.stationDb.find(s => s.code.toUpperCase() === parenCode) || null;
+        if (!resolved && textNoParen) resolved = resolveStation(textNoParen);
+
+        let finalCode = '', finalName = '';
+        if (resolved) {
+          finalCode = (resolved.code || '').toUpperCase();
+          finalName = resolved.name || textNoParen || finalCode;
+        } else if (parenCode) {
+          finalCode = parenCode;
+          finalName = textNoParen || parenCode;
+        } else if (/^[A-Za-z0-9]{1,6}$/.test(working)) {
+          finalCode = working.toUpperCase();
+          finalName = finalCode;
+        } else {
+          finalCode = '';
+          finalName = working;
+        }
+
+        const sched = embeddedTime || fallbackTime || '--:--';
+        return {
+          stationCode: finalCode,
+          stationName: finalName,
+          sequence: null,
+          lat: resolved?.lat ?? null,
+          lon: resolved?.lon ?? null,
+          scheduledTimeRaw: sched,
+          arrival: sched,
+          departure: sched
+        };
+      }
+
+      function sheetSameStop(a, b) {
+        const ac = (a.stationCode || '').trim().toUpperCase();
+        const bc = (b.stationCode || '').trim().toUpperCase();
+        if (ac && bc) return ac === bc;
+        const an = (a.stationName || '').trim().toUpperCase();
+        const bn = (b.stationName || '').trim().toUpperCase();
+        return !!(an && bn && an === bn);
+      }
+
+      function buildRouteFromSheetEntry(entry) {
+        const startT = formatSheetTimeStr(entry.departureRaw);
+        const reachT = formatSheetTimeStr(entry.arrivalRaw);
+        const fromStop = entry.fromCode ? parseSheetStopToken(`${entry.fromName} (${entry.fromCode})`, startT) : null;
+        const toStop = entry.toCode ? parseSheetStopToken(`${entry.toName} (${entry.toCode})`, reachT) : null;
+        const parsedStops = entry.stopTokens.map(t => parseSheetStopToken(t, null)).filter(Boolean);
+
+        const combined = [];
+        if (!parsedStops.length) {
+          if (fromStop) combined.push(fromStop);
+          if (toStop && (!combined.length || !sheetSameStop(combined[combined.length - 1], toStop))) combined.push(toStop);
+        } else {
+          combined.push(...parsedStops);
+          if (fromStop && !sheetSameStop(combined[0], fromStop)) combined.unshift(fromStop);
+          if (toStop && !sheetSameStop(combined[combined.length - 1], toStop)) combined.push(toStop);
+        }
+        return combined.map((st, idx) => ({ ...st, sequence: idx + 1 }));
+      }
+
+      function buildRouteFromScheduleRows(rows) {
+        if (!rows || !rows.length) return [];
+        const sorted = sortScheduleRows(rows);
+        const dbByCode = new Map(state.stationDb.map(s => [s.code.toUpperCase(), s]));
+        return sorted.map((r, idx) => {
+          const code = (r.stationCode || '').trim().toUpperCase();
+          const hit = dbByCode.get(code);
+          const arr = formatSheetTimeStr(r.arrivalRaw);
+          const dep = formatSheetTimeStr(r.departureRaw);
+          const sched = arr || dep || '--:--';
+          return {
+            stationCode: code,
+            stationName: r.stationName || hit?.name || code,
+            sequence: idx + 1,
+            lat: hit?.lat ?? null,
+            lon: hit?.lon ?? null,
+            scheduledTimeRaw: sched,
+            arrival: arr || sched,
+            departure: dep || sched
+          };
+        });
+      }
+
+      function isSheetRouteComplete(entry, route) {
+        if (!route || route.length < 2) return false;
+        if (entry) {
+          if (entry.toCode && route[route.length - 1].stationCode.toUpperCase() !== entry.toCode.toUpperCase()) {
+            return false;
+          }
+          if (entry.routePointsCount > 4 && route.length < Math.floor(entry.routePointsCount / 3)) {
+            return false;
+          }
+          if (route.length === 2 && !entry.trainStopsRaw && entry.routePointsCount !== 2) {
+            return false;
+          }
+        }
+        return true;
+      }
+
+      function formatTrainStopsCsv(route) {
+        if (!route || !route.length) return '';
+        const toks = [];
+        let prevKey = '';
+        for (const st of route) {
+          const tok = (st.stationCode || '').trim().toUpperCase() || (st.stationName || '').trim();
+          if (!tok) continue;
+          const k = tok.toUpperCase();
+          if (k !== prevKey) {
+            toks.push(tok);
+            prevKey = k;
+          }
+        }
+        return toks.join(', ');
+      }
+
+      function hasValidSheetTime(raw) {
+        const s = String(raw || '').trim();
+        return !!s && s !== '--:--' && !/^none$/i.test(s);
+      }
+
+      async function searchTrainsBetweenFromSheet(fromQ, toQ) {
+        await fetchSheetStations().then(st => { if (st.length) mergeStations(null); });
+        const fromRes = resolveStation(fromQ);
+        const toRes = resolveStation(toQ);
+        const fromCode = sanitizeTqIdent((fromRes?.code || extractCode(fromQ) || '').toUpperCase());
+        const toCode = sanitizeTqIdent((toRes?.code || extractCode(toQ) || '').toUpperCase());
+        if (fromCode.length < 2 || toCode.length < 2 || fromCode === toCode) return [];
+
+        const [trainCsv, schedCsv] = await Promise.all([
+          downloadGvizQuery('Train', `select * where (E = '${fromCode}' and H = '${toCode}') or (V contains '${fromCode}' and V contains '${toCode}')`),
+          downloadGvizQuery('Schedule', `select A, B, C, D, E, F, G, H where D = '${fromCode}' or D = '${toCode}'`)
+        ]);
+
+        const trainEntries = trainCsv ? parseSheetTrainsCsv(trainCsv) : [];
+        const schedRows = schedCsv ? parseSheetScheduleCsv(schedCsv) : [];
+        const byTrain = new Map();
+
+        // 1) Schedule sheet matches (handles all intermediate stations)
+        const grouped = new Map();
+        for (const r of schedRows) {
+          if (!r.trainNumber) continue;
+          const k = normalizeTrainKey(r.trainNumber);
+          if (!grouped.has(k)) grouped.set(k, []);
+          grouped.get(k).push(r);
+        }
+        for (const [k, rows] of grouped.entries()) {
+          const fRow = rows.find(r => r.stationCode.toUpperCase() === fromCode);
+          const tRow = rows.find(r => r.stationCode.toUpperCase() === toCode);
+          if (!fRow || !tRow || !isScheduleRowBefore(fRow, tRow)) continue;
+          const dep = formatSheetTimeStr(fRow.departureRaw) || formatSheetTimeStr(fRow.arrivalRaw) || '--:--';
+          const arr = formatSheetTimeStr(tRow.arrivalRaw) || formatSheetTimeStr(tRow.departureRaw) || '--:--';
+          const fDb = state.stationDb.find(s => s.code.toUpperCase() === fromCode);
+          const tDb = state.stationDb.find(s => s.code.toUpperCase() === toCode);
+          const dist = (fDb?.lat != null && fDb?.lon != null && tDb?.lat != null && tDb?.lon != null)
+            ? haversineKm(fDb.lat, fDb.lon, tDb.lat, tDb.lon) * 1.2 : 0;
+          byTrain.set(k, {
+            trainNumber: fRow.trainNumber,
+            trainName: fRow.trainName || tRow.trainName || '',
+            departure: dep,
+            arrival: arr,
+            distanceKm: dist
+          });
+        }
+
+        // 2) Train sheet direct / Train_Stops matches
+        for (const entry of trainEntries) {
+          const k = normalizeTrainKey(entry.trainNumber);
+          const route = buildRouteFromSheetEntry(entry);
+          const fIdx = route.findIndex(st => st.stationCode.toUpperCase() === fromCode);
+          const tIdx = fIdx >= 0 ? route.findIndex((st, i) => i > fIdx && st.stationCode.toUpperCase() === toCode) : -1;
+          if (fIdx >= 0 && tIdx > fIdx) {
+            const dep = formatSheetTimeStr(route[fIdx].departure || route[fIdx].scheduledTimeRaw) ||
+              (fIdx === 0 ? formatSheetTimeStr(entry.departureRaw) : null) || '--:--';
+            const arr = formatSheetTimeStr(route[tIdx].arrival || route[tIdx].scheduledTimeRaw) ||
+              (tIdx === route.length - 1 ? formatSheetTimeStr(entry.arrivalRaw) : null) || '--:--';
+            let segDist = 0, prevC = null;
+            for (let i = fIdx; i <= tIdx; i++) {
+              const st = route[i];
+              if (st.lat != null && st.lon != null) {
+                if (prevC) segDist += haversineKm(prevC.lat, prevC.lon, st.lat, st.lon) * 1.2;
+                prevC = st;
+              }
+            }
+            const ex = byTrain.get(k);
+            const dist = (fIdx === 0 && tIdx === route.length - 1 && entry.distanceKm > 0)
+              ? entry.distanceKm : (segDist > 0 ? segDist : (ex?.distanceKm || 0));
+            byTrain.set(k, {
+              trainNumber: entry.trainNumber,
+              trainName: entry.trainName || ex?.trainName || '',
+              departure: dep !== '--:--' ? dep : (ex?.departure || '--:--'),
+              arrival: arr !== '--:--' ? arr : (ex?.arrival || '--:--'),
+              distanceKm: dist
+            });
+          } else if (byTrain.has(k) && entry.trainName) {
+            const ex = byTrain.get(k);
+            if (!ex.trainName) ex.trainName = entry.trainName;
+          }
+        }
+        return Array.from(byTrain.values());
+      }
+
+      async function findTrainRouteFromSheet(trainNo) {
+        const clean = String(trainNo || '').replace(/\D/g, '');
+        if (!clean) return null;
+        await fetchSheetStations().then(st => { if (st.length) mergeStations(null); });
+        const variants = buildTrainNumberVariants(clean);
+        const condTrain = variants.map(v => /^\d+$/.test(v) ? `A = ${Number(v)} or A = '${v}'` : `A = '${v}'`).join(' or ');
+        const condSched = variants.map(v => /^\d+$/.test(v) ? `B = ${Number(v)} or B = '${v}'` : `B = '${v}'`).join(' or ');
+
+        const [trainCsv, schedCsv] = await Promise.all([
+          downloadGvizQuery('Train', `select * where ${condTrain}`),
+          downloadGvizQuery('Schedule', `select A, B, C, D, E, F, G, H where ${condSched}`)
+        ]);
+        const entry = trainCsv ? (parseSheetTrainsCsv(trainCsv)[0] || null) : null;
+        const scheduleRows = schedCsv ? sortScheduleRows(parseSheetScheduleCsv(schedCsv)) : [];
+        if (!entry && !scheduleRows.length) return null;
+
+        const routeFromSched = buildRouteFromScheduleRows(scheduleRows);
+        const routeFromTrain = entry ? buildRouteFromSheetEntry(entry) : [];
+        const route = (routeFromSched.length >= routeFromTrain.length && routeFromSched.length)
+          ? routeFromSched : routeFromTrain;
+
+        return {
+          entry,
+          route,
+          scheduleRows,
+          isComplete: isSheetRouteComplete(entry, route),
+          needsTrainStopsFill: !entry || !entry.trainStopsRaw
+        };
+      }
+
+      function estimateLocationFromSheetSchedule(entry, route) {
+        if (!route || !route.length) return null;
+        const sMin = parseTimeToMins(entry?.departureRaw || route[0]?.scheduledTimeRaw);
+        const rMin = parseTimeToMins(entry?.arrivalRaw || route[route.length - 1]?.scheduledTimeRaw);
+        const now = new Date();
+        const nowMin = now.getHours() * 60 + now.getMinutes();
+        let prog = 0;
+        if (sMin != null && rMin != null && route.length >= 2) {
+          const dur = rMin >= sMin ? (rMin - sMin) : ((1440 - sMin) + rMin);
+          if (dur > 0) {
+            const elp = rMin >= sMin ? (nowMin - sMin) : (nowMin >= sMin ? (nowMin - sMin) : ((1440 - sMin) + nowMin));
+            if (elp >= 0 && elp <= dur) prog = Math.min(1, Math.max(0, elp / dur));
+          }
+        }
+        const scaled = Math.min(route.length - 1, Math.max(0, Math.floor(prog * (route.length - 1))));
+        const cur = route[scaled], nxt = route[scaled + 1];
+        const segFrac = route.length >= 2 ? Math.min(1, Math.max(0, prog * (route.length - 1) - scaled)) : 0;
+        return {
+          stationCode: cur.stationCode || null,
+          stationName: cur.stationName || cur.stationCode,
+          sequence: cur.sequence || (scaled + 1),
+          lat: cur.lat,
+          lon: cur.lon,
+          speedKmh: 0,
+          bearingDegrees: null,
+          segmentProgress: segFrac,
+          nextStationName: nxt ? (nxt.stationName || nxt.stationCode) : null
+        };
+      }
+
+      function postSheetSyncPayload(payload) {
+        try {
+          fetch(API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+            body: JSON.stringify(payload)
+          }).catch(() => {});
+        } catch (_) {}
+      }
+
+      function syncResolvedTrainToSheet(trainNo, trainName, sheetLookup, resolvedRoute) {
+        const cleanNo = String(trainNo || '').replace(/\D/g, '');
+        if (!cleanNo || !resolvedRoute || resolvedRoute.length < 2) return;
+        const stopsCsv = formatTrainStopsCsv(resolvedRoute);
+        const sig = `${cleanNo}|${resolvedRoute.length}|${stopsCsv}|${trainName || ''}`;
+        if (sheetSyncSentSigs.get(`train:${cleanNo}`) === sig) return;
+        sheetSyncSentSigs.set(`train:${cleanNo}`, sig);
+
+        const existingEntry = sheetLookup?.entry || null;
+        const existingSched = sheetLookup?.scheduleRows || [];
+        const exSchedByCode = new Map(existingSched.map(r => [r.stationCode.toUpperCase(), r]));
+        const sheetDbByCode = new Map(sheetStationsCache.map(s => [s.code.toUpperCase(), s]));
+
+        const first = resolvedRoute[0], last = resolvedRoute[resolvedRoute.length - 1];
+        const finalName = (trainName || existingEntry?.trainName || '').trim();
+        let totalDist = existingEntry?.distanceKm || 0;
+        if (totalDist <= 0) {
+          let prev = null;
+          for (const s of resolvedRoute) {
+            if (s.lat != null && s.lon != null) {
+              if (prev) totalDist += haversineKm(prev.lat, prev.lon, s.lat, s.lon) * 1.2;
+              prev = s;
+            }
+          }
+        }
+
+        const stations = [];
+        const seenSt = new Set();
+        for (const st of resolvedRoute) {
+          const c = (st.stationCode || '').trim().toUpperCase();
+          if (!c || seenSt.has(c)) continue;
+          seenSt.add(c);
+          const sHit = sheetDbByCode.get(c);
+          if (!sHit || sHit.lat == null || sHit.lon == null || (st.lat != null && st.lon != null)) {
+            const obj = { stationCode: c, stationName: st.stationName || sHit?.name || c };
+            if (st.lat != null && st.lon != null) { obj.latitude = st.lat; obj.longitude = st.lon; }
+            stations.push(obj);
+          }
+        }
+
+        let day = 1, prevMin = null;
+        const schedule = resolvedRoute.map((st, idx) => {
+          const ex = exSchedByCode.get((st.stationCode || '').toUpperCase());
+          const arr = formatSheetTimeStr(st.arrival || st.scheduledTimeRaw) || (ex && hasValidSheetTime(ex.arrivalRaw) ? ex.arrivalRaw : null) || 'None';
+          const dep = formatSheetTimeStr(st.departure || st.scheduledTimeRaw) || (ex && hasValidSheetTime(ex.departureRaw) ? ex.departureRaw : null) || 'None';
+          const minNow = parseTimeToMins(arr) ?? parseTimeToMins(dep);
+          if (prevMin != null && minNow != null && minNow + 120 < prevMin) day++;
+          if (minNow != null) prevMin = minNow;
+          return {
+            sequence: idx + 1,
+            trainNumber: cleanNo,
+            trainName: finalName,
+            stationCode: st.stationCode,
+            stationName: st.stationName,
+            arrival: arr,
+            departure: dep,
+            day: ex?.day || day
+          };
+        });
+
+        postSheetSyncPayload({
+          action: 'syncSheetData',
+          sheetId: ADS_SHEET_ID,
+          train: {
+            trainNumber: cleanNo,
+            trainName: finalName,
+            fromCode: first.stationCode || existingEntry?.fromCode || '',
+            fromName: first.stationName || existingEntry?.fromName || '',
+            departure: formatSheetTimeStr(first.departure || first.scheduledTimeRaw) || existingEntry?.departureRaw || '',
+            toCode: last.stationCode || existingEntry?.toCode || '',
+            toName: last.stationName || existingEntry?.toName || '',
+            arrival: formatSheetTimeStr(last.arrival || last.scheduledTimeRaw) || existingEntry?.arrivalRaw || '',
+            distanceKm: totalDist > 0 ? Math.round(totalDist * 10) / 10 : 0,
+            routePointsCount: Math.max(resolvedRoute.length, existingEntry?.routePointsCount || 0),
+            trainStops: stopsCsv
+          },
+          stations,
+          schedule
+        });
+      }
+
+      function syncBetweenToSheet(fromCode, toCode, items) {
+        if (!items || !items.length) return;
+        const fCode = fromCode.toUpperCase(), tCode = toCode.toUpperCase();
+        const sig = `${fCode}->${tCode}:${items.map(i => i.trainNumber).join(',')}`;
+        if (sheetSyncSentSigs.get(`between:${fCode}:${tCode}`) === sig) return;
+        sheetSyncSentSigs.set(`between:${fCode}:${tCode}`, sig);
+        const fDb = state.stationDb.find(s => s.code.toUpperCase() === fCode);
+        const tDb = state.stationDb.find(s => s.code.toUpperCase() === tCode);
+        const stations = [fDb, tDb].filter(Boolean).map(s => ({
+          stationCode: s.code,
+          stationName: s.name,
+          ...(s.lat != null && s.lon != null ? { latitude: s.lat, longitude: s.lon } : {})
+        }));
+        const betweenTrains = items.map(it => ({
+          trainNumber: String(it.trainNumber || '').replace(/\D/g, ''),
+          trainName: it.trainName || '',
+          fromCode: fCode,
+          fromName: fDb?.name || fCode,
+          departure: it.departure && it.departure !== '--:--' ? it.departure : '',
+          toCode: tCode,
+          toName: tDb?.name || tCode,
+          arrival: it.arrival && it.arrival !== '--:--' ? it.arrival : '',
+          distanceKm: it.distanceKm || 0,
+          trainStops: `${fCode}, ${tCode}`
+        })).filter(x => x.trainNumber);
+        if (betweenTrains.length) {
+          postSheetSyncPayload({ action: 'syncSheetData', sheetId: ADS_SHEET_ID, betweenTrains, stations });
+        }
+      }
+
+      function reportLiveObservationToSheet(trainNo, trainName, route, located, passedKm, timeMs) {
+        const cleanNo = String(trainNo || '').replace(/\D/g, '');
+        if (!cleanNo || !route || !route.length || !located) return;
+        const st = route[located.idx];
+        if (!st) return;
+        const stCode = (st.stationCode || '').trim().toUpperCase();
+        const stName = (st.stationName || located.name || '').trim();
+        if (!stCode && !stName) return;
+        const atStation = passedKm != null && passedKm <= 0.6;
+        const key = `${cleanNo}|${stCode || stName}|${atStation}`;
+        if (key === lastObservedSyncKey) return;
+        lastObservedSyncKey = key;
+
+        let obsTime = null;
+        if (atStation) {
+          const d = new Date(timeMs || Date.now());
+          obsTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+        }
+        const stopsCsv = formatTrainStopsCsv(route);
+        const dbHit = stCode ? state.stationDb.find(s => s.code.toUpperCase() === stCode) : null;
+        postSheetSyncPayload({
+          action: 'syncSheetData',
+          sheetId: ADS_SHEET_ID,
+          ...(stopsCsv && route.length >= 2 ? {
+            train: {
+              trainNumber: cleanNo,
+              trainName: trainName || '',
+              fromCode: route[0].stationCode,
+              fromName: route[0].stationName,
+              toCode: route[route.length - 1].stationCode,
+              toName: route[route.length - 1].stationName,
+              routePointsCount: route.length,
+              trainStops: stopsCsv
+            }
+          } : {}),
+          ...(stCode ? {
+            stations: [{
+              stationCode: stCode,
+              stationName: stName || dbHit?.name || stCode,
+              ...(dbHit?.lat != null && dbHit?.lon != null ? { latitude: dbHit.lat, longitude: dbHit.lon } : {})
+            }],
+            ...(obsTime ? {
+              schedule: [{
+                sequence: located.idx + 1,
+                trainNumber: cleanNo,
+                trainName: trainName || '',
+                stationCode: stCode,
+                stationName: stName || dbHit?.name || stCode,
+                arrival: obsTime,
+                departure: obsTime,
+                day: 1
+              }]
+            } : {})
+          } : {})
+        });
+      }
+
       // Stations Database Load & Search
+      let remoteStationsCache = [];
+
       async function loadStationsDb() {
         const cached = localStorage.getItem('tll_stations_cache');
         const cachedTs = Number(localStorage.getItem('tll_stations_ts') || '0');
@@ -1887,6 +2598,8 @@
             if (Array.isArray(parsed) && parsed.length) mergeStations(parsed);
           } catch (_) {}
         }
+        await fetchSheetStations(true);
+        if (sheetStationsCache.length) mergeStations(null);
         if (Date.now() - cachedTs < 7 * 86400000 && cached) return;
         for (const url of [STATIONS_CDN_URL, STATIONS_RAW_URL]) {
           try {
@@ -1912,10 +2625,29 @@
       }
 
       function mergeStations(remote) {
-        const seen = new Set(remote.map(s => s.code.toUpperCase()));
-        const merged = [...remote];
-        for (const seed of CORE_STATIONS) {
-          if (!seen.has(seed.code.toUpperCase())) merged.push(seed);
+        if (Array.isArray(remote)) remoteStationsCache = remote;
+        const backupByCode = new Map();
+        for (const st of [...remoteStationsCache, ...CORE_STATIONS]) {
+          const c = (st.code || '').trim().toUpperCase();
+          if (c && !backupByCode.has(c)) backupByCode.set(c, st);
+        }
+        const seen = new Set();
+        const merged = [];
+        for (const st of sheetStationsCache) {
+          const c = (st.code || '').trim().toUpperCase();
+          const b = backupByCode.get(c);
+          const item = (st.lat == null || st.lon == null)
+            ? { ...st, lat: st.lat ?? b?.lat ?? null, lon: st.lon ?? b?.lon ?? null, name: st.name || b?.name || c }
+            : st;
+          if (item.lat == null && (/^(XX-|YY-)/i.test(c))) continue;
+          if (c) seen.add(c);
+          merged.push(item);
+        }
+        for (const st of [...remoteStationsCache, ...CORE_STATIONS]) {
+          const c = (st.code || '').trim().toUpperCase();
+          if (c && seen.has(c)) continue;
+          if (c) seen.add(c);
+          merged.push(st);
         }
         state.stationDb = merged;
         state.fromResolved = resolveStation(state.fromInput);
@@ -1985,15 +2717,26 @@
         state.betweenError = null;
         renderBetween();
         try {
-          const r = await fetch(`${API_URL}?action=between&from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`);
-          const json = await r.json();
-          const list = (json?.data?.trains || []).map(obj => ({
-            trainNumber: obj.train?.number || '',
-            trainName: obj.train?.name || '',
-            departure: obj.from?.departure || '--:--',
-            arrival: obj.to?.arrival || '--:--',
-            distanceKm: Number(obj.distance) || 0
-          }));
+          // 1) Search Train, Station & Schedule Google Sheets first (zero API calls when found)
+          let list = [];
+          try {
+            list = await searchTrainsBetweenFromSheet(state.fromInput || f, state.toInput || t);
+          } catch (_) { list = []; }
+
+          // 2) Fallback to API key search only when sheet has no matching trains
+          if (!list.length) {
+            const r = await fetch(`${API_URL}?action=between&from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`);
+            const json = await r.json();
+            list = (json?.data?.trains || []).map(obj => ({
+              trainNumber: obj.train?.number || '',
+              trainName: obj.train?.name || '',
+              departure: obj.from?.departure || '--:--',
+              arrival: obj.to?.arrival || '--:--',
+              distanceKm: Number(obj.distance) || 0
+            }));
+            if (list.length) syncBetweenToSheet(f, t, list);
+          }
+
           state.betweenLoading = false;
           state.betweenTrains = list;
           state.betweenError = list.length ? null : state.strings.noTrainsFoundTemplate.replace('{FROM}', f).replace('{TO}', t);
@@ -2106,17 +2849,74 @@
 
       async function fetchLiveTrain(trainNo, token) {
         if (state.insideTrain) return;
-        const r = await fetch(`${API_URL}?action=live&trainNo=${encodeURIComponent(trainNo)}&_t=${Date.now()}`);
-        const json = await r.json();
-        if (token !== state.startToken || !state.running || state.insideTrain) return;
-        const payload = json?.data || json;
-        let routeArr = parseRoute(payload.route || json.route || payload.stations);
 
-        if (!routeArr.length && !state.route.length) {
-          routeArr = await fetchRouteCdn(trainNo);
-          if (!routeArr.length && trainNo.length === 5) routeArr = await fetchRouteCdn(trainNo.slice(1));
+        // 1) Check Train, Station & Schedule Google Sheets first
+        let sheetLookup = null;
+        try {
+          sheetLookup = await findTrainRouteFromSheet(trainNo);
+        } catch (_) { sheetLookup = null; }
+        if (token !== state.startToken || !state.running || state.insideTrain) return;
+        const sheetHasCompleteRoute = !!(sheetLookup && sheetLookup.isComplete);
+
+        let json = {};
+        let liveErr = null;
+        try {
+          const r = await fetch(`${API_URL}?action=live&trainNo=${encodeURIComponent(trainNo)}&_t=${Date.now()}`);
+          json = await r.json();
+        } catch (err) {
+          liveErr = err;
         }
-        if (!routeArr.length && state.route.length) routeArr = state.route;
+        if (token !== state.startToken || !state.running || state.insideTrain) return;
+        const payload = json?.data || json || {};
+        const apiRoute = parseRoute(payload.route || json.route || payload.stations);
+
+        let cdnRoute = [], schedApiRoute = [];
+        if (!sheetHasCompleteRoute) {
+          if (!apiRoute.length && !state.route.length) {
+            cdnRoute = await fetchRouteCdn(trainNo);
+            if (!cdnRoute.length && trainNo.length === 5) cdnRoute = await fetchRouteCdn(trainNo.slice(1));
+          }
+          if (!apiRoute.length && !cdnRoute.length && !state.route.length) {
+            try {
+              const sr = await fetch(`${API_URL}?action=schedule&trainNo=${encodeURIComponent(trainNo)}&_t=${Date.now()}`);
+              const sj = await sr.json();
+              schedApiRoute = parseRoute(sj.route || sj?.data?.route || sj.stations);
+            } catch (_) {}
+          }
+        }
+
+        const candidates = [sheetLookup?.route || [], apiRoute, schedApiRoute, cdnRoute, state.route].filter(r => r.length);
+        let routeArr = [];
+        if (candidates.length) {
+          const best = candidates.reduce((a, b) => {
+            const sa = a.length * 1000 + a.filter(s => hasValidSheetTime(s.scheduledTimeRaw) || hasValidSheetTime(s.arrival)).length * 10;
+            const sb = b.length * 1000 + b.filter(s => hasValidSheetTime(s.scheduledTimeRaw) || hasValidSheetTime(s.arrival)).length * 10;
+            return sb > sa ? b : a;
+          });
+          const donor = new Map();
+          for (const r of candidates) {
+            if (r === best) continue;
+            for (const s of r) {
+              const c = (s.stationCode || '').toUpperCase();
+              if (c && (!donor.has(c) || hasValidSheetTime(s.scheduledTimeRaw))) donor.set(c, s);
+            }
+          }
+          routeArr = best.map((st, i) => {
+            const d = st.stationCode ? donor.get(st.stationCode.toUpperCase()) : null;
+            return !d ? { ...st, sequence: i + 1 } : {
+              ...st,
+              sequence: i + 1,
+              stationName: st.stationName || d.stationName,
+              lat: st.lat ?? d.lat,
+              lon: st.lon ?? d.lon,
+              scheduledTimeRaw: hasValidSheetTime(st.scheduledTimeRaw) ? st.scheduledTimeRaw : d.scheduledTimeRaw,
+              arrival: hasValidSheetTime(st.arrival) ? st.arrival : d.arrival,
+              departure: hasValidSheetTime(st.departure) ? st.departure : d.departure
+            };
+          });
+        }
+
+        if (!routeArr.length && liveErr && !sheetLookup) throw liveErr;
 
         const dbByCode = new Map(state.stationDb.map(s => [s.code.toUpperCase(), s]));
         routeArr = routeArr.map(st => {
@@ -2124,7 +2924,8 @@
           return hit ? { ...st, lat: st.lat ?? hit.lat, lon: st.lon ?? hit.lon, stationName: st.stationName || hit.name } : st;
         });
 
-        const curLoc = payload.currentLocation || null;
+        const apiLoc = payload.currentLocation || null;
+        const curLoc = apiLoc || (sheetLookup ? estimateLocationFromSheetSchedule(sheetLookup.entry, routeArr) : null);
         if (!routeArr.length && curLoc?.lat != null && curLoc?.lon != null) {
           routeArr = [
             { stationCode: curLoc.stationCode || '', stationName: curLoc.stationName || 'Train', lat: curLoc.lat, lon: curLoc.lon, scheduledTimeRaw: '--:--' },
@@ -2134,11 +2935,22 @@
 
         const prevTrain = state.locatedTrain;
         state.route = routeArr;
-        state.trainName = payload.trainName || json.trainName || state.trainName;
-        state.rawSource = payload.source || json.source || 'api';
+        state.trainName = (sheetLookup?.entry?.trainName || '').trim() || payload.trainName || json.trainName || state.trainName;
+        state.rawSource = apiLoc ? (payload.source || json.source || 'api') : (sheetLookup ? 'sheet' : (payload.source || json.source || 'api'));
         state.locatedTrain = locateTrain(curLoc, routeArr);
         state.stoppageDistances = computeStoppageDistances(state.locatedTrain, routeArr);
         if (state.trainName) saveRecentTrain(trainNo, state.trainName);
+
+        // Auto-sync missing/incomplete/corrected Train, Train_Stops, Station, Schedule to sheets
+        const schedByCode = new Map((sheetLookup?.scheduleRows || []).map(r => [r.stationCode.toUpperCase(), r]));
+        const hasNewSchedData = routeArr.some(st => {
+          const row = st.stationCode ? schedByCode.get(st.stationCode.toUpperCase()) : null;
+          return !row || (!hasValidSheetTime(row.arrivalRaw) && hasValidSheetTime(st.arrival || st.scheduledTimeRaw));
+        });
+        if (routeArr.length >= 2 && (!sheetLookup || !sheetLookup.isComplete || sheetLookup.needsTrainStopsFill || routeArr.length > sheetLookup.route.length || hasNewSchedData)) {
+          syncResolvedTrainToSheet(trainNo, state.trainName, sheetLookup, routeArr);
+        }
+        reportLiveObservationToSheet(trainNo, state.trainName, routeArr, state.locatedTrain, state.stoppageDistances.passedKm, Date.now());
 
         if (prevTrain && state.rawSource === 'gps') {
           setStatusBanner(state.strings.otherUserGpsMsg, 'ok');
@@ -2363,6 +3175,7 @@
           next: nxt ? (nxt.stationName || nxt.stationCode) : ''
         };
         state.stoppageDistances = computeStoppageDistances(state.locatedTrain, state.route);
+        reportLiveObservationToSheet(state.trainNo, state.trainName, state.route, state.locatedTrain, state.stoppageDistances.passedKm, user.time);
         if (Date.now() - state.lastPublishTs >= GPS_MS) {
           state.lastPublishTs = Date.now();
           fetch(API_URL, {
@@ -3009,6 +3822,8 @@
 
         el('lblAdModalTitle').textContent = s.adDetailsTitle;
         el('btnAdModalCloseFoot').textContent = s.closeLabel;
+        el('lblAdvertiseWhatsApp').textContent = s.advertiseWhatsAppBtn;
+        el('btnAdvertiseWhatsApp').href = `https://wa.me/919800074626?text=${encodeURIComponent(s.advertiseWhatsAppMsg)}`;
 
         if (!el('fromSuggestions').classList.contains('hidden')) {
           renderSuggestions(el('fromSuggestions'), filterSuggestions(state.fromInput), true);
@@ -3669,6 +4484,7 @@
       bindEvents();
       applyLanguage(state.lang, false);
       loadStationsDb();
+      fetchSheetTrains();
       fetchAdsSheet();
       refreshPassiveLocation();
 

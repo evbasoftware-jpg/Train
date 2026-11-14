@@ -11,7 +11,10 @@ import java.io.IOException
 import java.net.SocketTimeoutException
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.CacheControl
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -111,6 +114,8 @@ class TrainRepository(private val cacheDir: File? = null) {
     )
   }
 
+  private val sheetRepository = SheetTrainRepository(cacheDir)
+
   private val client = OkHttpClient.Builder()
     .connectTimeout(20, TimeUnit.SECONDS)
     .readTimeout(20, TimeUnit.SECONDS)
@@ -118,6 +123,9 @@ class TrainRepository(private val cacheDir: File? = null) {
     .followRedirects(true)
     .followSslRedirects(true)
     .build()
+
+  private val sheetSyncManager = SheetSyncManager(client)
+  private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
   private val textPlainJson = "text/plain;charset=utf-8".toMediaType()
 
@@ -132,11 +140,13 @@ class TrainRepository(private val cacheDir: File? = null) {
     } else {
       emptyList()
     }
-    mergeWithCoreStations(cached)
+    val sheetStations = sheetRepository.loadCachedSheetStations()
+    sheetRepository.mergeStationLists(sheetStations, mergeWithCoreStations(cached))
   }
 
   suspend fun fetchStationsDb(forceRefreshIfStale: Boolean = true): List<StationDbEntry> =
     withContext(Dispatchers.IO) {
+      val sheetStations = sheetRepository.fetchSheetStations(forceRefresh = true)
       val file = cacheDir?.let { File(it, STATION_CACHE_FILE) }
       if (file != null && file.exists() && forceRefreshIfStale) {
         val age = System.currentTimeMillis() - file.lastModified()
@@ -146,7 +156,12 @@ class TrainRepository(private val cacheDir: File? = null) {
           } catch (_: Exception) {
             emptyList()
           }
-          if (cached.isNotEmpty()) return@withContext mergeWithCoreStations(cached)
+          if (cached.isNotEmpty()) {
+            return@withContext sheetRepository.mergeStationLists(
+              sheetStations,
+              mergeWithCoreStations(cached),
+            )
+          }
         }
       }
 
@@ -165,13 +180,16 @@ class TrainRepository(private val cacheDir: File? = null) {
                 } catch (_: Exception) {
                 }
               }
-              return@withContext mergeWithCoreStations(parsed)
+              return@withContext sheetRepository.mergeStationLists(
+                sheetStations,
+                mergeWithCoreStations(parsed),
+              )
             }
           }
         } catch (_: Exception) {
         }
       }
-      loadCachedStationsDb()
+      sheetRepository.mergeStationLists(sheetStations, loadCachedStationsDb())
     }
 
   private fun mergeWithCoreStations(remote: List<StationDbEntry>): List<StationDbEntry> {
@@ -207,8 +225,23 @@ class TrainRepository(private val cacheDir: File? = null) {
     return list
   }
 
-  suspend fun fetchTrainsBetween(fromCode: String, toCode: String): List<TrainBetweenItem> =
+  suspend fun fetchTrainsBetween(
+    fromCode: String,
+    toCode: String,
+    stationDb: List<StationDbEntry> = CORE_STATIONS,
+  ): List<TrainBetweenItem> =
     withContext(Dispatchers.IO) {
+      // 1) Search Train, Station & Schedule Google Sheets first (avoids API key usage when found)
+      val sheetMatches = try {
+        sheetRepository.searchTrainsBetweenFromSheet(fromCode, toCode, stationDb)
+      } catch (_: Exception) {
+        emptyList()
+      }
+      if (sheetMatches.isNotEmpty()) {
+        return@withContext sheetMatches
+      }
+
+      // 2) Fallback to backend API key search when no matching trains are found in sheets
       val root = getApi(mapOf("action" to "between", "from" to fromCode, "to" to toCode))
       val trainsArr = root.optJSONObject("data")?.optJSONArray("trains") ?: JSONArray()
       val result = ArrayList<TrainBetweenItem>(trainsArr.length())
@@ -232,6 +265,11 @@ class TrainRepository(private val cacheDir: File? = null) {
           ),
         )
       }
+      if (result.isNotEmpty()) {
+        syncScope.launch {
+          sheetSyncManager.syncBetweenResults(fromCode, toCode, result, stationDb)
+        }
+      }
       result
     }
 
@@ -240,37 +278,68 @@ class TrainRepository(private val cacheDir: File? = null) {
     cachedRoute: List<RouteStation>,
     stationDb: List<StationDbEntry>,
   ): LiveTrainPayload = withContext(Dispatchers.IO) {
-    val root = getApi(mapOf("action" to "live", "trainNo" to trainNo))
-    val payload = root.optJSONObject("data") ?: root
+    // 1) Check Train, Station & Schedule Google Sheets first
+    val sheetLookup = try {
+      sheetRepository.findTrainRouteFromSheet(trainNo, stationDb)
+    } catch (_: Exception) {
+      null
+    }
+    val sheetHasCompleteRoute = sheetLookup != null && sheetLookup.isComplete
 
-    var incomingRoute = parseRouteArray(payload.optJSONArray("route"))
-      ?: parseRouteArray(root.optJSONArray("route"))
-      ?: parseRouteArray(payload.optJSONArray("stations"))
+    // 2) Live API for real-time currentLocation (and fallback route if sheets are missing/incomplete)
+    var liveError: Throwable? = null
+    val root: JSONObject? = try {
+      getApi(mapOf("action" to "live", "trainNo" to trainNo))
+    } catch (t: Throwable) {
+      liveError = t
+      null
+    }
 
-    // Fallback 1: DataMeet GitHub GeoJSON (5-digit, then 4-digit)
-    if (incomingRoute.isNullOrEmpty() && cachedRoute.isEmpty()) {
-      incomingRoute = fetchTrainRouteFromCdn(trainNo)
-      if (incomingRoute.isNullOrEmpty() && trainNo.length == 5) {
-        incomingRoute = fetchTrainRouteFromCdn(trainNo.drop(1))
+    val payload = root?.optJSONObject("data") ?: root
+    val apiRoute = parseRouteArray(payload?.optJSONArray("route"))
+      ?: parseRouteArray(root?.optJSONArray("route"))
+      ?: parseRouteArray(payload?.optJSONArray("stations"))
+
+    // 3) Only call CDN / schedule API if sheets lacked a complete route (saves API key usage!)
+    var cdnRoute: List<RouteStation>? = null
+    var apiSchedRoute: List<RouteStation>? = null
+    if (!sheetHasCompleteRoute) {
+      if (apiRoute.isNullOrEmpty() && cachedRoute.isEmpty()) {
+        cdnRoute = fetchTrainRouteFromCdn(trainNo)
+        if (cdnRoute.isNullOrEmpty() && trainNo.length == 5) {
+          cdnRoute = fetchTrainRouteFromCdn(trainNo.drop(1))
+        }
+      }
+      if (apiRoute.isNullOrEmpty() && cdnRoute.isNullOrEmpty() && cachedRoute.isEmpty()) {
+        try {
+          val sched = getApi(mapOf("action" to "schedule", "trainNo" to trainNo))
+          apiSchedRoute = parseRouteArray(sched.optJSONArray("route"))
+            ?: parseRouteArray(sched.optJSONObject("data")?.optJSONArray("route"))
+            ?: parseRouteArray(sched.optJSONArray("stations"))
+        } catch (_: Exception) {
+        }
       }
     }
 
-    // Fallback 2: Backend schedule action
-    if (incomingRoute.isNullOrEmpty() && cachedRoute.isEmpty()) {
-      try {
-        val sched = getApi(mapOf("action" to "schedule", "trainNo" to trainNo))
-        incomingRoute = parseRouteArray(sched.optJSONArray("route"))
-          ?: parseRouteArray(sched.optJSONObject("data")?.optJSONArray("route"))
-          ?: parseRouteArray(sched.optJSONArray("stations"))
-      } catch (_: Exception) {
-      }
+    val mergedRoute = selectAndMergeBestRoute(
+      sheetRoute = sheetLookup?.route.orEmpty(),
+      apiRoute = apiRoute.orEmpty(),
+      cdnRoute = cdnRoute.orEmpty(),
+      apiSchedRoute = apiSchedRoute.orEmpty(),
+      cachedRoute = cachedRoute,
+    )
+
+    if (mergedRoute.isEmpty() && root == null && liveError != null) {
+      throw liveError
     }
 
-    val currentLoc = parseCurrentLocation(payload.optJSONObject("currentLocation"))
+    val apiLoc = parseCurrentLocation(payload?.optJSONObject("currentLocation"))
+    val currentLoc = apiLoc ?: sheetLookup?.let {
+      sheetRepository.estimateLocationFromSheetSchedule(it.entry, mergedRoute)
+    }
 
-    val chosenRoute = when {
-      !incomingRoute.isNullOrEmpty() -> enrichRouteFromStationDb(incomingRoute, stationDb)
-      cachedRoute.isNotEmpty() -> enrichRouteFromStationDb(cachedRoute, stationDb)
+    val chosenRouteRaw = when {
+      mergedRoute.isNotEmpty() -> mergedRoute
       currentLoc?.lat != null && currentLoc.lon != null -> listOf(
         RouteStation(
           stationCode = currentLoc.stationCode ?: "",
@@ -295,9 +364,38 @@ class TrainRepository(private val cacheDir: File? = null) {
       )
       else -> emptyList()
     }
+    val chosenRoute = enrichRouteFromStationDb(chosenRouteRaw, stationDb)
 
-    val trainName = payload.optStringOrNull("trainName") ?: root.optStringOrNull("trainName")
-    val source = payload.optStringOrNull("source") ?: root.optStringOrNull("source")
+    val trainName = sheetLookup?.entry?.trainName?.takeIf { it.isNotBlank() }
+      ?: payload?.optStringOrNull("trainName")
+      ?: root?.optStringOrNull("trainName")
+
+    val source = when {
+      apiLoc != null -> payload?.optStringOrNull("source") ?: root?.optStringOrNull("source")
+      sheetLookup != null -> "sheet"
+      else -> payload?.optStringOrNull("source") ?: root?.optStringOrNull("source")
+    }
+
+    // 4) Auto-sync missing/incomplete/corrected Train, Train_Stops, Station, & Schedule data back to Google Sheets
+    val routeUpgraded = chosenRoute.size >= 2 && (
+      sheetLookup == null ||
+        !sheetLookup.isComplete ||
+        sheetLookup.needsTrainStopsFill ||
+        chosenRoute.size > sheetLookup.route.size ||
+        routeHasNewTimesOrStations(chosenRoute, sheetLookup.scheduleRows)
+      )
+    if (routeUpgraded) {
+      syncScope.launch {
+        sheetSyncManager.syncResolvedTrain(
+          trainNo = trainNo,
+          trainName = trainName,
+          existingEntry = sheetLookup?.entry,
+          existingScheduleRows = sheetLookup?.scheduleRows.orEmpty(),
+          resolvedRoute = chosenRoute,
+          stationDb = stationDb,
+        )
+      }
+    }
 
     LiveTrainPayload(
       trainName = trainName,
@@ -305,6 +403,97 @@ class TrainRepository(private val cacheDir: File? = null) {
       currentLocation = currentLoc,
       route = chosenRoute,
     )
+  }
+
+  fun reportLiveObservation(
+    trainNo: String,
+    trainName: String?,
+    observedStationCode: String,
+    observedStationName: String,
+    observedTimeHHmm: String?,
+    route: List<RouteStation>,
+    stationDb: List<StationDbEntry>,
+  ) {
+    syncScope.launch {
+      sheetSyncManager.syncLiveObservation(
+        trainNo = trainNo,
+        trainName = trainName,
+        observedStationCode = observedStationCode,
+        observedStationName = observedStationName,
+        observedTimeHHmm = observedTimeHHmm,
+        route = route,
+        stationDb = stationDb,
+      )
+    }
+  }
+
+  private fun selectAndMergeBestRoute(
+    sheetRoute: List<RouteStation>,
+    apiRoute: List<RouteStation>,
+    cdnRoute: List<RouteStation>,
+    apiSchedRoute: List<RouteStation>,
+    cachedRoute: List<RouteStation>,
+  ): List<RouteStation> {
+    val candidates = listOf(sheetRoute, apiRoute, apiSchedRoute, cdnRoute, cachedRoute)
+      .filter { it.isNotEmpty() }
+    if (candidates.isEmpty()) return emptyList()
+
+    val primary = candidates.maxByOrNull { r ->
+      val timed = r.count { hasValidTime(it.scheduledTimeRaw) || hasValidTime(it.arrival) }
+      r.size * 1000 + timed * 10
+    } ?: return emptyList()
+
+    // Enrich missing times/coords on the primary route from any secondary route by stationCode
+    val donorByCode = HashMap<String, RouteStation>()
+    for (r in candidates) {
+      if (r === primary) continue
+      for (st in r) {
+        val code = st.stationCode.trim().uppercase(Locale.US)
+        if (code.isBlank()) continue
+        val cur = donorByCode[code]
+        if (cur == null || (hasValidTime(st.arrival ?: st.scheduledTimeRaw) && !hasValidTime(cur.arrival ?: cur.scheduledTimeRaw))) {
+          donorByCode[code] = st
+        }
+      }
+    }
+
+    return primary.mapIndexed { idx, st ->
+      val code = st.stationCode.trim().uppercase(Locale.US)
+      val d = if (code.isNotBlank()) donorByCode[code] else null
+      if (d == null) {
+        st.copy(sequence = idx + 1)
+      } else {
+        st.copy(
+          stationName = st.stationName.ifBlank { d.stationName },
+          sequence = idx + 1,
+          lat = st.lat ?: d.lat,
+          lon = st.lon ?: d.lon,
+          scheduledTimeRaw = if (hasValidTime(st.scheduledTimeRaw)) st.scheduledTimeRaw else d.scheduledTimeRaw,
+          arrival = if (hasValidTime(st.arrival)) st.arrival else d.arrival,
+          departure = if (hasValidTime(st.departure)) st.departure else d.departure,
+        )
+      }
+    }
+  }
+
+  private fun hasValidTime(raw: String?): Boolean {
+    val s = raw?.trim().orEmpty()
+    return s.isNotEmpty() && s != "--:--" && !s.equals("None", ignoreCase = true)
+  }
+
+  private fun routeHasNewTimesOrStations(
+    resolvedRoute: List<RouteStation>,
+    sheetScheduleRows: List<SheetScheduleRow>,
+  ): Boolean {
+    if (sheetScheduleRows.isEmpty()) return resolvedRoute.isNotEmpty()
+    val byCode = sheetScheduleRows.associateBy { it.stationCode.trim().uppercase(Locale.US) }
+    return resolvedRoute.any { st ->
+      val code = st.stationCode.trim().uppercase(Locale.US)
+      val row = if (code.isNotBlank()) byCode[code] else null
+      row == null ||
+        ((!hasValidTime(row.arrivalRaw) && hasValidTime(st.arrival ?: st.scheduledTimeRaw)) ||
+          (!hasValidTime(row.departureRaw) && hasValidTime(st.departure ?: st.scheduledTimeRaw)))
+    }
   }
 
   suspend fun publishGps(trainNo: String, trainName: String?, sample: GpsSample) =
