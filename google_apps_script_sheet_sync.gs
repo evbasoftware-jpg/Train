@@ -1,16 +1,14 @@
 /**
  * Complete Google Apps Script Web App Handler for Train Live Location
  * Spreadsheet ID: 137CjMlGjFv--aTDfo6V8yftNb6gVc5G-E3opwb84gfA
+ * Script ID: 15iF14PctGanUwJJWEtj19nEyTbxMdIIojJGdTW5muXF-Ll7fEZ1jP7m5
  *
- * ব্যবহারের নিয়ম:
- * 1) আপনার Google Apps Script প্রোজেক্টের Code.gs ফাইলটি খুলে পুরো এই কোডটি পেস্ট করে Save করুন।
- * 2) (ঐচ্ছিক - External Railway API ফলব্যাকের জন্য):
- *    Apps Script-এর Project Settings (⚙️) → Script Properties-এ নিচের যেকোনো একটি Key যোগ করুন:
- *      - RAILRADAR_API_KEY  (যদি RailRadar API Key থাকে)
- *      - RAPIDAPI_KEY       (যদি IRCTC RapidAPI Key থাকে, সাথে RAPIDAPI_HOST ঐচ্ছিক)
- *    Key না দিলেও শিট সার্চ, লাইভ GPS শেয়ারিং, অ্যাডস এবং অটো-সিঙ্ক সম্পূর্ণ কাজ করবে।
- * 3) Deploy → Manage deployments → Edit (পেন্সিল আইকন) → Version: "New version" সিলেক্ট করে Deploy করুন
- *    (তাহলে API_URL একই থাকবে)।
+ * Script Properties-এ সমর্থিত Key সমূহ:
+ *   - RAILRADAR_API_KEYS (একাধিক Key কমা, স্পেস, নতুন লাইন বা JSON Array আকারে)
+ *   - RAILRADAR_API_KEY  (একটি Key)
+ *   - RAPIDAPI_KEY       (ঐচ্ছিক IRCTC RapidAPI fallback)
+ *
+ * ডিপ্লয় নিয়ম: Code.gs-এ পুরো কোড পেস্ট করে Save করুন → Deploy → Manage deployments → Edit (✏️) → Version: New version → Deploy।
  */
 
 var DEFAULT_TRAIN_SPREADSHEET_ID = '137CjMlGjFv--aTDfo6V8yftNb6gVc5G-E3opwb84gfA';
@@ -41,13 +39,15 @@ function doGet(e) {
       return jsonResponse_(handleGetSchedule_(sheetId, schedTrainNo));
     }
 
+    var rrKeys = getRailRadarApiKeys_();
     var props = PropertiesService.getScriptProperties();
-    var hasExternalApi = !!(props.getProperty('RAILRADAR_API_KEY') || props.getProperty('RAPIDAPI_KEY'));
+    var hasRapid = !!String(props.getProperty('RAPIDAPI_KEY') || '').trim();
     return jsonResponse_({
       success: true,
       status: 'ok',
       service: 'TrainLiveLocation',
-      apiConfigured: hasExternalApi
+      apiConfigured: rrKeys.length > 0 || hasRapid,
+      railRadarKeyCount: rrKeys.length
     });
   } catch (err) {
     return jsonResponse_({
@@ -83,6 +83,70 @@ function doPost(e) {
   }
 }
 
+/* ==================== API KEY MANAGEMENT ==================== */
+
+function getRailRadarApiKeys_() {
+  var props = PropertiesService.getScriptProperties();
+  var rawKeys = [
+    props.getProperty('RAILRADAR_API_KEYS'),
+    props.getProperty('RAILRADAR_API_KEY'),
+    props.getProperty('RAILRADAR_KEY'),
+    props.getProperty('RAIL_RADAR_API_KEY')
+  ];
+  var seen = {};
+  var keys = [];
+  for (var i = 0; i < rawKeys.length; i++) {
+    var raw = String(rawKeys[i] || '').trim();
+    if (!raw) continue;
+    var parts = [];
+    if (raw.charAt(0) === '[') {
+      try {
+        var parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) parts = parsed;
+      } catch (_) {}
+    }
+    if (!parts.length) {
+      parts = raw.split(/[,;\n\r\s|]+/);
+    }
+    for (var j = 0; j < parts.length; j++) {
+      var k = String(parts[j] || '').replace(/^["']|["']$/g, '').trim();
+      if (k && !seen[k]) {
+        seen[k] = true;
+        keys.push(k);
+      }
+    }
+  }
+  return keys;
+}
+
+function fetchRailRadarJson_(pathAndQuery) {
+  var keys = getRailRadarApiKeys_();
+  if (!keys.length) return null;
+  var url = 'https://api.railradar.in' + pathAndQuery;
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
+    try {
+      var resp = UrlFetchApp.fetch(url, {
+        headers: {
+          'X-Api-Key': key,
+          'Authorization': 'Bearer ' + key,
+          'Accept': 'application/json'
+        },
+        muteHttpExceptions: true
+      });
+      var code = resp.getResponseCode();
+      var txt = resp.getContentText() || '{}';
+      if (code >= 200 && code < 300) {
+        var json = JSON.parse(txt);
+        if (json && json.success !== false) {
+          return json;
+        }
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
 /* ==================== GET HANDLERS ==================== */
 
 function handleGetAds_(sheetId) {
@@ -116,13 +180,14 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
     return { success: true, data: { trains: [] } };
   }
   var ss = SpreadsheetApp.openById(sheetId);
-  var sheetTrains = searchBetweenFromSheets_(ss, fromCode, toCode);
+  var stCoords = readStationMap_(ss.getSheetByName('Station'));
+  var sheetTrains = searchBetweenFromSheets_(ss, stCoords, fromCode, toCode);
   if (sheetTrains.length) {
     return { success: true, source: 'sheet', data: { trains: sheetTrains } };
   }
 
-  // শিটে না পেলে External Railway API Key দিয়ে সার্চ ও অটো-সেভ
-  var apiTrains = fetchBetweenFromExternalApi_(fromCode, toCode);
+  // শিটে না পেলে RailRadar / External Railway API দিয়ে সার্চ ও অটো-সেভ
+  var apiTrains = fetchBetweenFromExternalApi_(fromCode, toCode, stCoords);
   if (apiTrains.length) {
     try {
       var trainItems = [];
@@ -132,10 +197,10 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
           trainNumber: tr.train.number,
           trainName: tr.train.name,
           fromCode: fromCode,
-          fromName: fromCode,
+          fromName: (stCoords[fromCode] && stCoords[fromCode].name) || fromCode,
           departure: tr.from.departure !== '--:--' ? tr.from.departure : '',
           toCode: toCode,
-          toName: toCode,
+          toName: (stCoords[toCode] && stCoords[toCode].name) || toCode,
           arrival: tr.to.arrival !== '--:--' ? tr.to.arrival : '',
           distanceKm: Number(tr.distance) || 0,
           trainStops: fromCode + ', ' + toCode
@@ -152,11 +217,12 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
 function handleGetSchedule_(sheetId, trainNo) {
   if (!trainNo) return { success: false, error: 'Missing trainNo' };
   var ss = SpreadsheetApp.openById(sheetId);
-  var info = loadTrainAndRouteFromSheets_(ss, trainNo);
+  var stMap = readStationMap_(ss.getSheetByName('Station'));
+  var info = loadTrainAndRouteFromSheets_(ss, stMap, trainNo);
   if (info.route.length >= 2) {
     return { success: true, source: 'sheet', trainName: info.trainName, route: info.route };
   }
-  var apiLive = fetchLiveAndRouteFromExternalApi_(trainNo);
+  var apiLive = fetchLiveAndRouteFromExternalApi_(trainNo, stMap);
   if (apiLive && apiLive.route && apiLive.route.length) {
     syncExternalTrainToSheets_(ss, trainNo, apiLive.trainName || info.trainName, apiLive.route);
     return { success: true, source: 'api', trainName: apiLive.trainName || info.trainName, route: apiLive.route };
@@ -167,13 +233,15 @@ function handleGetSchedule_(sheetId, trainNo) {
 function handleGetLive_(sheetId, trainNo) {
   if (!trainNo) return { success: false, error: 'Missing trainNo' };
   var ss = SpreadsheetApp.openById(sheetId);
-  var info = loadTrainAndRouteFromSheets_(ss, trainNo);
+  var stMap = readStationMap_(ss.getSheetByName('Station'));
+  var info = loadTrainAndRouteFromSheets_(ss, stMap, trainNo);
   var gpsLoc = getFreshGps_(trainNo);
 
   var apiLive = null;
   if (!gpsLoc || info.route.length < 2) {
-    apiLive = fetchLiveAndRouteFromExternalApi_(trainNo);
-    if (apiLive && apiLive.route && apiLive.route.length > info.route.length) {
+    apiLive = fetchLiveAndRouteFromExternalApi_(trainNo, stMap);
+    if (apiLive && apiLive.route && apiLive.route.length >= 2 &&
+        (apiLive.route.length > info.route.length || info.route.length < 2)) {
       info.route = apiLive.route;
       if (apiLive.trainName) info.trainName = apiLive.trainName;
       syncExternalTrainToSheets_(ss, trainNo, info.trainName, info.route);
@@ -244,10 +312,15 @@ function getFreshGps_(trainNo) {
 
 /* ==================== SHEET SEARCH & ROUTE BUILDERS ==================== */
 
-function searchBetweenFromSheets_(ss, fromCode, toCode) {
-  var stCoords = readStationMap_(ss.getSheetByName('Station'));
+function searchBetweenFromSheets_(ss, stCoords, fromCode, toCode) {
   var schedSheet = ss.getSheetByName('Schedule');
   var trainSheet = ss.getSheetByName('Train');
+
+  var fGeo = stCoords[fromCode];
+  var tGeo = stCoords[toCode];
+  var approxDist = (fGeo && tGeo && fGeo.lat != null && tGeo.lat != null)
+    ? Math.round(haversineKm_(fGeo.lat, fGeo.lon, tGeo.lat, tGeo.lon) * 1.2 * 10) / 10
+    : 0;
 
   var byTrain = {};
 
@@ -287,18 +360,12 @@ function searchBetweenFromSheets_(ss, fromCode, toCode) {
       if (stC === toCode && !grouped[tk].to) grouped[tk].to = rowObj;
     }
 
-    var fGeo = stCoords[fromCode];
-    var tGeo = stCoords[toCode];
-    var approxDist = (fGeo && tGeo && fGeo.lat != null && tGeo.lat != null)
-      ? Math.round(haversineKm_(fGeo.lat, fGeo.lon, tGeo.lat, tGeo.lon) * 1.2 * 10) / 10
-      : 0;
-
     for (var k in grouped) {
       var g = grouped[k];
       if (!g.from || !g.to) continue;
       var fm = (g.from.day - 1) * 1440 + (parseTimeMins_(g.from.dep || g.from.arr) || 0);
       var tm = (g.to.day - 1) * 1440 + (parseTimeMins_(g.to.arr || g.to.dep) || 0);
-      if (tm <= fm && !(g.to.id > g.from.id && (g.to.day === g.from.day && fm === tm))) continue;
+      if (tm <= fm && !(g.to.id > g.from.id && g.to.day === g.from.day && fm === tm)) continue;
       byTrain[k] = {
         train: { number: g.num, name: g.name },
         from: { departure: g.from.dep || g.from.arr || '--:--', stationCode: fromCode },
@@ -350,7 +417,7 @@ function searchBetweenFromSheets_(ss, fromCode, toCode) {
       if (fIdx >= 0 && tIdx > fIdx) {
         var dep2 = (fIdx === 0 ? normHHmm_(row[tcDep]) : null) || '--:--';
         var arr2 = (tIdx === codes.length - 1 ? normHHmm_(row[tcArr]) : null) || '--:--';
-        var dist2 = (fIdx === 0 && tIdx === codes.length - 1) ? (Number(row[tcDist]) || 0) : 0;
+        var dist2 = (fIdx === 0 && tIdx === codes.length - 1) ? (Number(row[tcDist]) || approxDist) : approxDist;
         byTrain[tk2] = {
           train: { number: num, name: tName },
           from: { departure: dep2, stationCode: fromCode },
@@ -373,9 +440,8 @@ function searchBetweenFromSheets_(ss, fromCode, toCode) {
   return out;
 }
 
-function loadTrainAndRouteFromSheets_(ss, trainNo) {
+function loadTrainAndRouteFromSheets_(ss, stMap, trainNo) {
   var targetKey = normTrainKey_(trainNo);
-  var stMap = readStationMap_(ss.getSheetByName('Station'));
   var trainName = '';
   var schedRows = [];
 
@@ -484,95 +550,129 @@ function readStationMap_(sheet) {
   return map;
 }
 
-/* ==================== OPTIONAL EXTERNAL RAILWAY API FALLBACK ==================== */
+/* ==================== EXTERNAL RAILWAY API (RAILRADAR v1 + RAPIDAPI) ==================== */
 
-function fetchBetweenFromExternalApi_(fromCode, toCode) {
-  var props = PropertiesService.getScriptProperties();
-  var rapidKey = props.getProperty('RAPIDAPI_KEY');
-  var railRadarKey = props.getProperty('RAILRADAR_API_KEY');
+function fetchBetweenFromExternalApi_(fromCode, toCode, stCoords) {
+  var fGeo = stCoords[fromCode];
+  var tGeo = stCoords[toCode];
+  var approxDist = (fGeo && tGeo && fGeo.lat != null && tGeo.lat != null)
+    ? Math.round(haversineKm_(fGeo.lat, fGeo.lon, tGeo.lat, tGeo.lon) * 1.2 * 10) / 10
+    : 0;
+
   var out = [];
+  var paths = [
+    '/v1/trains/between/' + encodeURIComponent(fromCode) + '/' + encodeURIComponent(toCode),
+    '/v1/trains/between?from=' + encodeURIComponent(fromCode) + '&to=' + encodeURIComponent(toCode)
+  ];
 
-  if (railRadarKey) {
-    try {
-      var rrUrl = 'https://railradar.in/api/v1/trains/between?from=' + encodeURIComponent(fromCode) + '&to=' + encodeURIComponent(toCode);
-      var rrResp = UrlFetchApp.fetch(rrUrl, {
-        headers: { 'x-api-key': railRadarKey, 'Accept': 'application/json' },
-        muteHttpExceptions: true
+  for (var pIdx = 0; pIdx < paths.length; pIdx++) {
+    var rrJson = fetchRailRadarJson_(paths[pIdx]);
+    if (!rrJson) continue;
+    var list = (rrJson.data && Array.isArray(rrJson.data.trains)) ? rrJson.data.trains
+      : (Array.isArray(rrJson.data) ? rrJson.data
+      : (Array.isArray(rrJson.trains) ? rrJson.trains : []));
+    for (var i = 0; i < list.length; i++) {
+      var item = list[i];
+      var trObj = item.train || item;
+      var num = String(trObj.number || trObj.trainNumber || trObj.train_number || '').replace(/\D/g, '');
+      if (!num) continue;
+      var name = String(trObj.name || trObj.trainName || trObj.train_name || '').trim();
+      var fromStop = item.fromStop || item.from || item.source || {};
+      var toStop = item.toStop || item.to || item.destination || {};
+      var dep = normHHmm_(fromStop.departure || fromStop.scheduledDeparture || item.departure || item.from_std) || '--:--';
+      var arr = normHHmm_(toStop.arrival || toStop.scheduledArrival || item.arrival || item.to_sta) || '--:--';
+      var dist = Number(item.distance || item.distanceKm) || approxDist;
+      out.push({
+        train: { number: num, name: name },
+        from: { departure: dep, stationCode: fromCode },
+        to: { arrival: arr, stationCode: toCode },
+        distance: dist
       });
-      if (rrResp.getResponseCode() === 200) {
-        var rrJson = JSON.parse(rrResp.getContentText() || '{}');
-        var list = (rrJson.data && rrJson.data.trains) ? rrJson.data.trains : (rrJson.trains || []);
-        for (var i = 0; i < list.length; i++) {
-          var item = list[i];
-          var num = String((item.train && item.train.number) || item.trainNumber || item.train_number || '').replace(/\D/g, '');
-          if (!num) continue;
-          out.push({
-            train: { number: num, name: String((item.train && item.train.name) || item.trainName || item.train_name || '') },
-            from: { departure: normHHmm_((item.from && item.from.departure) || item.from_std || item.departure) || '--:--', stationCode: fromCode },
-            to: { arrival: normHHmm_((item.to && item.to.arrival) || item.to_sta || item.arrival) || '--:--', stationCode: toCode },
-            distance: Number(item.distance || item.distanceKm) || 0
-          });
-        }
-        if (out.length) return out;
-      }
-    } catch (_) {}
+    }
+    if (out.length) break;
   }
 
-  if (rapidKey) {
-    try {
-      var host = props.getProperty('RAPIDAPI_HOST') || 'irctc1.p.rapidapi.com';
-      var url = 'https://' + host + '/api/v3/trainBetweenStations?fromStationCode=' + encodeURIComponent(fromCode) + '&toStationCode=' + encodeURIComponent(toCode);
-      var resp = UrlFetchApp.fetch(url, {
-        headers: { 'x-rapidapi-key': rapidKey, 'x-rapidapi-host': host },
-        muteHttpExceptions: true
-      });
-      if (resp.getResponseCode() === 200) {
-        var json = JSON.parse(resp.getContentText() || '{}');
-        var arr = json.data || [];
-        for (var j = 0; j < arr.length; j++) {
-          var t = arr[j];
-          var tNo = String(t.train_number || t.trainNumber || '').replace(/\D/g, '');
-          if (!tNo) continue;
-          out.push({
-            train: { number: tNo, name: String(t.train_name || t.trainName || '') },
-            from: { departure: normHHmm_(t.from_std || t.from_time) || '--:--', stationCode: fromCode },
-            to: { arrival: normHHmm_(t.to_sta || t.to_time) || '--:--', stationCode: toCode },
-            distance: Number(t.distance) || 0
-          });
+  if (!out.length) {
+    var props = PropertiesService.getScriptProperties();
+    var rapidKey = props.getProperty('RAPIDAPI_KEY');
+    if (rapidKey) {
+      try {
+        var host = props.getProperty('RAPIDAPI_HOST') || 'irctc1.p.rapidapi.com';
+        var url = 'https://' + host + '/api/v3/trainBetweenStations?fromStationCode=' + encodeURIComponent(fromCode) + '&toStationCode=' + encodeURIComponent(toCode);
+        var resp = UrlFetchApp.fetch(url, {
+          headers: { 'x-rapidapi-key': rapidKey, 'x-rapidapi-host': host },
+          muteHttpExceptions: true
+        });
+        if (resp.getResponseCode() === 200) {
+          var json = JSON.parse(resp.getContentText() || '{}');
+          var arrList = json.data || [];
+          for (var j = 0; j < arrList.length; j++) {
+            var t = arrList[j];
+            var tNo = String(t.train_number || t.trainNumber || '').replace(/\D/g, '');
+            if (!tNo) continue;
+            out.push({
+              train: { number: tNo, name: String(t.train_name || t.trainName || '').trim() },
+              from: { departure: normHHmm_(t.from_std || t.from_time) || '--:--', stationCode: fromCode },
+              to: { arrival: normHHmm_(t.to_sta || t.to_time) || '--:--', stationCode: toCode },
+              distance: Number(t.distance) || approxDist
+            });
+          }
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
   }
 
+  out.sort(function (a, b) {
+    var ma = parseTimeMins_(a.from.departure);
+    var mb = parseTimeMins_(b.from.departure);
+    if (ma == null) ma = 9999;
+    if (mb == null) mb = 9999;
+    return ma !== mb ? ma - mb : String(a.train.number).localeCompare(String(b.train.number));
+  });
   return out;
 }
 
-function fetchLiveAndRouteFromExternalApi_(trainNo) {
-  var props = PropertiesService.getScriptProperties();
-  var railRadarKey = props.getProperty('RAILRADAR_API_KEY');
-  var rapidKey = props.getProperty('RAPIDAPI_KEY');
+function fetchLiveAndRouteFromExternalApi_(trainNo, stMap) {
+  // 1) প্রথমে RailRadar লাইভ স্ট্যাটাস + রুট চেষ্টা করি
+  var livePaths = [
+    '/v1/trains/' + encodeURIComponent(trainNo) + '/live?haltsOnly=true',
+    '/v1/trains/' + encodeURIComponent(trainNo) + '?haltsOnly=true'
+  ];
 
-  if (railRadarKey) {
-    try {
-      var rrUrl = 'https://railradar.in/api/v1/trains/' + encodeURIComponent(trainNo) + '/live';
-      var rrResp = UrlFetchApp.fetch(rrUrl, {
-        headers: { 'x-api-key': railRadarKey, 'Accept': 'application/json' },
-        muteHttpExceptions: true
-      });
-      if (rrResp.getResponseCode() === 200) {
-        var rrJson = JSON.parse(rrResp.getContentText() || '{}');
-        var d = rrJson.data || rrJson;
-        if (d && (d.route || d.currentLocation)) {
-          return {
-            trainName: String(d.trainName || (d.train && d.train.name) || ''),
-            currentLocation: d.currentLocation || null,
-            route: normalizeExternalRoute_(d.route || [])
-          };
+  for (var idx = 0; idx < livePaths.length; idx++) {
+    var rrJson = fetchRailRadarJson_(livePaths[idx]);
+    if (!rrJson) continue;
+    var d = rrJson.data || rrJson;
+    if (!d) continue;
+
+    var trMeta = d.train || d;
+    var trainName = String(trMeta.name || d.trainName || d.train_name || '').trim();
+    var rawRoute = Array.isArray(d.route) ? d.route : [];
+    var route = normalizeExternalRoute_(rawRoute, stMap);
+    if (!route.length && idx === 0) {
+      // লাইভে রুট না থাকলে /v1/trains/{trainNo} থেকে রুট আনি
+      var schedJson = fetchRailRadarJson_('/v1/trains/' + encodeURIComponent(trainNo) + '?haltsOnly=true');
+      if (schedJson && schedJson.data) {
+        if (!trainName && schedJson.data.train && schedJson.data.train.name) {
+          trainName = String(schedJson.data.train.name).trim();
         }
+        route = normalizeExternalRoute_(schedJson.data.route || [], stMap);
       }
-    } catch (_) {}
+    }
+
+    var curLoc = resolveRailRadarCurrentLocation_(d, route, stMap);
+    if (route.length || curLoc) {
+      return {
+        trainName: trainName,
+        currentLocation: curLoc,
+        route: route
+      };
+    }
   }
 
+  // 2) RapidAPI fallback (যদি কনফিগার করা থাকে)
+  var props = PropertiesService.getScriptProperties();
+  var rapidKey = props.getProperty('RAPIDAPI_KEY');
   if (rapidKey) {
     try {
       var host = props.getProperty('RAPIDAPI_HOST') || 'irctc1.p.rapidapi.com';
@@ -584,12 +684,12 @@ function fetchLiveAndRouteFromExternalApi_(trainNo) {
       if (sResp.getResponseCode() === 200) {
         var sj = JSON.parse(sResp.getContentText() || '{}');
         var sd = sj.data || sj;
-        var rawRoute = sd.route || [];
-        if (rawRoute.length) {
+        var rArr = normalizeExternalRoute_(sd.route || [], stMap);
+        if (rArr.length) {
           return {
-            trainName: String(sd.trainName || ''),
+            trainName: String(sd.trainName || '').trim(),
             currentLocation: null,
-            route: normalizeExternalRoute_(rawRoute)
+            route: rArr
           };
         }
       }
@@ -599,25 +699,91 @@ function fetchLiveAndRouteFromExternalApi_(trainNo) {
   return null;
 }
 
-function normalizeExternalRoute_(rawRoute) {
+function resolveRailRadarCurrentLocation_(d, route, stMap) {
+  if (d.currentLocation && typeof d.currentLocation === 'object') {
+    var cl = d.currentLocation;
+    var clCode = String(cl.stationCode || cl.code || '').trim().toUpperCase();
+    var geo = clCode ? (stMap[clCode] || {}) : {};
+    var lat = (cl.lat != null && isFinite(Number(cl.lat))) ? Number(cl.lat) : (cl.latitude != null ? Number(cl.latitude) : geo.lat);
+    var lon = (cl.lon != null && isFinite(Number(cl.lon))) ? Number(cl.lon) : (cl.longitude != null ? Number(cl.longitude) : geo.lon);
+    return {
+      stationCode: clCode || null,
+      stationName: String(cl.stationName || cl.name || geo.name || clCode || ''),
+      sequence: cl.sequence || null,
+      lat: (lat != null && isFinite(lat)) ? lat : null,
+      lon: (lon != null && isFinite(lon)) ? lon : null,
+      speedKmh: Number(cl.speedKmh || cl.speed) || 0,
+      bearingDegrees: cl.bearingDegrees != null ? Number(cl.bearingDegrees) : null,
+      segmentProgress: Number(cl.segmentProgress) || 0,
+      nextStationName: cl.nextStationName || null
+    };
+  }
+
+  var curCode = String(d.currentStation || d.currentStationCode || '').trim().toUpperCase();
+  if (!curCode) {
+    // route থেকে শেষ departed/arrived স্টেশন বের করার চেষ্টা
+    for (var i = route.length - 1; i >= 0; i--) {
+      if (route[i]._status === 'arrived' || route[i]._status === 'departed') {
+        curCode = route[i].stationCode;
+        break;
+      }
+    }
+  }
+  if (!curCode) return null;
+
+  var hitIdx = -1;
+  for (var j = 0; j < route.length; j++) {
+    if (route[j].stationCode === curCode) { hitIdx = j; break; }
+  }
+  var stHit = hitIdx >= 0 ? route[hitIdx] : null;
+  var nextHit = (hitIdx >= 0 && hitIdx + 1 < route.length) ? route[hitIdx + 1] : null;
+  var geoHit = stMap[curCode] || {};
+  var finalLat = stHit && stHit.lat != null ? stHit.lat : (geoHit.lat != null ? geoHit.lat : null);
+  var finalLon = stHit && stHit.lon != null ? stHit.lon : (geoHit.lon != null ? geoHit.lon : null);
+  if (finalLat == null || finalLon == null) return null;
+
+  return {
+    stationCode: curCode,
+    stationName: (stHit && stHit.stationName) || geoHit.name || curCode,
+    sequence: stHit ? stHit.sequence : 1,
+    lat: finalLat,
+    lon: finalLon,
+    speedKmh: 0,
+    bearingDegrees: null,
+    segmentProgress: (stHit && stHit._status === 'departed') ? 0.35 : 0,
+    nextStationName: nextHit ? (nextHit.stationName || nextHit.stationCode) : null
+  };
+}
+
+function normalizeExternalRoute_(rawRoute, stMap) {
   var out = [];
   for (var i = 0; i < rawRoute.length; i++) {
     var st = rawRoute[i];
+    if (st.isHalt === false) continue; // non-stop pass-through বাদ দিন
     var code = String(st.stationCode || st.station_code || st.code || '').trim().toUpperCase();
-    var name = String(st.stationName || st.station_name || st.name || code).trim();
+    var geo = code ? (stMap[code] || {}) : {};
+    var name = String(st.stationName || st.station_name || st.name || geo.name || code).trim();
     if (!code && !name) continue;
-    var arr = normHHmm_(st.arrival || st.std_arr || st.scheduledArrival) || null;
-    var dep = normHHmm_(st.departure || st.std_dep || st.scheduledDeparture) || null;
-    var sched = normHHmm_(st.scheduledTime) || arr || dep || '--:--';
+    var arr = normHHmm_(st.scheduledArrival || st.arrival || st.std_arr || st.actualArrival) || null;
+    var dep = normHHmm_(st.scheduledDeparture || st.departure || st.std_dep || st.actualDeparture) || null;
+    if (arr && dep && arr === dep && rawRoute.length > 2 && i > 0 && i < rawRoute.length - 1 && st.isHalt == null) {
+      continue; // মাঝের 0-মিনিট পাস-থ্রু বাদ
+    }
+    var sched = normHHmm_(st.scheduledTime) || dep || arr || '--:--';
+    var lat = (st.lat != null && isFinite(Number(st.lat))) ? Number(st.lat)
+      : ((st.latitude != null && isFinite(Number(st.latitude))) ? Number(st.latitude) : geo.lat);
+    var lon = (st.lon != null && isFinite(Number(st.lon))) ? Number(st.lon)
+      : ((st.longitude != null && isFinite(Number(st.longitude))) ? Number(st.longitude) : geo.lon);
     out.push({
       stationCode: code,
       stationName: name,
-      sequence: i + 1,
-      lat: (st.lat != null && isFinite(Number(st.lat))) ? Number(st.lat) : ((st.latitude != null && isFinite(Number(st.latitude))) ? Number(st.latitude) : null),
-      lon: (st.lon != null && isFinite(Number(st.lon))) ? Number(st.lon) : ((st.longitude != null && isFinite(Number(st.longitude))) ? Number(st.longitude) : null),
+      sequence: out.length + 1,
+      lat: (lat != null && isFinite(lat)) ? lat : null,
+      lon: (lon != null && isFinite(lon)) ? lon : null,
       scheduledTime: sched,
       arrival: arr || sched,
-      departure: dep || sched
+      departure: dep || sched,
+      _status: String(st.status || '').toLowerCase()
     });
   }
   return out;
@@ -1039,6 +1205,8 @@ function isEmptyOrNone_(val) {
 function normHHmm_(raw) {
   var s = String(raw == null ? '' : raw).trim();
   if (isEmptyOrNone_(s)) return null;
+  var iso = s.match(/T(\d{2}):(\d{2})/);
+  if (iso) return iso[1] + ':' + iso[2];
   var m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?$/);
   if (!m) return null;
   var h = parseInt(m[1], 10), min = parseInt(m[2], 10);
