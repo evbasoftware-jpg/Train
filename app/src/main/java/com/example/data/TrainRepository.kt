@@ -265,13 +265,28 @@ class TrainRepository(private val cacheDir: File? = null) {
           ),
         )
       }
-      if (result.isNotEmpty()) {
+      val sortedResult = result.sortedWith(
+        compareBy<TrainBetweenItem>(
+          { parseDepartureMinutesOrMax(it.departure) },
+          { it.trainNumber },
+        ),
+      )
+      if (sortedResult.isNotEmpty()) {
         syncScope.launch {
-          sheetSyncManager.syncBetweenResults(fromCode, toCode, result, stationDb)
+          sheetSyncManager.syncBetweenResults(fromCode, toCode, sortedResult, stationDb)
         }
       }
-      result
+      sortedResult
     }
+
+  private fun parseDepartureMinutesOrMax(raw: String): Int {
+    val formatted = sheetRepository.formatSheetTime(raw) ?: return Int.MAX_VALUE
+    val parts = formatted.split(':')
+    if (parts.size != 2) return Int.MAX_VALUE
+    val h = parts[0].toIntOrNull() ?: return Int.MAX_VALUE
+    val m = parts[1].toIntOrNull() ?: return Int.MAX_VALUE
+    return h * 60 + m
+  }
 
   suspend fun fetchLiveTrain(
     trainNo: String,

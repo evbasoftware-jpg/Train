@@ -335,7 +335,7 @@ class SheetSyncManager(private val client: OkHttpClient) {
                 put("stationCode", stCode)
                 put("stationName", observedStationName.ifBlank { dbHit?.name ?: stCode })
                 put("arrival", observedTimeHHmm)
-                put("departure", observedTimeHHmm)
+                put("departure", "")
                 put("day", 1)
               },
             ),

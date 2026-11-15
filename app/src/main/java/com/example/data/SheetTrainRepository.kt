@@ -209,8 +209,12 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
       .groupBy { normalizeTrainKey(it.trainNumber) }
 
     for ((_, rows) in grouped) {
-      val fromRow = rows.firstOrNull { it.stationCode.equals(fromCode, ignoreCase = true) } ?: continue
-      val toRow = rows.firstOrNull { it.stationCode.equals(toCode, ignoreCase = true) } ?: continue
+      val fromRow = rows.firstOrNull {
+        it.stationCode.equals(fromCode, ignoreCase = true) && isScheduledStop(it)
+      } ?: continue
+      val toRow = rows.firstOrNull {
+        it.stationCode.equals(toCode, ignoreCase = true) && isScheduledStop(it)
+      } ?: continue
       if (!isChronologicallyBefore(fromRow, toRow)) continue
 
       val dep = formatSheetTime(fromRow.departureRaw) ?: formatSheetTime(fromRow.arrivalRaw) ?: "--:--"
@@ -275,7 +279,20 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
       }
     }
 
-    return byTrain.values.toList()
+    return byTrain.values.sortedWith(
+      compareBy<TrainBetweenItem>(
+        { parseSheetTimeMinutes(it.departure) ?: Int.MAX_VALUE },
+        { it.trainNumber },
+      ),
+    )
+  }
+
+  fun isScheduledStop(row: SheetScheduleRow): Boolean {
+    val arr = formatSheetTime(row.arrivalRaw)
+    val dep = formatSheetTime(row.departureRaw)
+    if (arr == null && dep == null) return false
+    if (arr != null && dep != null && arr == dep) return false
+    return true
   }
 
   fun mergeStationLists(
@@ -350,8 +367,15 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
   ): List<RouteStation> {
     if (rows.isEmpty()) return emptyList()
     val sorted = sortScheduleRows(rows)
+    val stopping = sorted.filter(::isScheduledStop)
+    val effective = if (stopping.size >= 2) {
+      stopping
+    } else {
+      sorted.filter { formatSheetTime(it.arrivalRaw) != null || formatSheetTime(it.departureRaw) != null }
+        .ifEmpty { sorted }
+    }
     val dbByCode = stationDb.associateBy { it.code.uppercase(Locale.US) }
-    return sorted.mapIndexed { idx, r ->
+    return effective.mapIndexed { idx, r ->
       val code = r.stationCode.trim().uppercase(Locale.US)
       val dbHit = dbByCode[code]
       val arr = formatSheetTime(r.arrivalRaw)

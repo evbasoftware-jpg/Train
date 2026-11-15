@@ -2,7 +2,9 @@
  * Google Apps Script Auto-Sync Handler for Train Live Location
  * Spreadsheet ID: 137CjMlGjFv--aTDfo6V8yftNb6gVc5G-E3opwb84gfA
  *
- * আপনার Google Apps Script প্রোজেক্টের (API_URL) doPost(e)-এর ভেতরে এটি যুক্ত করুন:
+ * সতর্কতা: আপনার Apps Script প্রোজেক্টে আগে থেকেই থাকা function doGet(e) { ... }
+ * (action=between, live, route, schedule ইত্যাদি) মুছে ফেলবেন না — শুধু তার নিচে
+ * বা ভেতরে এই doPost(e) ও হেল্পার ফাংশনগুলো যোগ করে নতুন Deployment দিন:
  *
  *   function doPost(e) {
  *     var data = JSON.parse(e.postData.contents || '{}');

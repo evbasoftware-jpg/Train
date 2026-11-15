@@ -134,4 +134,51 @@ class SheetTrainRepositoryTest {
     assertEquals(23.6683, merged[1].lat!!, 0.0001)
     assertEquals("SURI", merged[2].code)
   }
+
+  @Test
+  fun excludesNonStopPassThroughStationsAndSortsChronologically() {
+    val stations = listOf(
+      StationDbEntry("BARDDHAMAN JN", "BWN", 23.2504, 87.8705),
+      StationDbEntry("BOLPUR S NIKTN", "BHP", 23.6683, 87.6908),
+      StationDbEntry("AHMADPUR JN", "AMP", 23.8359, 87.7033),
+    )
+
+    val scheduleCsv = """
+      "Schedule_ID","Train_Number","Train_Name","Station_Code","Station_Name","Arrival","Departure","Day"
+      "1","12363","KOLKATA CHITPUR - HALDIBARI SF Intercity Exp","BWN","BARDDHAMAN JN","10:34:00","10:36:00","1"
+      "2","12363","KOLKATA CHITPUR - HALDIBARI SF Intercity Exp","AMP","AHMADPUR JN","11:47:00","11:47:00","1"
+      "3","13161","KOLKATA CHITPUR - BALURGHAT Tebhaga Exp","BWN","BARDDHAMAN JN","14:31:00","14:34:00","1"
+      "4","13161","KOLKATA CHITPUR - BALURGHAT Tebhaga Exp","AMP","AHMADPUR JN","15:51:00","15:51:00","1"
+      "5","12345","HOWRAH - GUWAHATI Saraighat SF Exp","BWN","BARDDHAMAN JN","17:07:00","17:09:00","1"
+      "6","12345","HOWRAH - GUWAHATI Saraighat SF Exp","AMP","AHMADPUR JN","18:18:00","18:18:00","1"
+      "7","12377","Padatik Express","BWN","BARDDHAMAN JN","00:23:00","00:25:00","2"
+      "8","12377","Padatik Express","AMP","AHMADPUR JN","01:37:00","01:37:00","2"
+      "9","12343","Darjeeling Mail","BWN","BARDDHAMAN JN","23:43:00","23:46:00","1"
+      "10","12343","Darjeeling Mail","AMP","AHMADPUR JN","00:58:00","00:58:00","2"
+      "11","13071","Jamalpur Express","BWN","BARDDHAMAN JN","22:50:00","22:52:00","1"
+      "12","13071","Jamalpur Express","AMP","AHMADPUR JN","00:05:00","00:05:00","2"
+      "13","12374","Sealdah Rampurhat Exp","BWN","BARDDHAMAN JN","12:00:00","12:02:00","1"
+      "14","12374","Sealdah Rampurhat Exp","AMP","AHMADPUR JN","None","None","1"
+      "15","13173","Sabroom Kanchanjungha Express","BWN","BARDDHAMAN JN","08:34:00","08:36:00","1"
+      "16","13173","Sabroom Kanchanjungha Express","AMP","AHMADPUR JN","09:44:00","09:46:00","1"
+      "17","13017","Ganadevta Express","BWN","BARDDHAMAN JN","07:35:00","07:37:00","1"
+      "18","13017","Ganadevta Express","BHP","BOLPUR S NIKTN","08:25:00","08:27:00","1"
+      "19","13017","Ganadevta Express","AMP","AHMADPUR JN","08:53:00","08:54:00","1"
+      "20","63063","Barddhaman - Sahibganj MEMU","BWN","BARDDHAMAN JN","None","06:05:00","1"
+      "21","63063","Barddhaman - Sahibganj MEMU","AMP","AHMADPUR JN","07:29:00","None","1"
+    """.trimIndent()
+
+    val schedRows = repo.parseScheduleCsv(scheduleCsv)
+    val matches = repo.combineBetweenMatches("BWN", "AMP", emptyList(), schedRows, stations)
+
+    // Non-stop pass-through trains (Arr == Dep or None/None at AMP) must NOT appear
+    assertEquals(listOf("63063", "13017", "13173"), matches.map { it.trainNumber })
+    assertEquals(listOf("06:05", "07:37", "08:36"), matches.map { it.departure })
+
+    // Route builder for a train also excludes 0-minute pass-through stations
+    val intercityRows = schedRows.filter { it.trainNumber == "12363" } +
+      listOf(schedRows.first { it.trainNumber == "13017" && it.stationCode == "BHP" })
+    val route = repo.buildRouteFromScheduleRows(intercityRows, stations)
+    assertFalse(route.any { it.stationCode == "AMP" })
+  }
 }

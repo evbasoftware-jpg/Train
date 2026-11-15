@@ -2220,11 +2220,23 @@
         return combined.map((st, idx) => ({ ...st, sequence: idx + 1 }));
       }
 
+      function isScheduledStopRow(row) {
+        if (!row) return false;
+        const arr = formatSheetTimeStr(row.arrivalRaw);
+        const dep = formatSheetTimeStr(row.departureRaw);
+        if (!arr && !dep) return false;
+        if (arr && dep && arr === dep) return false;
+        return true;
+      }
+
       function buildRouteFromScheduleRows(rows) {
         if (!rows || !rows.length) return [];
         const sorted = sortScheduleRows(rows);
+        const stopping = sorted.filter(isScheduledStopRow);
+        const timed = sorted.filter(r => formatSheetTimeStr(r.arrivalRaw) || formatSheetTimeStr(r.departureRaw));
+        const effective = stopping.length >= 2 ? stopping : (timed.length ? timed : sorted);
         const dbByCode = new Map(state.stationDb.map(s => [s.code.toUpperCase(), s]));
-        return sorted.map((r, idx) => {
+        return effective.map((r, idx) => {
           const code = (r.stationCode || '').trim().toUpperCase();
           const hit = dbByCode.get(code);
           const arr = formatSheetTimeStr(r.arrivalRaw);
@@ -2306,14 +2318,14 @@
           grouped.get(k).push(r);
         }
         for (const [k, rows] of grouped.entries()) {
-          const fRow = rows.find(r => r.stationCode.toUpperCase() === fromCode);
-          const tRow = rows.find(r => r.stationCode.toUpperCase() === toCode);
+          const fRow = rows.find(r => r.stationCode.toUpperCase() === fromCode && isScheduledStopRow(r));
+          const tRow = rows.find(r => r.stationCode.toUpperCase() === toCode && isScheduledStopRow(r));
           if (!fRow || !tRow || !isScheduleRowBefore(fRow, tRow)) continue;
           const dep = formatSheetTimeStr(fRow.departureRaw) || formatSheetTimeStr(fRow.arrivalRaw) || '--:--';
           const arr = formatSheetTimeStr(tRow.arrivalRaw) || formatSheetTimeStr(tRow.departureRaw) || '--:--';
           const fDb = state.stationDb.find(s => s.code.toUpperCase() === fromCode);
           const tDb = state.stationDb.find(s => s.code.toUpperCase() === toCode);
-          const dist = (fDb?.lat != null && fDb?.lon != null && tDb?.lat != null && tDb?.lon != null)
+          const dist = (fDb?.lat != null && fDb?.lon != null && tDb?.lat != null && tDb.lon != null)
             ? haversineKm(fDb.lat, fDb.lon, tDb.lat, tDb.lon) * 1.2 : 0;
           byTrain.set(k, {
             trainNumber: fRow.trainNumber,
@@ -2358,7 +2370,11 @@
             if (!ex.trainName) ex.trainName = entry.trainName;
           }
         }
-        return Array.from(byTrain.values());
+        return Array.from(byTrain.values()).sort((a, b) => {
+          const ma = parseTimeToMins(a.departure) ?? 9999;
+          const mb = parseTimeToMins(b.departure) ?? 9999;
+          return ma !== mb ? ma - mb : String(a.trainNumber).localeCompare(String(b.trainNumber));
+        });
       }
 
       async function findTrainRouteFromSheet(trainNo) {
@@ -2591,7 +2607,7 @@
                 stationCode: stCode,
                 stationName: stName || dbHit?.name || stCode,
                 arrival: obsTime,
-                departure: obsTime,
+                departure: '',
                 day: 1
               }]
             } : {})
@@ -2746,7 +2762,11 @@
               departure: obj.from?.departure || '--:--',
               arrival: obj.to?.arrival || '--:--',
               distanceKm: Number(obj.distance) || 0
-            }));
+            })).sort((a, b) => {
+              const ma = parseTimeToMins(a.departure) ?? 9999;
+              const mb = parseTimeToMins(b.departure) ?? 9999;
+              return ma !== mb ? ma - mb : String(a.trainNumber).localeCompare(String(b.trainNumber));
+            });
             if (list.length) syncBetweenToSheet(f, t, list);
           }
 
