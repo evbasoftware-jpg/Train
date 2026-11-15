@@ -1099,6 +1099,8 @@ private fun SearchAndControlPanel(
           modifier = Modifier.padding(vertical = 4.dp),
         )
       } else if (betweenTrains.isNotEmpty()) {
+        val todayDow = remember { com.example.model.RunningScheduleHelper.currentIstDayOfWeek() }
+        val dayShortNames = remember(strings) { strings.dayShortNames() }
         Column(
           modifier = Modifier.fillMaxWidth(),
           verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -1107,36 +1109,147 @@ private fun SearchAndControlPanel(
             val isSelectedTrain = trainNoInput.isNotBlank() &&
               item.trainNumber.contains(trainNoInput)
             val safeDist = item.distanceKm.takeIf { it.isFinite() } ?: 0.0
+            val sched = com.example.model.RunningScheduleHelper.evaluate(
+              raw = item.runningDaysRaw,
+              explicitList = item.runsOnDays,
+              strings = strings,
+              todayDow = todayDow,
+            )
+            val notRunningToday = sched.runsToday == false
+            val cardBg = when {
+              isSelectedTrain -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+              notRunningToday -> Color(0xFFFFF5F2)
+              else -> MaterialTheme.colorScheme.surfaceVariant
+            }
+            val cardBorderColor = when {
+              isSelectedTrain -> CobaltPrimary
+              notRunningToday -> Color(0xFFE59887)
+              else -> MaterialTheme.colorScheme.outline
+            }
+            val isDaily = !sched.isMonthly && sched.daysOfWeek.size == 7
             Surface(
               onClick = { onSelectBetweenTrain(item.trainNumber, item.trainName) },
               shape = RoundedCornerShape(10.dp),
-              color = if (isSelectedTrain) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
-              } else {
-                MaterialTheme.colorScheme.surfaceVariant
-              },
+              color = cardBg,
               modifier = Modifier
                 .fillMaxWidth()
                 .border(
                   width = if (isSelectedTrain) 1.5.dp else 1.dp,
-                  color = if (isSelectedTrain) CobaltPrimary else MaterialTheme.colorScheme.outline,
+                  color = cardBorderColor,
                   shape = RoundedCornerShape(10.dp),
                 )
                 .testTag("between_train_item_${item.trainNumber}"),
             ) {
               Column(modifier = Modifier.padding(10.dp)) {
-                Text(
-                  text = "🚆 ${item.trainNumber} — ${localizeName(item.trainName)}",
-                  style = MaterialTheme.typography.titleSmall,
-                  color = MaterialTheme.colorScheme.onSurface,
-                )
-                Spacer(modifier = Modifier.height(2.dp))
+                Row(
+                  modifier = Modifier.fillMaxWidth(),
+                  horizontalArrangement = Arrangement.SpaceBetween,
+                  verticalAlignment = Alignment.CenterVertically,
+                ) {
+                  Text(
+                    text = "🚆 ${item.trainNumber} — ${localizeName(item.trainName)}",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = if (notRunningToday) {
+                      MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                    } else {
+                      MaterialTheme.colorScheme.onSurface
+                    },
+                    modifier = Modifier.weight(1f),
+                  )
+                  if (sched.frequencyLabel.isNotBlank()) {
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Surface(
+                      shape = RoundedCornerShape(6.dp),
+                      color = if (isDaily) {
+                        VerifiedEmeraldContainer
+                      } else {
+                        CobaltPrimary.copy(alpha = 0.12f)
+                      },
+                    ) {
+                      Text(
+                        text = sched.frequencyLabel,
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isDaily) VerifiedEmeraldDark else CobaltPrimary,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                      )
+                    }
+                  }
+                }
+                Spacer(modifier = Modifier.height(3.dp))
                 Text(
                   text = "${item.departure} → ${item.arrival} • ${String.format(Locale.US, "%.0f", safeDist)} ${strings.kmUnit}",
                   fontFamily = JetBrainsMonoFontFamily,
                   fontSize = 12.sp,
-                  color = CobaltPrimary,
+                  color = if (notRunningToday) CobaltPrimary.copy(alpha = 0.72f) else CobaltPrimary,
                 )
+                if (sched.daysOfWeek.isNotEmpty() || notRunningToday) {
+                  Spacer(modifier = Modifier.height(6.dp))
+                  Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                  ) {
+                    if (sched.daysOfWeek.isNotEmpty()) {
+                      Row(
+                        horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                      ) {
+                        dayShortNames.forEachIndexed { dayIdx, label ->
+                          val runsOnDay = sched.daysOfWeek.contains(dayIdx)
+                          val isTodayChip = dayIdx == todayDow
+                          Surface(
+                            shape = RoundedCornerShape(5.dp),
+                            color = when {
+                              runsOnDay && isTodayChip -> VerifiedEmerald
+                              runsOnDay -> CobaltPrimary
+                              else -> MaterialTheme.colorScheme.surface.copy(alpha = 0.7f)
+                            },
+                            modifier = Modifier.border(
+                              width = if (isTodayChip) 1.dp else 0.6.dp,
+                              color = when {
+                                runsOnDay && isTodayChip -> VerifiedEmeraldDark
+                                runsOnDay -> CobaltPrimary
+                                else -> MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                              },
+                              shape = RoundedCornerShape(5.dp),
+                            ),
+                          ) {
+                            Text(
+                              text = label,
+                              fontSize = 9.5.sp,
+                              fontWeight = if (runsOnDay) FontWeight.Bold else FontWeight.Normal,
+                              color = if (runsOnDay) {
+                                Color.White
+                              } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.48f)
+                              },
+                              modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+                            )
+                          }
+                        }
+                      }
+                    } else {
+                      Spacer(modifier = Modifier.width(1.dp))
+                    }
+                    if (notRunningToday) {
+                      Spacer(modifier = Modifier.width(6.dp))
+                      Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = StopCrimsonContainer,
+                        modifier = Modifier.border(0.8.dp, StopCrimson.copy(alpha = 0.45f), RoundedCornerShape(6.dp)),
+                      ) {
+                        Text(
+                          text = "⚠️ ${strings.notRunningTodayLabel}",
+                          fontSize = 10.sp,
+                          fontWeight = FontWeight.Bold,
+                          color = StopCrimson,
+                          modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                      }
+                    }
+                  }
+                }
               }
             }
           }

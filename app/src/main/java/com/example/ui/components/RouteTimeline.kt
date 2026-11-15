@@ -199,16 +199,33 @@ fun RouteTimelineCard(
                   horizontalArrangement = Arrangement.SpaceBetween,
                   verticalAlignment = Alignment.CenterVertically,
                 ) {
-                  Text(
-                    text = if (selectedStation.stationCode.isNotBlank()) {
-                      "$stName (${selectedStation.stationCode})"
-                    } else {
-                      stName
-                    },
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.weight(1f),
-                  )
+                  Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                      text = if (selectedStation.stationCode.isNotBlank()) {
+                        "$stName (${selectedStation.stationCode})"
+                      } else {
+                        stName
+                      },
+                      style = MaterialTheme.typography.titleSmall,
+                      color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    if (!selectedStation.isHalt) {
+                      Spacer(modifier = Modifier.height(3.dp))
+                      Surface(
+                        shape = RoundedCornerShape(6.dp),
+                        color = Color(0xFFFFF3E0),
+                        modifier = Modifier.border(1.dp, Color(0xFFE65100).copy(alpha = 0.45f), RoundedCornerShape(6.dp)),
+                      ) {
+                        Text(
+                          text = "🚫 ${strings.noHaltBadge}",
+                          fontSize = 10.sp,
+                          fontWeight = FontWeight.Bold,
+                          color = Color(0xFFE65100),
+                          modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                        )
+                      }
+                    }
+                  }
                   if (distFromTrain != null && distFromTrain.isFinite()) {
                     Text(
                       text = strings.distanceFromTrainLabel(
@@ -414,9 +431,16 @@ private fun RouteTrackStrip(
 
       val dotColor = when {
         hasAlarm -> NtesOrange
+        !station.isHalt -> Color.White
         isPassed -> VerifiedEmerald
         isActive -> CobaltPrimary
         else -> Color(0xFF90A4AE)
+      }
+      val dotBorderColor = when {
+        !station.isHalt && isPassed -> VerifiedEmerald
+        !station.isHalt && isActive -> Color(0xFFE65100)
+        !station.isHalt -> Color(0xFFE65100)
+        else -> Color.White
       }
       val ringColor = when {
         isSelected -> NtesOrange.copy(alpha = 0.35f)
@@ -538,10 +562,10 @@ private fun RouteTrackStrip(
           ) {
             Box(
               modifier = Modifier
-                .size(16.dp)
+                .size(if (station.isHalt) 16.dp else 13.dp)
                 .clip(CircleShape)
                 .background(dotColor)
-                .border(2.5.dp, Color.White, CircleShape),
+                .border(if (station.isHalt) 2.5.dp else 2.5.dp, dotBorderColor, CircleShape),
             )
           }
 
@@ -595,7 +619,11 @@ private fun RouteTrackStrip(
                 fontWeight = if (isActive || isSelected) FontWeight.Bold else FontWeight.SemiBold,
                 fontSize = 12.sp,
               ),
-              color = if (isActive) CobaltPrimary else MaterialTheme.colorScheme.onSurface,
+              color = when {
+                isActive -> CobaltPrimary
+                !station.isHalt -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.72f)
+                else -> MaterialTheme.colorScheme.onSurface
+              },
               textAlign = TextAlign.Center,
               maxLines = 2,
               overflow = TextOverflow.Ellipsis,
@@ -610,6 +638,24 @@ private fun RouteTrackStrip(
               fontWeight = FontWeight.Medium,
               color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+          }
+
+          if (!station.isHalt) {
+            Spacer(modifier = Modifier.height(3.dp))
+            Surface(
+              shape = RoundedCornerShape(6.dp),
+              color = Color(0xFFFFF3E0),
+              modifier = Modifier.border(0.8.dp, Color(0xFFE65100).copy(alpha = 0.55f), RoundedCornerShape(6.dp)),
+            ) {
+              Text(
+                text = "🚫 ${strings.noHaltBadge}",
+                fontSize = 9.5.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFFE65100),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.5.dp),
+              )
+            }
           }
 
           Spacer(modifier = Modifier.height(4.dp))

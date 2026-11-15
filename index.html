@@ -465,6 +465,79 @@
       background: rgba(11, 105, 163, 0.1);
     }
 
+    .between-item.not-running {
+      background: rgba(216, 67, 21, 0.07);
+      border-color: rgba(229, 152, 135, 0.9);
+    }
+
+    .between-item.not-running.selected {
+      background: rgba(216, 67, 21, 0.14);
+      border: 1.5px solid var(--crimson);
+    }
+
+    .between-top-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .freq-pill {
+      flex-shrink: 0;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      background: var(--cobalt-container);
+      color: var(--cobalt);
+      white-space: nowrap;
+    }
+
+    .freq-pill.daily {
+      background: var(--emerald-container);
+      color: var(--emerald-dark);
+    }
+
+    .day-chips-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 6px;
+    }
+
+    .day-chip {
+      padding: 2px 6px;
+      border-radius: 5px;
+      font-size: 10px;
+      font-weight: 600;
+      background: rgba(148, 163, 184, 0.16);
+      color: var(--text-secondary);
+      opacity: 0.6;
+    }
+
+    .day-chip.on {
+      background: rgba(11, 105, 163, 0.14);
+      color: var(--cobalt);
+      font-weight: 800;
+      opacity: 1;
+    }
+
+    .day-chip.on.today {
+      background: var(--emerald);
+      color: #FFFFFF;
+    }
+
+    .not-running-badge {
+      display: inline-block;
+      margin-top: 6px;
+      padding: 3px 8px;
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 800;
+      background: var(--crimson-container);
+      color: var(--crimson);
+    }
+
     .divider {
       height: 1px;
       background: var(--border);
@@ -621,6 +694,16 @@
     .station-dot.passed { background: var(--emerald); }
     .station-dot.active { background: var(--cobalt); }
     .station-dot.alarm { background: var(--ntes-orange); }
+    .station-dot.no-halt {
+      background: var(--surface);
+      border: 3px solid var(--ntes-orange);
+    }
+    .station-dot.no-halt.passed {
+      border-color: var(--emerald);
+    }
+    .station-dot.no-halt.active {
+      border-color: var(--cobalt);
+    }
 
     .train-timeline-badge {
       position: absolute;
@@ -657,6 +740,11 @@
       font-weight: 800;
     }
 
+    .node-name.no-halt {
+      color: var(--text-secondary);
+      opacity: 0.85;
+    }
+
     .node-code {
       font-size: 10px;
       color: var(--text-secondary);
@@ -677,6 +765,11 @@
     .pill-ontime { background: var(--emerald-container); color: var(--emerald-dark); }
     .pill-passed { background: rgba(242, 140, 0, 0.14); color: var(--ntes-orange); }
     .pill-rem { background: rgba(11, 105, 163, 0.12); color: var(--cobalt); }
+    .pill-nohalt {
+      background: rgba(242, 140, 0, 0.16);
+      color: #C25E00;
+      border: 1px solid rgba(242, 140, 0, 0.45);
+    }
 
     .station-action-bar {
       margin-top: 10px;
@@ -1107,8 +1200,11 @@
       </div>
       <div id="routeTimelineScroll" class="timeline-scroll hidden"></div>
       <div id="selectedStationBar" class="station-action-bar hidden">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-          <strong id="selectedStationTitle" style="font-size:13px;"></strong>
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;">
+          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+            <strong id="selectedStationTitle" style="font-size:13px;"></strong>
+            <span id="selectedStationNoHaltBadge" class="pill-sm pill-nohalt hidden" style="margin-top:0;"></span>
+          </div>
           <span id="selectedStationDist" class="mono" style="font-size:11px;font-weight:700;color:var(--cobalt);"></span>
         </div>
         <div id="selectedStationActions" style="display:flex;gap:8px;margin-top:8px;">
@@ -1417,7 +1513,20 @@
           advertiseWhatsAppBtn: 'বিজ্ঞাপনের জন্য WhatsApp এ যোগাযোগ করুন',
           advertiseWhatsAppMsg: 'আমি ট্রেন লাইভ লোকেশন অ্যাপে বিজ্ঞাপন দিতে চাই',
           geoAdLocationPrompt: '📍 আপনার এলাকার বিজ্ঞাপন দেখতে লোকেশন অনুমতি দিন',
-          enableLocationBtn: 'লোকেশন চালু করুন'
+          enableLocationBtn: 'লোকেশন চালু করুন',
+          noHaltBadge: 'থামবে না',
+          runsDailyLabel: 'প্রতিদিন',
+          runsWeeklyLabel: 'সাপ্তাহিক',
+          runsDaysPerWeekTemplate: 'সপ্তাহে {N} দিন',
+          runsMonthlyLabel: 'মাসিক',
+          notRunningTodayLabel: 'আজকে চলবে না',
+          daySunShort: 'রবি',
+          dayMonShort: 'সোম',
+          dayTueShort: 'মঙ্গল',
+          dayWedShort: 'বুধ',
+          dayThuShort: 'বৃহঃ',
+          dayFriShort: 'শুক্র',
+          daySatShort: 'শনি'
         },
         hi: {
           appTitle: 'Train Live Location',
@@ -1496,7 +1605,20 @@
           advertiseWhatsAppBtn: 'विज्ञापन के लिए WhatsApp पर संपर्क करें',
           advertiseWhatsAppMsg: 'मैं ट्रेन लाइव लोकेशन ऐप में विज्ञापन देना चाहता हूँ',
           geoAdLocationPrompt: '📍 अपने क्षेत्र के विज्ञापन देखने के लिए लोकेशन अनुमति दें',
-          enableLocationBtn: 'लोकेशन चालू करें'
+          enableLocationBtn: 'लोकेशन चालू करें',
+          noHaltBadge: 'नहीं रुकेगी',
+          runsDailyLabel: 'रोज़ाना',
+          runsWeeklyLabel: 'साप्ताहिक',
+          runsDaysPerWeekTemplate: 'सप्ताह में {N} दिन',
+          runsMonthlyLabel: 'मासिक',
+          notRunningTodayLabel: 'आज नहीं चलेगी',
+          daySunShort: 'रवि',
+          dayMonShort: 'सोम',
+          dayTueShort: 'मंगल',
+          dayWedShort: 'बुध',
+          dayThuShort: 'गुरु',
+          dayFriShort: 'शुक्र',
+          daySatShort: 'शनि'
         },
         en: {
           appTitle: 'Train Live Location',
@@ -1575,7 +1697,20 @@
           advertiseWhatsAppBtn: 'Contact on WhatsApp for Advertising',
           advertiseWhatsAppMsg: 'I want to advertise in the Train Live Location app',
           geoAdLocationPrompt: '📍 Allow Location access to see nearby ads',
-          enableLocationBtn: 'Allow Location'
+          enableLocationBtn: 'Allow Location',
+          noHaltBadge: 'No Halt',
+          runsDailyLabel: 'Runs Daily',
+          runsWeeklyLabel: 'Weekly',
+          runsDaysPerWeekTemplate: '{N} days/week',
+          runsMonthlyLabel: 'Monthly',
+          notRunningTodayLabel: 'Not running today',
+          daySunShort: 'Sun',
+          dayMonShort: 'Mon',
+          dayTueShort: 'Tue',
+          dayWedShort: 'Wed',
+          dayThuShort: 'Thu',
+          dayFriShort: 'Fri',
+          daySatShort: 'Sat'
         }
       };
 
@@ -1757,7 +1892,7 @@
           el('langSpinner').classList.add('hidden');
           renderAllUi();
         } else {
-          const cacheKey = `tll_ui_v8_${state.lang}`;
+          const cacheKey = `tll_ui_v9_${state.lang}`;
           let cached = null;
           try { cached = JSON.parse(localStorage.getItem(cacheKey) || 'null'); } catch (_) {}
           if (cached && Object.keys(cached).length > 10) {
@@ -1913,7 +2048,85 @@
       let sheetStationsLoadedMs = 0;
       const SHEET_TTL_MS = 300000;
       const sheetSyncSentSigs = new Map();
+      const enrichedBetweenPairs = new Set();
       let lastObservedSyncKey = '';
+
+      function getIstDayOfWeek(nowMs = Date.now()) {
+        return new Date(nowMs + 19800000).getUTCDay();
+      }
+
+      function parseRunningDaysSet(raw, explicitList) {
+        if (Array.isArray(explicitList) && explicitList.length) {
+          const set = new Set();
+          explicitList.forEach(d => { if (Number.isInteger(d) && d >= 0 && d <= 6) set.add(d); });
+          return { days: set, isMonthly: false };
+        }
+        const s = String(raw || '').trim();
+        if (!s) return { days: new Set(), isMonthly: false };
+        if (/month/i.test(s)) return { days: new Set(), isMonthly: true };
+        if (/^(daily|all\s*days|everyday|every\s*day)$/i.test(s)) {
+          return { days: new Set([0, 1, 2, 3, 4, 5, 6]), isMonthly: false };
+        }
+        if (/^[01YN]{7}$/i.test(s)) {
+          const set = new Set();
+          for (let i = 0; i < 7; i++) {
+            const c = s[i].toUpperCase();
+            if (c === '1' || c === 'Y') set.add((i + 1) % 7);
+          }
+          return { days: set, isMonthly: false };
+        }
+        const set = new Set();
+        s.split(/[,;|/\s]+/).forEach(tok => {
+          const t = tok.trim().toLowerCase();
+          if (!t) return;
+          if (t === '0' || t === '7' || t === 'su' || t.startsWith('sun')) set.add(0);
+          else if (t === '1' || t === 'm' || t.startsWith('mon')) set.add(1);
+          else if (t === '2' || t === 'tu' || t.startsWith('tue')) set.add(2);
+          else if (t === '3' || t === 'w' || t.startsWith('wed')) set.add(3);
+          else if (t === '4' || t === 'th' || t.startsWith('thu')) set.add(4);
+          else if (t === '5' || t === 'f' || t.startsWith('fri')) set.add(5);
+          else if (t === '6' || t === 'sa' || t.startsWith('sat')) set.add(6);
+        });
+        return { days: set, isMonthly: false };
+      }
+
+      function evaluateRunningSchedule(raw, explicitList, todayDow = getIstDayOfWeek()) {
+        const { days, isMonthly } = parseRunningDaysSet(raw, explicitList);
+        const s = state.strings;
+        let frequencyLabel = '';
+        if (isMonthly) frequencyLabel = s.runsMonthlyLabel;
+        else if (days.size === 7) frequencyLabel = s.runsDailyLabel;
+        else if (days.size === 1) frequencyLabel = s.runsWeeklyLabel;
+        else if (days.size >= 2 && days.size <= 6) frequencyLabel = (s.runsDaysPerWeekTemplate || '{N}').replace('{N}', String(days.size));
+        const runsToday = days.size > 0 ? days.has(todayDow) : null;
+        return { days, isMonthly, frequencyLabel, runsToday };
+      }
+
+      function extractApiRunDays(obj) {
+        const raw = obj?.runDays ?? obj?.runningDays ?? obj?.train?.runDays ?? obj?.train?.runningDays;
+        if (raw == null) return '';
+        if (Array.isArray(raw)) {
+          const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+          return raw.map((v, i) => {
+            if (typeof v === 'boolean') return v ? names[i] : null;
+            if (typeof v === 'number') return v !== 0 ? names[i] : null;
+            const t = String(v || '').trim();
+            return t || null;
+          }).filter(Boolean).join(', ');
+        }
+        if (typeof raw === 'object') {
+          const out = [];
+          if (raw.sun || raw.sunday) out.push('Sun');
+          if (raw.mon || raw.monday) out.push('Mon');
+          if (raw.tue || raw.tuesday) out.push('Tue');
+          if (raw.wed || raw.wednesday) out.push('Wed');
+          if (raw.thu || raw.thursday) out.push('Thu');
+          if (raw.fri || raw.friday) out.push('Fri');
+          if (raw.sat || raw.saturday) out.push('Sat');
+          return out.join(', ');
+        }
+        return String(raw).trim();
+      }
 
       function normalizeSheetCol(raw) {
         return String(raw || '').replace(/^\uFEFF/, '').trim().toLowerCase().replace(/[_\s-]+/g, '');
@@ -2045,6 +2258,7 @@
             arrivalRaw: col(row, 'arrival', 'reachtime'),
             distanceKm: Number(col(row, 'distancekm', 'distance')) || 0,
             routePointsCount: parseInt(col(row, 'routepointscount'), 10) || 0,
+            runningDaysRaw: col(row, 'runningdays', 'rundays', 'days'),
             trainStopsRaw: rawStopsStr,
             stopTokens: stops
           });
@@ -2232,11 +2446,8 @@
       function buildRouteFromScheduleRows(rows) {
         if (!rows || !rows.length) return [];
         const sorted = sortScheduleRows(rows);
-        const stopping = sorted.filter(isScheduledStopRow);
-        const timed = sorted.filter(r => formatSheetTimeStr(r.arrivalRaw) || formatSheetTimeStr(r.departureRaw));
-        const effective = stopping.length >= 2 ? stopping : (timed.length ? timed : sorted);
         const dbByCode = new Map(state.stationDb.map(s => [s.code.toUpperCase(), s]));
-        return effective.map((r, idx) => {
+        return sorted.map((r, idx) => {
           const code = (r.stationCode || '').trim().toUpperCase();
           const hit = dbByCode.get(code);
           const arr = formatSheetTimeStr(r.arrivalRaw);
@@ -2250,7 +2461,8 @@
             lon: hit?.lon ?? null,
             scheduledTimeRaw: sched,
             arrival: arr || sched,
-            departure: dep || sched
+            departure: dep || sched,
+            isHalt: isScheduledStopRow(r)
           };
         });
       }
@@ -2258,8 +2470,14 @@
       function isSheetRouteComplete(entry, route) {
         if (!route || route.length < 2) return false;
         if (entry) {
-          if (entry.toCode && route[route.length - 1].stationCode.toUpperCase() !== entry.toCode.toUpperCase()) {
-            return false;
+          if (entry.toCode) {
+            const lastCode = (route[route.length - 1]?.stationCode || '').toUpperCase();
+            const lastHalt = [...route].reverse().find(s => s.isHalt !== false);
+            const lastHaltCode = (lastHalt?.stationCode || '').toUpperCase();
+            const expCode = entry.toCode.toUpperCase();
+            if (lastCode !== expCode && lastHaltCode !== expCode) {
+              return false;
+            }
           }
           if (entry.routePointsCount > 4 && route.length < Math.floor(entry.routePointsCount / 3)) {
             return false;
@@ -2273,9 +2491,11 @@
 
       function formatTrainStopsCsv(route) {
         if (!route || !route.length) return '';
+        const commercial = route.filter(st => st.isHalt !== false);
+        const target = commercial.length ? commercial : route;
         const toks = [];
         let prevKey = '';
-        for (const st of route) {
+        for (const st of target) {
           const tok = (st.stationCode || '').trim().toUpperCase() || (st.stationName || '').trim();
           if (!tok) continue;
           const k = tok.toUpperCase();
@@ -2305,7 +2525,7 @@
           downloadGvizQuery('Schedule', `select A, B, C, D, E, F, G, H where D = '${fromCode}' or D = '${toCode}'`)
         ]);
 
-        const trainEntries = trainCsv ? parseSheetTrainsCsv(trainCsv) : [];
+        let trainEntries = trainCsv ? parseSheetTrainsCsv(trainCsv) : [];
         const schedRows = schedCsv ? parseSheetScheduleCsv(schedCsv) : [];
         const byTrain = new Map();
 
@@ -2317,6 +2537,31 @@
           if (!grouped.has(k)) grouped.set(k, []);
           grouped.get(k).push(r);
         }
+
+        // Also load Train metadata rows for any train matched only via Schedule (for Running_Days & Source/Dest)
+        const knownKeys = new Set(trainEntries.map(e => normalizeTrainKey(e.trainNumber)));
+        const missingNums = [];
+        for (const [k, rows] of grouped.entries()) {
+          if (!knownKeys.has(k) && rows.length) missingNums.push(rows[0].trainNumber);
+        }
+        if (missingNums.length) {
+          const conds = [];
+          missingNums.slice(0, 30).forEach(n => {
+            buildTrainNumberVariants(n).forEach(v => {
+              conds.push(/^\d+$/.test(v) ? `A = ${Number(v)} or A = '${v}'` : `A = '${sanitizeTqIdent(v)}'`);
+            });
+          });
+          if (conds.length) {
+            const extraCsv = await downloadGvizQuery('Train', `select * where ${conds.join(' or ')}`);
+            if (extraCsv) {
+              trainEntries = trainEntries.concat(parseSheetTrainsCsv(extraCsv));
+            }
+          }
+        }
+
+        const entriesByKey = new Map();
+        for (const e of trainEntries) entriesByKey.set(normalizeTrainKey(e.trainNumber), e);
+
         for (const [k, rows] of grouped.entries()) {
           const fRow = rows.find(r => r.stationCode.toUpperCase() === fromCode && isScheduledStopRow(r));
           const tRow = rows.find(r => r.stationCode.toUpperCase() === toCode && isScheduledStopRow(r));
@@ -2327,12 +2572,16 @@
           const tDb = state.stationDb.find(s => s.code.toUpperCase() === toCode);
           const dist = (fDb?.lat != null && fDb?.lon != null && tDb?.lat != null && tDb.lon != null)
             ? haversineKm(fDb.lat, fDb.lon, tDb.lat, tDb.lon) * 1.2 : 0;
+          const meta = entriesByKey.get(k);
           byTrain.set(k, {
             trainNumber: fRow.trainNumber,
-            trainName: fRow.trainName || tRow.trainName || '',
+            trainName: fRow.trainName || tRow.trainName || meta?.trainName || '',
             departure: dep,
             arrival: arr,
-            distanceKm: dist
+            distanceKm: dist,
+            runningDaysRaw: meta?.runningDaysRaw || '',
+            sourceCode: meta?.fromCode || '',
+            destCode: meta?.toCode || ''
           });
         }
 
@@ -2363,11 +2612,17 @@
               trainName: entry.trainName || ex?.trainName || '',
               departure: dep !== '--:--' ? dep : (ex?.departure || '--:--'),
               arrival: arr !== '--:--' ? arr : (ex?.arrival || '--:--'),
-              distanceKm: dist
+              distanceKm: dist,
+              runningDaysRaw: entry.runningDaysRaw || ex?.runningDaysRaw || '',
+              sourceCode: entry.fromCode || ex?.sourceCode || '',
+              destCode: entry.toCode || ex?.destCode || ''
             });
-          } else if (byTrain.has(k) && entry.trainName) {
+          } else if (byTrain.has(k)) {
             const ex = byTrain.get(k);
-            if (!ex.trainName) ex.trainName = entry.trainName;
+            if (!ex.trainName && entry.trainName) ex.trainName = entry.trainName;
+            if (!ex.runningDaysRaw && entry.runningDaysRaw) ex.runningDaysRaw = entry.runningDaysRaw;
+            if (!ex.sourceCode && entry.fromCode) ex.sourceCode = entry.fromCode;
+            if (!ex.destCode && entry.toCode) ex.destCode = entry.toCode;
           }
         }
         return Array.from(byTrain.values()).sort((a, b) => {
@@ -2460,7 +2715,9 @@
         const exSchedByCode = new Map(existingSched.map(r => [r.stationCode.toUpperCase(), r]));
         const sheetDbByCode = new Map(sheetStationsCache.map(s => [s.code.toUpperCase(), s]));
 
-        const first = resolvedRoute[0], last = resolvedRoute[resolvedRoute.length - 1];
+        const commercial = resolvedRoute.filter(st => st.isHalt !== false);
+        const first = commercial[0] || resolvedRoute[0];
+        const last = commercial[commercial.length - 1] || resolvedRoute[resolvedRoute.length - 1];
         const finalName = (trainName || existingEntry?.trainName || '').trim();
         let totalDist = existingEntry?.distanceKm || 0;
         if (totalDist <= 0) {
@@ -2529,6 +2786,7 @@
       }
 
       function syncBetweenToSheet(fromCode, toCode, items) {
+        // Only send genuine train metadata (never overwrite true Source/Dest with queried From/To endpoints)
         if (!items || !items.length) return;
         const fCode = fromCode.toUpperCase(), tCode = toCode.toUpperCase();
         const sig = `${fCode}->${tCode}:${items.map(i => i.trainNumber).join(',')}`;
@@ -2544,15 +2802,10 @@
         const betweenTrains = items.map(it => ({
           trainNumber: String(it.trainNumber || '').replace(/\D/g, ''),
           trainName: it.trainName || '',
-          fromCode: fCode,
-          fromName: fDb?.name || fCode,
-          departure: it.departure && it.departure !== '--:--' ? it.departure : '',
-          toCode: tCode,
-          toName: tDb?.name || tCode,
-          arrival: it.arrival && it.arrival !== '--:--' ? it.arrival : '',
-          distanceKm: it.distanceKm || 0,
-          trainStops: `${fCode}, ${tCode}`
-        })).filter(x => x.trainNumber);
+          ...(it.sourceCode ? { fromCode: it.sourceCode } : {}),
+          ...(it.destCode ? { toCode: it.destCode } : {}),
+          ...(it.runningDaysRaw ? { runningDays: it.runningDaysRaw } : {})
+        })).filter(x => x.trainNumber && (x.fromCode || x.runningDays));
         if (betweenTrains.length) {
           postSheetSyncPayload({ action: 'syncSheetData', sheetId: ADS_SHEET_ID, betweenTrains, stations });
         }
@@ -2577,6 +2830,9 @@
           obsTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
         }
         const stopsCsv = formatTrainStopsCsv(route);
+        const commercialObs = route.filter(s => s.isHalt !== false);
+        const obsFirst = commercialObs[0] || route[0];
+        const obsLast = commercialObs[commercialObs.length - 1] || route[route.length - 1];
         const dbHit = stCode ? state.stationDb.find(s => s.code.toUpperCase() === stCode) : null;
         postSheetSyncPayload({
           action: 'syncSheetData',
@@ -2585,10 +2841,10 @@
             train: {
               trainNumber: cleanNo,
               trainName: trainName || '',
-              fromCode: route[0].stationCode,
-              fromName: route[0].stationName,
-              toCode: route[route.length - 1].stationCode,
-              toName: route[route.length - 1].stationName,
+              fromCode: obsFirst.stationCode,
+              fromName: obsFirst.stationName,
+              toCode: obsLast.stationCode,
+              toName: obsLast.stationName,
               routePointsCount: route.length,
               trainStops: stopsCsv
             }
@@ -2746,28 +3002,42 @@
         state.betweenError = null;
         renderBetween();
         try {
-          // 1) Search Train, Station & Schedule Google Sheets first (zero API calls when found)
-          let list = [];
+          // 1) Search Train, Station & Schedule Google Sheets first (zero API calls when complete)
+          let sheetList = [];
           try {
-            list = await searchTrainsBetweenFromSheet(state.fromInput || f, state.toInput || t);
-          } catch (_) { list = []; }
+            sheetList = await searchTrainsBetweenFromSheet(state.fromInput || f, state.toInput || t);
+          } catch (_) { sheetList = []; }
 
-          // 2) Fallback to API key search only when sheet has no matching trains
-          if (!list.length) {
-            const r = await fetch(`${API_URL}?action=between&from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`);
-            const json = await r.json();
-            list = (json?.data?.trains || []).map(obj => ({
-              trainNumber: obj.train?.number || '',
-              trainName: obj.train?.name || '',
-              departure: obj.from?.departure || '--:--',
-              arrival: obj.to?.arrival || '--:--',
-              distanceKm: Number(obj.distance) || 0
-            })).sort((a, b) => {
-              const ma = parseTimeToMins(a.departure) ?? 9999;
-              const mb = parseTimeToMins(b.departure) ?? 9999;
-              return ma !== mb ? ma - mb : String(a.trainNumber).localeCompare(String(b.trainNumber));
-            });
-            if (list.length) syncBetweenToSheet(f, t, list);
+          const pairKey = `${f.toUpperCase()}->${t.toUpperCase()}`;
+          const needsEnrichment = sheetList.some(it => !it.runningDaysRaw);
+          let list = sheetList;
+
+          // 2) Call action=between when sheet has no matches OR lacks Running_Days / full columns once per session
+          if (!sheetList.length || (needsEnrichment && !enrichedBetweenPairs.has(pairKey))) {
+            try {
+              const r = await fetch(`${API_URL}?action=between&from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`);
+              const json = await r.json();
+              const apiList = (json?.data?.trains || []).map(obj => ({
+                trainNumber: obj.train?.number || '',
+                trainName: obj.train?.name || '',
+                departure: obj.from?.departure || '--:--',
+                arrival: obj.to?.arrival || '--:--',
+                distanceKm: Number(obj.distance) || 0,
+                runningDaysRaw: extractApiRunDays(obj),
+                sourceCode: obj.train?.sourceCode || '',
+                destCode: obj.train?.destCode || ''
+              })).sort((a, b) => {
+                const ma = parseTimeToMins(a.departure) ?? 9999;
+                const mb = parseTimeToMins(b.departure) ?? 9999;
+                return ma !== mb ? ma - mb : String(a.trainNumber).localeCompare(String(b.trainNumber));
+              });
+              if (apiList.length) {
+                enrichedBetweenPairs.add(pairKey);
+                list = apiList;
+              }
+            } catch (_) {
+              // Keep sheetList if API call fails
+            }
           }
 
           state.betweenLoading = false;
@@ -2944,7 +3214,8 @@
               lon: st.lon ?? d.lon,
               scheduledTimeRaw: hasValidSheetTime(st.scheduledTimeRaw) ? st.scheduledTimeRaw : d.scheduledTimeRaw,
               arrival: hasValidSheetTime(st.arrival) ? st.arrival : d.arrival,
-              departure: hasValidSheetTime(st.departure) ? st.departure : d.departure
+              departure: hasValidSheetTime(st.departure) ? st.departure : d.departure,
+              isHalt: st.isHalt !== undefined ? st.isHalt : (d.isHalt !== false)
             };
           });
         }
@@ -3002,14 +3273,32 @@
 
       function parseRoute(arr) {
         if (!Array.isArray(arr)) return [];
-        return arr.map((s, i) => ({
-          stationCode: (s.stationCode || s.code || '').trim().toUpperCase(),
-          stationName: (s.stationName || s.name || s.stationCode || s.code || '').trim(),
-          sequence: s.sequence ?? (i + 1),
-          lat: numOrNull(s.lat ?? s.latitude),
-          lon: numOrNull(s.lng ?? s.lon ?? s.longitude),
-          scheduledTimeRaw: s.arrivalTime || s.arrival || s.scheduledArrival || s.eta || s.departure || '--:--'
-        }));
+        const len = arr.length;
+        return arr.map((s, i) => {
+          const arrival = s.arrivalTime || s.arrival || s.scheduledArrival || s.eta || '';
+          const departure = s.departure || '';
+          let isHalt = true;
+          if (typeof s.isHalt === 'boolean') {
+            isHalt = s.isHalt;
+          } else {
+            const arrNorm = formatSheetTimeStr(arrival);
+            const depNorm = formatSheetTimeStr(departure);
+            if (arrNorm && depNorm && arrNorm === depNorm && len > 2 && i > 0 && i < len - 1) {
+              isHalt = false;
+            }
+          }
+          return {
+            stationCode: (s.stationCode || s.code || '').trim().toUpperCase(),
+            stationName: (s.stationName || s.name || s.stationCode || s.code || '').trim(),
+            sequence: s.sequence ?? (i + 1),
+            lat: numOrNull(s.lat ?? s.latitude),
+            lon: numOrNull(s.lng ?? s.lon ?? s.longitude),
+            scheduledTimeRaw: arrival || departure || '--:--',
+            arrival: arrival || null,
+            departure: departure || null,
+            isHalt
+          };
+        });
       }
 
       async function fetchRouteCdn(num) {
@@ -4122,13 +4411,52 @@
         if (state.betweenTrains.length && !state.betweenLoading) {
           lst.classList.remove('hidden');
           lst.innerHTML = '';
+          const todayDow = getIstDayOfWeek();
+          const dayShortNames = [
+            state.strings.daySunShort,
+            state.strings.dayMonShort,
+            state.strings.dayTueShort,
+            state.strings.dayWedShort,
+            state.strings.dayThuShort,
+            state.strings.dayFriShort,
+            state.strings.daySatShort
+          ];
           state.betweenTrains.forEach(item => {
+            const sched = evaluateRunningSchedule(item.runningDaysRaw, item.runsOnDays, todayDow);
+            const notRunningToday = sched.runsToday === false;
+            const isSelected = state.trainNo && item.trainNumber.includes(state.trainNo);
             const btn = document.createElement('button');
             btn.type = 'button';
-            btn.className = 'between-item' + (state.trainNo && item.trainNumber.includes(state.trainNo) ? ' selected' : '');
+            btn.className = 'between-item' +
+              (notRunningToday ? ' not-running' : '') +
+              (isSelected ? ' selected' : '');
+
+            const freqHtml = sched.frequencyLabel
+              ? `<span class="freq-pill${sched.days.size === 7 ? ' daily' : ''}">${escapeHtml(sched.frequencyLabel)}</span>`
+              : '';
+
+            let daysHtml = '';
+            if (sched.days.size > 0) {
+              const chips = dayShortNames.map((lbl, idx) => {
+                const isOn = sched.days.has(idx);
+                const cls = 'day-chip' + (isOn ? ' on' : '') + (isOn && idx === todayDow ? ' today' : '');
+                return `<span class="${cls}">${escapeHtml(lbl)}</span>`;
+              }).join('');
+              daysHtml = `<div class="day-chips-row">${chips}</div>`;
+            }
+
+            const notRunningHtml = notRunningToday
+              ? `<div class="not-running-badge">⚠️ ${escapeHtml(state.strings.notRunningTodayLabel)}</div>`
+              : '';
+
             btn.innerHTML = `
-              <div style="font-weight:700;font-size:14px;color:var(--text-primary);">🚆 ${escapeHtml(item.trainNumber)} — ${escapeHtml(locName(item.trainName))}</div>
-              <div class="mono" style="font-size:12px;color:var(--cobalt);margin-top:2px;">${escapeHtml(item.departure)} → ${escapeHtml(item.arrival)} • ${Math.round(item.distanceKm || 0)} ${escapeHtml(state.strings.kmUnit)}</div>
+              <div class="between-top-row">
+                <div style="font-weight:700;font-size:14px;color:var(--text-primary);${notRunningToday ? 'opacity:0.8;' : ''}">🚆 ${escapeHtml(item.trainNumber)} — ${escapeHtml(locName(item.trainName))}</div>
+                ${freqHtml}
+              </div>
+              <div class="mono" style="font-size:12px;color:var(--cobalt);margin-top:3px;">${escapeHtml(item.departure)} → ${escapeHtml(item.arrival)} • ${Math.round(item.distanceKm || 0)} ${escapeHtml(state.strings.kmUnit)}</div>
+              ${daysHtml}
+              ${notRunningHtml}
             `;
             btn.onclick = () => selectTrain(item.trainNumber, item.trainName);
             lst.appendChild(btn);
@@ -4253,8 +4581,9 @@
             head.innerHTML += `<div class="track-seg-right"><div class="track-seg-fill" style="width:${rightPct}%"></div></div>`;
           }
 
-          const dotClass = hasAlarm ? 'alarm' : (isPassed ? 'passed' : (isActive ? 'active' : ''));
-          head.innerHTML += `<div class="station-dot-ring"><div class="station-dot ${dotClass}"></div></div>`;
+          const isNoHalt = st.isHalt === false;
+          const dotClass = (hasAlarm ? 'alarm' : (isPassed ? 'passed' : (isActive ? 'active' : ''))) + (isNoHalt ? ' no-halt' : '');
+          head.innerHTML += `<div class="station-dot-ring"><div class="station-dot ${dotClass.trim()}"></div></div>`;
 
           if (loc && ((isActive && (frac <= 0.5 || activeIdx === state.route.length - 1)) || (isNext && frac > 0.5))) {
             const shiftPx = isActive ? Math.round(132 * frac) : Math.round(-132 * (1 - frac));
@@ -4263,7 +4592,7 @@
           node.appendChild(head);
 
           const nameDiv = document.createElement('div');
-          nameDiv.className = 'node-name' + (isActive ? ' active' : '');
+          nameDiv.className = 'node-name' + (isActive ? ' active' : '') + (isNoHalt ? ' no-halt' : '');
           nameDiv.textContent = (hasAlarm ? '🔔 ' : '') + locName(st.stationName || st.stationCode);
           node.appendChild(nameDiv);
 
@@ -4272,6 +4601,13 @@
             codeDiv.className = 'node-code';
             codeDiv.textContent = st.stationCode;
             node.appendChild(codeDiv);
+          }
+
+          if (isNoHalt) {
+            const nhEl = document.createElement('div');
+            nhEl.className = 'pill-sm pill-nohalt';
+            nhEl.textContent = `🚫 ${state.strings.noHaltBadge}`;
+            node.appendChild(nhEl);
           }
 
           const sched = (st.scheduledTimeRaw || '--:--').match(/(\d{1,2}:\d{2})/)?.[1] || '--:--';
@@ -4332,6 +4668,11 @@
           bar.classList.remove('hidden');
           const rawN = sel.stationName || sel.stationCode;
           el('selectedStationTitle').textContent = sel.stationCode ? `${locName(rawN)} (${sel.stationCode})` : locName(rawN);
+          const nhBadge = el('selectedStationNoHaltBadge');
+          if (nhBadge) {
+            nhBadge.textContent = `🚫 ${state.strings.noHaltBadge}`;
+            nhBadge.classList.toggle('hidden', sel.isHalt !== false);
+          }
           const hasCoords = sel.lat != null && sel.lon != null;
           if (loc && hasCoords) {
             const d = haversineKm(loc.lat, loc.lon, sel.lat, sel.lon);
@@ -4391,10 +4732,22 @@
         }
         pts.forEach((st, idx) => {
           const isAl = state.stationAlarm && state.stationAlarm.stationCode === st.stationCode;
-          const m = L.circleMarker([st.lat, st.lon], {
-            radius: 6, color: '#FFFFFF', weight: 2, fillColor: isAl ? '#F28C00' : '#0B69A3', fillOpacity: 1
+          const isNoHalt = st.isHalt === false;
+          const m = L.circleMarker([st.lat, st.lon], isNoHalt ? {
+            radius: 5,
+            color: isAl ? '#F28C00' : '#E65100',
+            weight: 2,
+            fillColor: '#FFFFFF',
+            fillOpacity: 1
+          } : {
+            radius: 6,
+            color: '#FFFFFF',
+            weight: 2,
+            fillColor: isAl ? '#F28C00' : '#0B69A3',
+            fillOpacity: 1
           }).addTo(map);
-          m.bindTooltip(locName(st.stationName || st.stationCode), { permanent: false, direction: idx % 2 === 0 ? 'right' : 'left' });
+          const tip = locName(st.stationName || st.stationCode) + (isNoHalt ? ` (${state.strings.noHaltBadge})` : '');
+          m.bindTooltip(tip, { permanent: false, direction: idx % 2 === 0 ? 'right' : 'left' });
           stationMarkers.push(m);
         });
         updateMapStationLabels();

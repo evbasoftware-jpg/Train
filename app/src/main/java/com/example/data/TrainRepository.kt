@@ -237,47 +237,84 @@ class TrainRepository(private val cacheDir: File? = null) {
       } catch (_: Exception) {
         emptyList()
       }
-      if (sheetMatches.isNotEmpty()) {
+      val needsSheetEnrichment = sheetMatches.any { it.runningDaysRaw.isBlank() }
+      val pairKey = "${fromCode.uppercase(Locale.US)}->${toCode.uppercase(Locale.US)}"
+      if (sheetMatches.isNotEmpty() && (!needsSheetEnrichment || pairKey in enrichedBetweenPairs)) {
         return@withContext sheetMatches
       }
 
-      // 2) Fallback to backend API key search when no matching trains are found in sheets
-      val root = getApi(mapOf("action" to "between", "from" to fromCode, "to" to toCode))
-      val trainsArr = root.optJSONObject("data")?.optJSONArray("trains") ?: JSONArray()
-      val result = ArrayList<TrainBetweenItem>(trainsArr.length())
-      for (i in 0 until trainsArr.length()) {
-        val obj = trainsArr.optJSONObject(i) ?: continue
-        val trainObj = obj.optJSONObject("train")
-        val number = trainObj?.optString("number", "") ?: ""
-        val name = trainObj?.optString("name", "") ?: ""
-        val dep = obj.optJSONObject("from")?.optString("departure", "--:--")?.ifBlank { "--:--" }
-          ?: "--:--"
-        val arr = obj.optJSONObject("to")?.optString("arrival", "--:--")?.ifBlank { "--:--" }
-          ?: "--:--"
-        val dist = obj.optDoubleOrNull("distance") ?: 0.0
-        result.add(
-          TrainBetweenItem(
-            trainNumber = number,
-            trainName = name,
-            departure = dep,
-            arrival = arr,
-            distanceKm = dist,
-          ),
-        )
+      // 2) Fallback to backend API key search (also backfills incomplete sheet rows once per session)
+      val apiList = try {
+        val root = getApi(mapOf("action" to "between", "from" to fromCode, "to" to toCode))
+        val trainsArr = root.optJSONObject("data")?.optJSONArray("trains") ?: JSONArray()
+        val result = ArrayList<TrainBetweenItem>(trainsArr.length())
+        for (i in 0 until trainsArr.length()) {
+          val obj = trainsArr.optJSONObject(i) ?: continue
+          val trainObj = obj.optJSONObject("train")
+          val number = trainObj?.optString("number", "") ?: ""
+          val name = trainObj?.optString("name", "") ?: ""
+          val dep = obj.optJSONObject("from")?.optString("departure", "--:--")?.ifBlank { "--:--" }
+            ?: "--:--"
+          val arr = obj.optJSONObject("to")?.optString("arrival", "--:--")?.ifBlank { "--:--" }
+            ?: "--:--"
+          val dist = obj.optDoubleOrNull("distance") ?: 0.0
+          val rawRunDays = extractRunningDaysRaw(obj, trainObj)
+          val srcCode = trainObj?.optStringOrNull("sourceCode") ?: ""
+          val dstCode = trainObj?.optStringOrNull("destCode") ?: ""
+          result.add(
+            TrainBetweenItem(
+              trainNumber = number,
+              trainName = name,
+              departure = dep,
+              arrival = arr,
+              distanceKm = dist,
+              runningDaysRaw = rawRunDays,
+              sourceCode = srcCode,
+              destCode = dstCode,
+            ),
+          )
+        }
+        result
+      } catch (_: Exception) {
+        emptyList()
       }
-      val sortedResult = result.sortedWith(
+
+      if (apiList.isNotEmpty()) {
+        enrichedBetweenPairs.add(pairKey)
+      }
+      val merged = if (apiList.isNotEmpty()) apiList else sheetMatches
+      val sortedResult = merged.sortedWith(
         compareBy<TrainBetweenItem>(
           { parseDepartureMinutesOrMax(it.departure) },
           { it.trainNumber },
         ),
       )
-      if (sortedResult.isNotEmpty()) {
-        syncScope.launch {
-          sheetSyncManager.syncBetweenResults(fromCode, toCode, sortedResult, stationDb)
-        }
-      }
       sortedResult
     }
+
+  private val enrichedBetweenPairs = java.util.Collections.synchronizedSet(HashSet<String>())
+
+  private fun extractRunningDaysRaw(obj: JSONObject, trainObj: JSONObject?): String {
+    val raw = obj.opt("runDays")
+      ?: obj.opt("runningDays")
+      ?: trainObj?.opt("runDays")
+      ?: trainObj?.opt("runningDays")
+      ?: return ""
+    return when (raw) {
+      is JSONArray -> (0 until raw.length()).mapNotNull { idx ->
+        val elem = raw.opt(idx)
+        when (elem) {
+          is Boolean -> if (elem) listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun").getOrNull(idx) else null
+          is Number -> if (elem.toInt() != 0) listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun").getOrNull(idx) else null
+          else -> elem?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+        }
+      }.joinToString(", ")
+      is JSONObject -> raw.keys().asSequence()
+        .filter { k -> raw.optBoolean(k, false) || raw.optInt(k, 0) == 1 }
+        .joinToString(", ")
+      else -> raw.toString().trim().takeUnless { it == "null" } ?: ""
+    }
+  }
 
   private fun parseDepartureMinutesOrMax(raw: String): Int {
     val formatted = sheetRepository.formatSheetTime(raw) ?: return Int.MAX_VALUE
@@ -684,6 +721,13 @@ class TrainRepository(private val cacheDir: File? = null) {
         ?: s.optStringOrNull("eta")
       val departure = s.optStringOrNull("departure")
       val schedRaw = arrival ?: departure
+      val isHalt = if (s.has("isHalt") && !s.isNull("isHalt")) {
+        s.optBoolean("isHalt", true)
+      } else {
+        val arrNorm = sheetRepository.formatSheetTime(arrival.orEmpty())
+        val depNorm = sheetRepository.formatSheetTime(departure.orEmpty())
+        !(arrNorm != null && depNorm != null && arrNorm == depNorm && arr.length() > 2 && i > 0 && i < arr.length() - 1)
+      }
 
       list.add(
         RouteStation(
@@ -695,6 +739,7 @@ class TrainRepository(private val cacheDir: File? = null) {
           scheduledTimeRaw = schedRaw,
           arrival = arrival,
           departure = departure,
+          isHalt = isHalt,
         ),
       )
     }

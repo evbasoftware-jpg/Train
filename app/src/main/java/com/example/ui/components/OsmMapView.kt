@@ -545,16 +545,30 @@ private fun InteractiveOsmCanvas(
                 center = pos,
               )
             }
-            drawCircle(
-              color = Color.White,
-              radius = 6.5.dp.toPx(),
-              center = pos,
-            )
-            drawCircle(
-              color = if (isAlarm) NtesOrange else CobaltPrimary,
-              radius = 4.5.dp.toPx(),
-              center = pos,
-            )
+            if (st.isHalt) {
+              drawCircle(
+                color = Color.White,
+                radius = 6.5.dp.toPx(),
+                center = pos,
+              )
+              drawCircle(
+                color = if (isAlarm) NtesOrange else CobaltPrimary,
+                radius = 4.5.dp.toPx(),
+                center = pos,
+              )
+            } else {
+              drawCircle(
+                color = Color.White,
+                radius = 4.5.dp.toPx(),
+                center = pos,
+              )
+              drawCircle(
+                color = if (isAlarm) NtesOrange else Color(0xFFE65100),
+                radius = 4.5.dp.toPx(),
+                center = pos,
+                style = Stroke(width = 2.dp.toPx()),
+              )
+            }
           }
         }
       }

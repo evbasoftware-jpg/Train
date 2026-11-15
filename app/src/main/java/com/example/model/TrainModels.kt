@@ -124,7 +124,26 @@ data class LocalizedStrings(
   val adOpenLinkBtn: String,
   val advertiseWhatsAppBtn: String,
   val advertiseWhatsAppMsg: String,
+  val noHaltBadge: String = "থামবে না",
+  val runsDailyLabel: String = "প্রতিদিন",
+  val runsWeeklyLabel: String = "সাপ্তাহিক",
+  val runsDaysPerWeekTemplate: String = "সপ্তাহে {N} দিন",
+  val runsMonthlyLabel: String = "মাসিক",
+  val notRunningTodayLabel: String = "আজকে চলবে না",
+  val daySunShort: String = "রবি",
+  val dayMonShort: String = "সোম",
+  val dayTueShort: String = "মঙ্গল",
+  val dayWedShort: String = "বুধ",
+  val dayThuShort: String = "বৃহঃ",
+  val dayFriShort: String = "শুক্র",
+  val daySatShort: String = "শনি",
 ) {
+  fun dayShortNames(): List<String> =
+    listOf(daySunShort, dayMonShort, dayTueShort, dayWedShort, dayThuShort, dayFriShort, daySatShort)
+
+  fun runsDaysPerWeekLabel(count: Int): String =
+    runsDaysPerWeekTemplate.replace("{N}", count.toString())
+
   fun noTrainsFound(from: String, to: String): String =
     noTrainsFoundTemplate.replace("{FROM}", from).replace("{TO}", to)
 
@@ -259,6 +278,19 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     adOpenLinkBtn = "ওয়েবসাইট খুলুন",
     advertiseWhatsAppBtn = "বিজ্ঞাপনের জন্য WhatsApp এ যোগাযোগ করুন",
     advertiseWhatsAppMsg = "আমি ট্রেন লাইভ লোকেশন অ্যাপে বিজ্ঞাপন দিতে চাই",
+    noHaltBadge = "থামবে না",
+    runsDailyLabel = "প্রতিদিন",
+    runsWeeklyLabel = "সাপ্তাহিক",
+    runsDaysPerWeekTemplate = "সপ্তাহে {N} দিন",
+    runsMonthlyLabel = "মাসিক",
+    notRunningTodayLabel = "আজকে চলবে না",
+    daySunShort = "রবি",
+    dayMonShort = "সোম",
+    dayTueShort = "মঙ্গল",
+    dayWedShort = "বুধ",
+    dayThuShort = "বৃহঃ",
+    dayFriShort = "শুক্র",
+    daySatShort = "শনি",
   )
 
   "hi" -> LocalizedStrings(
@@ -352,6 +384,19 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     adOpenLinkBtn = "वेबसाइट खोलें",
     advertiseWhatsAppBtn = "विज्ञापन के लिए WhatsApp पर संपर्क करें",
     advertiseWhatsAppMsg = "मैं ट्रेन लाइव लोकेशन ऐप में विज्ञापन देना चाहता हूँ",
+    noHaltBadge = "नहीं रुकेगी",
+    runsDailyLabel = "रोज़ाना",
+    runsWeeklyLabel = "साप्ताहिक",
+    runsDaysPerWeekTemplate = "सप्ताह में {N} दिन",
+    runsMonthlyLabel = "मासिक",
+    notRunningTodayLabel = "आज नहीं चलेगी",
+    daySunShort = "रवि",
+    dayMonShort = "सोम",
+    dayTueShort = "मंगल",
+    dayWedShort = "बुध",
+    dayThuShort = "गुरु",
+    dayFriShort = "शुक्र",
+    daySatShort = "शनि",
   )
 
   else -> LocalizedStrings(
@@ -445,6 +490,19 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     adOpenLinkBtn = "Visit Website",
     advertiseWhatsAppBtn = "Contact on WhatsApp for Advertising",
     advertiseWhatsAppMsg = "I want to advertise in the Train Live Location app",
+    noHaltBadge = "No Halt",
+    runsDailyLabel = "Runs Daily",
+    runsWeeklyLabel = "Weekly",
+    runsDaysPerWeekTemplate = "{N} days/week",
+    runsMonthlyLabel = "Monthly",
+    notRunningTodayLabel = "Not running today",
+    daySunShort = "Sun",
+    dayMonShort = "Mon",
+    dayTueShort = "Tue",
+    dayWedShort = "Wed",
+    dayThuShort = "Thu",
+    dayFriShort = "Fri",
+    daySatShort = "Sat",
   )
 }
 
@@ -455,12 +513,105 @@ data class StationDbEntry(
   val lon: Double?,
 )
 
+data class RunningScheduleInfo(
+  val daysOfWeek: Set<Int>, // 0=Sun .. 6=Sat
+  val isMonthly: Boolean,
+  val frequencyLabel: String,
+  val runsToday: Boolean?,
+)
+
+object RunningScheduleHelper {
+  fun parseDaysSet(raw: String, explicitList: List<Int> = emptyList()): Pair<Set<Int>, Boolean> {
+    if (explicitList.isNotEmpty()) {
+      return explicitList.filter { it in 0..6 }.toSet() to false
+    }
+    val s = raw.trim()
+    if (s.isEmpty()) return emptySet<Int>() to false
+    if (s.contains("month", ignoreCase = true)) return emptySet<Int>() to true
+    if (s.equals("daily", ignoreCase = true) ||
+      s.equals("all days", ignoreCase = true) ||
+      s.equals("everyday", ignoreCase = true) ||
+      s.equals("every day", ignoreCase = true)
+    ) {
+      return setOf(0, 1, 2, 3, 4, 5, 6) to false
+    }
+    if (Regex("""^[01YNyn]{7}$""").matches(s)) {
+      val set = LinkedHashSet<Int>()
+      for (i in 0..6) {
+        val c = s[i].uppercaseChar()
+        if (c == '1' || c == 'Y') set.add((i + 1) % 7)
+      }
+      return set to false
+    }
+    val set = LinkedHashSet<Int>()
+    s.split(Regex("""[,;|/\s]+""")).forEach { tok ->
+      val t = tok.trim().lowercase(java.util.Locale.US)
+      when {
+        t.isEmpty() -> {}
+        t == "0" || t == "7" || t == "su" || t.startsWith("sun") -> set.add(0)
+        t == "1" || t == "m" || t.startsWith("mon") -> set.add(1)
+        t == "2" || t == "tu" || t.startsWith("tue") -> set.add(2)
+        t == "3" || t == "w" || t.startsWith("wed") -> set.add(3)
+        t == "4" || t == "th" || t.startsWith("thu") -> set.add(4)
+        t == "5" || t == "f" || t.startsWith("fri") -> set.add(5)
+        t == "6" || t == "sa" || t.startsWith("sat") -> set.add(6)
+      }
+    }
+    return set to false
+  }
+
+  fun currentIstDayOfWeek(nowMillis: Long = System.currentTimeMillis()): Int {
+    val cal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Kolkata"))
+    cal.timeInMillis = nowMillis
+    return when (cal.get(java.util.Calendar.DAY_OF_WEEK)) {
+      java.util.Calendar.SUNDAY -> 0
+      java.util.Calendar.MONDAY -> 1
+      java.util.Calendar.TUESDAY -> 2
+      java.util.Calendar.WEDNESDAY -> 3
+      java.util.Calendar.THURSDAY -> 4
+      java.util.Calendar.FRIDAY -> 5
+      java.util.Calendar.SATURDAY -> 6
+      else -> 0
+    }
+  }
+
+  fun evaluate(
+    raw: String,
+    explicitList: List<Int> = emptyList(),
+    strings: LocalizedStrings,
+    todayDow: Int = currentIstDayOfWeek(),
+  ): RunningScheduleInfo {
+    val (days, isMonthly) = parseDaysSet(raw, explicitList)
+    val freq = when {
+      isMonthly -> strings.runsMonthlyLabel
+      days.size == 7 -> strings.runsDailyLabel
+      days.size == 1 -> strings.runsWeeklyLabel
+      days.size in 2..6 -> strings.runsDaysPerWeekLabel(days.size)
+      else -> ""
+    }
+    val runsToday = when {
+      days.isNotEmpty() -> days.contains(todayDow)
+      else -> null
+    }
+    return RunningScheduleInfo(
+      daysOfWeek = days,
+      isMonthly = isMonthly,
+      frequencyLabel = freq,
+      runsToday = runsToday,
+    )
+  }
+}
+
 data class TrainBetweenItem(
   val trainNumber: String,
   val trainName: String,
   val departure: String,
   val arrival: String,
   val distanceKm: Double,
+  val runningDaysRaw: String = "",
+  val runsOnDays: List<Int> = emptyList(),
+  val sourceCode: String = "",
+  val destCode: String = "",
 )
 
 data class RouteStation(
@@ -472,6 +623,7 @@ data class RouteStation(
   val scheduledTimeRaw: String?,
   val arrival: String?,
   val departure: String?,
+  val isHalt: Boolean = true,
 )
 
 data class CurrentLocationDto(

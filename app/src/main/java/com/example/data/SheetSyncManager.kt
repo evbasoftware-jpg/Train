@@ -25,9 +25,10 @@ class SheetSyncManager(private val client: OkHttpClient) {
      */
     fun formatTrainStopsCsv(route: List<RouteStation>): String {
       if (route.isEmpty()) return ""
-      val tokens = ArrayList<String>(route.size)
+      val halts = route.filter { it.isHalt }.ifEmpty { route }
+      val tokens = ArrayList<String>(halts.size)
       var prevKey = ""
-      for (st in route) {
+      for (st in halts) {
         val tok = st.stationCode.trim().uppercase(Locale.US)
           .ifBlank { st.stationName.trim() }
         if (tok.isBlank()) continue
@@ -126,8 +127,8 @@ class SheetSyncManager(private val client: OkHttpClient) {
     if (!forceSync && sentSignatures[syncKey] == sig) return@withContext
     sentSignatures[syncKey] = sig
 
-    val first = enrichedRoute.first()
-    val last = enrichedRoute.last()
+    val first = enrichedRoute.firstOrNull { it.isHalt } ?: enrichedRoute.first()
+    val last = enrichedRoute.lastOrNull { it.isHalt } ?: enrichedRoute.last()
     val resolvedName = trainName?.takeIf { it.isNotBlank() }
       ?: existingEntry?.trainName?.takeIf { it.isNotBlank() }
       ?: ""
@@ -241,31 +242,27 @@ class SheetSyncManager(private val client: OkHttpClient) {
     val trainsArr = JSONArray().apply {
       items.forEach { item ->
         val num = item.trainNumber.filter { it.isDigit() }
-        if (num.isNotBlank()) {
+        val hasMetadataOnly = item.runningDaysRaw.isNotBlank() || item.sourceCode.isNotBlank() || item.destCode.isNotBlank()
+        if (num.isNotBlank() && hasMetadataOnly) {
           put(
             JSONObject().apply {
               put("trainNumber", num)
               put("trainName", item.trainName)
-              put("fromCode", fCode)
-              put("fromName", fromDb?.name ?: fCode)
-              put("departure", item.departure.takeIf { it != "--:--" } ?: "")
-              put("toCode", tCode)
-              put("toName", toDb?.name ?: tCode)
-              put("arrival", item.arrival.takeIf { it != "--:--" } ?: "")
-              put("distanceKm", item.distanceKm)
-              put("trainStops", "$fCode, $tCode")
+              if (item.sourceCode.isNotBlank()) put("fromCode", item.sourceCode)
+              if (item.destCode.isNotBlank()) put("toCode", item.destCode)
+              if (item.runningDaysRaw.isNotBlank()) put("runningDays", item.runningDaysRaw)
             },
           )
         }
       }
     }
 
-    if (trainsArr.length() == 0) return@withContext
+    if (trainsArr.length() == 0 && stationsArr.length() == 0) return@withContext
 
     val payload = JSONObject().apply {
       put("action", "syncSheetData")
       put("sheetId", SheetTrainRepository.SHEET_ID)
-      put("betweenTrains", trainsArr)
+      if (trainsArr.length() > 0) put("betweenTrains", trainsArr)
       put("stations", stationsArr)
     }
 

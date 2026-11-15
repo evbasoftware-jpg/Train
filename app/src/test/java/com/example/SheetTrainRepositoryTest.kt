@@ -3,7 +3,9 @@ package com.example
 import com.example.data.SheetSyncManager
 import com.example.data.SheetTrainRepository
 import com.example.model.RouteStation
+import com.example.model.RunningScheduleHelper
 import com.example.model.StationDbEntry
+import com.example.model.stringsForCode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -175,10 +177,51 @@ class SheetTrainRepositoryTest {
     assertEquals(listOf("63063", "13017", "13173"), matches.map { it.trainNumber })
     assertEquals(listOf("06:05", "07:37", "08:36"), matches.map { it.departure })
 
-    // Route builder for a train also excludes 0-minute pass-through stations
+    // Route built for live tracking preserves pass-through station with isHalt = false so rider sees it marked
     val intercityRows = schedRows.filter { it.trainNumber == "12363" } +
       listOf(schedRows.first { it.trainNumber == "13017" && it.stationCode == "BHP" })
     val route = repo.buildRouteFromScheduleRows(intercityRows, stations)
-    assertFalse(route.any { it.stationCode == "AMP" })
+    assertTrue(route.any { it.stationCode == "BWN" && it.isHalt })
+    assertTrue(route.any { it.stationCode == "AMP" && !it.isHalt })
+    // Commercial Train_Stops excludes pass-through stations (AMP)
+    assertEquals("BHP, BWN", SheetSyncManager.formatTrainStopsCsv(route))
+  }
+
+  @Test
+  fun parsesRunningDaysAndEvaluatesFrequencyAndTodayStatus() {
+    val bn = stringsForCode("bn")
+    val en = stringsForCode("en")
+
+    val trainCsv = """
+      "Train_Number","Train_Name","From_Station_Code","From_Station_Name","Departure","To_Station_Code","To_Station_Name","Arrival","Distance_KM","Route_Points_Count","Train_Stops","Running_Days"
+      "63063","Barddhaman - Sahibganj MEMU","BWN","BARDDHAMAN JN","06:05","SBG","SAHIBGANJ JN","11:30","200","25","BWN, AMP","Sun, Mon, Tue, Wed, Thu, Fri, Sat"
+      "13175","Silchar Kanchanjungha Express","SDAH","SEALDAH","06:35","SCL","SILCHAR","18:00","1350","40","SDAH, BWN, AMP","Sun, Tue, Thu"
+      "12377","Padatik Express","SDAH","SEALDAH","23:20","NJP","NEW JALPAIGURI","09:15","565","12","SDAH, BWN","1111111"
+    """.trimIndent()
+    val parsed = repo.parseTrainsCsv(trainCsv)
+    assertEquals("Sun, Tue, Thu", parsed[1].runningDaysRaw)
+
+    val daily = RunningScheduleHelper.evaluate(parsed[0].runningDaysRaw, strings = bn, todayDow = 1)
+    assertEquals("প্রতিদিন", daily.frequencyLabel)
+    assertEquals(true, daily.runsToday)
+
+    val bitmaskDaily = RunningScheduleHelper.evaluate(parsed[2].runningDaysRaw, strings = en, todayDow = 5)
+    assertEquals("Runs Daily", bitmaskDaily.frequencyLabel)
+    assertEquals(7, bitmaskDaily.daysOfWeek.size)
+
+    val triWeeklyOnTue = RunningScheduleHelper.evaluate(parsed[1].runningDaysRaw, strings = bn, todayDow = 2)
+    assertEquals("সপ্তাহে 3 দিন", triWeeklyOnTue.frequencyLabel)
+    assertEquals(true, triWeeklyOnTue.runsToday)
+
+    val triWeeklyOnMon = RunningScheduleHelper.evaluate(parsed[1].runningDaysRaw, strings = bn, todayDow = 1)
+    assertEquals(false, triWeeklyOnMon.runsToday)
+
+    val weekly = RunningScheduleHelper.evaluate("Fri", strings = bn, todayDow = 5)
+    assertEquals("সাপ্তাহিক", weekly.frequencyLabel)
+    assertEquals(true, weekly.runsToday)
+
+    val monthly = RunningScheduleHelper.evaluate("Monthly", strings = bn, todayDow = 1)
+    assertEquals("মাসিক", monthly.frequencyLabel)
+    assertEquals(null, monthly.runsToday)
   }
 }

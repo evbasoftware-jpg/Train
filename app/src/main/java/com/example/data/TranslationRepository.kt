@@ -27,7 +27,7 @@ class TranslationRepository(private val cacheDir: File?) {
     }
 
     return withContext(Dispatchers.IO) {
-      val cacheFile = cacheDir?.let { File(it, "lang_v6_${langCode.replace("/", "_")}.json") }
+      val cacheFile = cacheDir?.let { File(it, "lang_v7_${langCode.replace("/", "_")}.json") }
       val english = stringsForCode("en")
       val keys = buildTranslatableMap(english)
 
@@ -171,6 +171,19 @@ class TranslationRepository(private val cacheDir: File?) {
       "adOpenLinkBtn" to en.adOpenLinkBtn,
       "advertiseWhatsAppBtn" to en.advertiseWhatsAppBtn,
       "advertiseWhatsAppMsg" to en.advertiseWhatsAppMsg,
+      "noHaltBadge" to en.noHaltBadge,
+      "runsDailyLabel" to en.runsDailyLabel,
+      "runsWeeklyLabel" to en.runsWeeklyLabel,
+      "runsDaysPerWeekTemplate" to en.runsDaysPerWeekTemplate,
+      "runsMonthlyLabel" to en.runsMonthlyLabel,
+      "notRunningTodayLabel" to en.notRunningTodayLabel,
+      "daySunShort" to en.daySunShort,
+      "dayMonShort" to en.dayMonShort,
+      "dayTueShort" to en.dayTueShort,
+      "dayWedShort" to en.dayWedShort,
+      "dayThuShort" to en.dayThuShort,
+      "dayFriShort" to en.dayFriShort,
+      "daySatShort" to en.daySatShort,
     )
 
   private fun applyTranslatedMap(
@@ -267,6 +280,19 @@ class TranslationRepository(private val cacheDir: File?) {
     adOpenLinkBtn = m["adOpenLinkBtn"] ?: base.adOpenLinkBtn,
     advertiseWhatsAppBtn = m["advertiseWhatsAppBtn"] ?: base.advertiseWhatsAppBtn,
     advertiseWhatsAppMsg = m["advertiseWhatsAppMsg"] ?: base.advertiseWhatsAppMsg,
+    noHaltBadge = m["noHaltBadge"] ?: base.noHaltBadge,
+    runsDailyLabel = m["runsDailyLabel"] ?: base.runsDailyLabel,
+    runsWeeklyLabel = m["runsWeeklyLabel"] ?: base.runsWeeklyLabel,
+    runsDaysPerWeekTemplate = m["runsDaysPerWeekTemplate"] ?: base.runsDaysPerWeekTemplate,
+    runsMonthlyLabel = m["runsMonthlyLabel"] ?: base.runsMonthlyLabel,
+    notRunningTodayLabel = m["notRunningTodayLabel"] ?: base.notRunningTodayLabel,
+    daySunShort = m["daySunShort"] ?: base.daySunShort,
+    dayMonShort = m["dayMonShort"] ?: base.dayMonShort,
+    dayTueShort = m["dayTueShort"] ?: base.dayTueShort,
+    dayWedShort = m["dayWedShort"] ?: base.dayWedShort,
+    dayThuShort = m["dayThuShort"] ?: base.dayThuShort,
+    dayFriShort = m["dayFriShort"] ?: base.dayFriShort,
+    daySatShort = m["daySatShort"] ?: base.daySatShort,
   )
 
   private fun translateBatchWithGoogle(
