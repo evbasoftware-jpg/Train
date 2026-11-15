@@ -80,7 +80,12 @@ class SheetSyncManager(private val client: OkHttpClient) {
       (existingEntry.toCode.isBlank() && enrichedRoute.last().stationCode.isNotBlank())
 
     val existingSchedByCode = existingScheduleRows.associateBy { it.stationCode.trim().uppercase(Locale.US) }
-    val hasNewOrUpdatedSched = enrichedRoute.size > existingScheduleRows.size ||
+    val firstSched = existingScheduleRows.firstOrNull()
+    val hasCorruptedOrigin = firstSched != null &&
+      firstSched.arrivalRaw.isNotBlank() &&
+      !firstSched.arrivalRaw.equals("None", ignoreCase = true)
+    val hasNewOrUpdatedSched = hasCorruptedOrigin ||
+      enrichedRoute.size > existingScheduleRows.size ||
       enrichedRoute.any { st ->
         val ex = existingSchedByCode[st.stationCode]
         if (ex == null) {
@@ -90,7 +95,7 @@ class SheetSyncManager(private val client: OkHttpClient) {
           val newDep = normalizeTimeOrNull(st.departure ?: st.scheduledTimeRaw)
           val exArrEmpty = ex.arrivalRaw.isBlank() || ex.arrivalRaw.equals("None", ignoreCase = true)
           val exDepEmpty = ex.departureRaw.isBlank() || ex.departureRaw.equals("None", ignoreCase = true)
-          (newArr != null && exArrEmpty) || (newDep != null && exDepEmpty)
+          ex.isHalt == null || (newArr != null && exArrEmpty) || (newDep != null && exDepEmpty)
         }
       }
 
@@ -170,7 +175,7 @@ class SheetSyncManager(private val client: OkHttpClient) {
         day++
       }
       if (minNow != null) prevMin = minNow
-      val resolvedDay = ex?.day ?: day
+      val resolvedDay = st.day ?: ex?.day ?: day
       schedArr.put(
         JSONObject().apply {
           put("sequence", idx + 1)
@@ -178,9 +183,10 @@ class SheetSyncManager(private val client: OkHttpClient) {
           put("trainName", resolvedName)
           put("stationCode", st.stationCode)
           put("stationName", st.stationName)
-          put("arrival", arr)
-          put("departure", dep)
+          put("arrival", if (idx == 0) "None" else arr)
+          put("departure", if (idx == enrichedRoute.lastIndex) "None" else dep)
           put("day", resolvedDay)
+          put("isHalt", if (st.isHalt) "Y" else "N")
         },
       )
     }
@@ -192,6 +198,7 @@ class SheetSyncManager(private val client: OkHttpClient) {
     val payload = JSONObject().apply {
       put("action", "syncSheetData")
       put("sheetId", SheetTrainRepository.SHEET_ID)
+      put("authoritativeSync", true)
       put("train", trainObj)
       put("stations", stationsArr)
       put("schedule", schedArr)
@@ -320,20 +327,21 @@ class SheetSyncManager(private val client: OkHttpClient) {
             },
           ),
         )
-        if (!observedTimeHHmm.isNullOrBlank()) {
-          val idx = route.indexOfFirst { it.stationCode.equals(stCode, true) }
+        val idx = route.indexOfFirst { it.stationCode.equals(stCode, true) }
+        if (!observedTimeHHmm.isNullOrBlank() && idx > 0) {
+          val obsSt = route.getOrNull(idx)
           put(
             "schedule",
             JSONArray().put(
               JSONObject().apply {
-                put("sequence", if (idx >= 0) idx + 1 else 1)
+                put("sequence", idx + 1)
                 put("trainNumber", cleanTrainNo)
                 put("trainName", trainName.orEmpty())
                 put("stationCode", stCode)
                 put("stationName", observedStationName.ifBlank { dbHit?.name ?: stCode })
                 put("arrival", observedTimeHHmm)
                 put("departure", "")
-                put("day", 1)
+                put("day", obsSt?.day ?: 1)
               },
             ),
           )

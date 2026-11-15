@@ -230,40 +230,34 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
   var trainSheetIndex = readTrainSheetCompleteness_(ss.getSheetByName('Train'));
   var sheetTrains = searchBetweenFromSheets_(ss, stCoords, fromCode, toCode);
 
-  if (sheetTrains.length) {
-    // যে ট্রেনগুলোর Train শিটে সম্পূর্ণ তথ্য (Source/Dest/Train_Stops/Running_Days) নেই, সেগুলো প্যারালালে সম্পূর্ণ করে আপডেট করি
-    var needEnrich = [];
-    var cache = CacheService.getScriptCache();
-    for (var si = 0; si < sheetTrains.length && needEnrich.length < 6; si++) {
-      var sItem = sheetTrains[si];
-      var tKey = normTrainKey_(sItem.train.number);
-      var meta = trainSheetIndex[tKey];
-      var isIncomplete = !meta || meta.stopsCount <= 2 || meta.routePointsCount <= 2 || !meta.runningDays;
-      if (isIncomplete && !cache.get('enriched_' + tKey)) {
-        needEnrich.push(sItem.train.number);
+  var rrKeys = getRailRadarApiKeys_();
+  var props = PropertiesService.getScriptProperties();
+  var hasExternalApi = rrKeys.length > 0 || !!String(props.getProperty('RAPIDAPI_KEY') || '').trim();
+  var cache = CacheService.getScriptCache();
+  var betweenCacheKey = 'between_v3_' + fromCode + '_' + toCode;
+  var betweenSyncedRecently = !!cache.get(betweenCacheKey);
+
+  var sheetHasGaps = !sheetTrains.length;
+  if (!sheetHasGaps) {
+    for (var chk = 0; chk < sheetTrains.length; chk++) {
+      var chkKey = normTrainKey_(sheetTrains[chk].train.number);
+      var chkMeta = trainSheetIndex[chkKey];
+      if (!sheetTrains[chk].runDays || !chkMeta || chkMeta.stopsCount <= 2 || chkMeta.routePointsCount <= 2) {
+        sheetHasGaps = true;
+        break;
       }
     }
-    if (needEnrich.length && getRailRadarApiKeys_().length) {
-      var enrichedMap = enrichTrainsAndSyncToSheets_(ss, needEnrich, {}, stCoords);
-      for (var sj = 0; sj < sheetTrains.length; sj++) {
-        var tk2 = normTrainKey_(sheetTrains[sj].train.number);
-        var eInfo = enrichedMap[tk2];
-        if (eInfo) {
-          if (eInfo.runningDays) sheetTrains[sj].runDays = eInfo.runningDays;
-          if (eInfo.sourceCode) sheetTrains[sj].train.sourceCode = eInfo.sourceCode;
-          if (eInfo.sourceName) sheetTrains[sj].train.sourceName = eInfo.sourceName;
-          if (eInfo.destCode) sheetTrains[sj].train.destCode = eInfo.destCode;
-          if (eInfo.destName) sheetTrains[sj].train.destName = eInfo.destName;
-          if (eInfo.trainType) sheetTrains[sj].train.type = eInfo.trainType;
-          if (eInfo.zone) sheetTrains[sj].train.zone = eInfo.zone;
-        }
-      }
-    }
-    return { success: true, source: 'sheet', data: { trains: sheetTrains } };
   }
 
-  // শিটে না পেলে RailRadar / External Railway API দিয়ে সার্চ ও প্রতিটি ট্রেনের সব কলাম অটো-সেভ
-  var apiTrains = fetchBetweenFromExternalApi_(fromCode, toCode, stCoords);
+  // শিট ফাঁকা থাকলে, অথবা এখনো এই রুটের RailRadar Sync না হয়ে থাকলে/অসম্পূর্ণ থাকলে লাইভ API থেকে সব ট্রেন + runningDays নিয়ে আসি
+  var apiTrains = [];
+  if (hasExternalApi && (!sheetTrains.length || !betweenSyncedRecently || sheetHasGaps)) {
+    apiTrains = fetchBetweenFromExternalApi_(fromCode, toCode, stCoords);
+    if (apiTrains.length) {
+      cache.put(betweenCacheKey, '1', TRAIN_ENRICH_CACHE_TTL_SECONDS);
+    }
+  }
+
   if (apiTrains.length) {
     try {
       var trainNumsToEnrich = [];
@@ -275,13 +269,15 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
         seedMetaByKey[tk] = tr._meta || {};
         var exMeta = trainSheetIndex[tk];
         if (!exMeta || exMeta.stopsCount <= 2 || exMeta.routePointsCount <= 2 || !exMeta.runningDays) {
-          if (trainNumsToEnrich.length < 15) trainNumsToEnrich.push(tNo);
+          if (trainNumsToEnrich.length < 12 && !cache.get('enriched_' + tk)) {
+            trainNumsToEnrich.push(tNo);
+          }
         }
       }
 
       var enrichedByKey = enrichTrainsAndSyncToSheets_(ss, trainNumsToEnrich, seedMetaByKey, stCoords);
 
-      // যে ট্রেনগুলোর ফুল রুট প্যারালাল লিমিটের বাইরে ছিল, তাদের শুধু মেটাডেটা + runningDays সেভ করি (কখনোই সার্চের BWN->AMP কে ভুয়া সোর্স/ডেস্ট হিসেবে নয়!)
+      // যে ট্রেনগুলোর ফুল রুট প্যারালাল লিমিটের বাইরে ছিল, তাদের মেটাডেটা + runningDays সেভ করি
       var metaOnlyItems = [];
       for (var j = 0; j < apiTrains.length; j++) {
         var tr2 = apiTrains[j];
@@ -327,7 +323,62 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
         upsertTrainSheet_(ss.getSheetByName('Train'), metaOnlyItems, true);
       }
     } catch (_) {}
-    return { success: true, source: 'api', data: { trains: apiTrains } };
+
+    // API + Sheet রেজাল্ট মার্জ করি (API-কে অগ্রাধিকার দিয়ে, এবং শিটে থাকা অতিরিক্ত ভ্যালিড ট্রেনও রেখে)
+    var mergedByKey = {};
+    var mergedList = [];
+    for (var ai = 0; ai < apiTrains.length; ai++) {
+      var ak = normTrainKey_(apiTrains[ai].train.number);
+      if (!mergedByKey[ak]) {
+        mergedByKey[ak] = apiTrains[ai];
+        mergedList.push(apiTrains[ai]);
+      }
+    }
+    for (var si2 = 0; si2 < sheetTrains.length; si2++) {
+      var sk = normTrainKey_(sheetTrains[si2].train.number);
+      if (!mergedByKey[sk]) {
+        mergedByKey[sk] = sheetTrains[si2];
+        mergedList.push(sheetTrains[si2]);
+      }
+    }
+    mergedList.sort(function (a, b) {
+      var ma = parseTimeMins_(a.from.departure);
+      var mb = parseTimeMins_(b.from.departure);
+      if (ma == null) ma = 9999;
+      if (mb == null) mb = 9999;
+      return ma !== mb ? ma - mb : String(a.train.number).localeCompare(String(b.train.number));
+    });
+    return { success: true, source: 'api', data: { trains: mergedList } };
+  }
+
+  if (sheetTrains.length) {
+    var needEnrich = [];
+    for (var si = 0; si < sheetTrains.length && needEnrich.length < 6; si++) {
+      var sItem = sheetTrains[si];
+      var tKey = normTrainKey_(sItem.train.number);
+      var meta = trainSheetIndex[tKey];
+      var isIncomplete = !meta || meta.stopsCount <= 2 || meta.routePointsCount <= 2 || !meta.runningDays;
+      if (isIncomplete && !cache.get('enriched_' + tKey)) {
+        needEnrich.push(sItem.train.number);
+      }
+    }
+    if (needEnrich.length && rrKeys.length) {
+      var enrichedMap = enrichTrainsAndSyncToSheets_(ss, needEnrich, {}, stCoords);
+      for (var sj = 0; sj < sheetTrains.length; sj++) {
+        var tk2 = normTrainKey_(sheetTrains[sj].train.number);
+        var eInfo = enrichedMap[tk2];
+        if (eInfo) {
+          if (eInfo.runningDays) sheetTrains[sj].runDays = eInfo.runningDays;
+          if (eInfo.sourceCode) sheetTrains[sj].train.sourceCode = eInfo.sourceCode;
+          if (eInfo.sourceName) sheetTrains[sj].train.sourceName = eInfo.sourceName;
+          if (eInfo.destCode) sheetTrains[sj].train.destCode = eInfo.destCode;
+          if (eInfo.destName) sheetTrains[sj].train.destName = eInfo.destName;
+          if (eInfo.trainType) sheetTrains[sj].train.type = eInfo.trainType;
+          if (eInfo.zone) sheetTrains[sj].train.zone = eInfo.zone;
+        }
+      }
+    }
+    return { success: true, source: 'sheet', data: { trains: sheetTrains } };
   }
 
   return { success: true, data: { trains: [] } };
@@ -338,12 +389,12 @@ function handleGetSchedule_(sheetId, trainNo) {
   var ss = SpreadsheetApp.openById(sheetId);
   var stMap = readStationMap_(ss.getSheetByName('Station'));
   var info = loadTrainAndRouteFromSheets_(ss, stMap, trainNo);
-  if (info.route.length >= 2) {
+  if (info.route.length >= 2 && !info.needsEnrich) {
     return { success: true, source: 'sheet', trainName: info.trainName, route: info.route };
   }
   var apiLive = fetchLiveAndRouteFromExternalApi_(trainNo, stMap);
-  if (apiLive && apiLive.route && apiLive.route.length) {
-    syncExternalTrainToSheets_(ss, trainNo, apiLive.trainName || info.trainName, apiLive.route, apiLive.meta);
+  if (apiLive && apiLive.route && apiLive.route.length >= 2) {
+    syncExternalTrainToSheets_(ss, trainNo, apiLive.trainName || info.trainName, apiLive.route, apiLive.meta, true);
     return { success: true, source: 'api', trainName: apiLive.trainName || info.trainName, route: apiLive.route };
   }
   return { success: true, source: 'sheet', trainName: info.trainName, route: info.route };
@@ -357,13 +408,17 @@ function handleGetLive_(sheetId, trainNo) {
   var gpsLoc = getFreshGps_(trainNo);
 
   var apiLive = null;
-  if (!gpsLoc || info.route.length < 2) {
+  if (!gpsLoc || info.route.length < 2 || info.needsEnrich) {
     apiLive = fetchLiveAndRouteFromExternalApi_(trainNo, stMap);
     if (apiLive && apiLive.route && apiLive.route.length >= 2 &&
-        (apiLive.route.length > info.route.length || info.route.length < 2)) {
+        (apiLive.route.length >= info.route.length || info.route.length < 2 || info.needsEnrich)) {
       info.route = apiLive.route;
       if (apiLive.trainName) info.trainName = apiLive.trainName;
-      syncExternalTrainToSheets_(ss, trainNo, info.trainName, info.route, apiLive.meta);
+      if (apiLive.meta && apiLive.meta.runningDays) {
+        info.meta = info.meta || {};
+        info.meta.runningDays = apiLive.meta.runningDays;
+      }
+      syncExternalTrainToSheets_(ss, trainNo, info.trainName, info.route, apiLive.meta || info.meta, true);
     }
   }
 
@@ -375,9 +430,9 @@ function handleGetLive_(sheetId, trainNo) {
     source = 'gps';
   } else if (apiLive && apiLive.currentLocation) {
     currentLocation = apiLive.currentLocation;
-    source = 'api';
+    source = apiLive.isEstimated ? 'sheet' : 'api';
   } else if (info.route.length) {
-    currentLocation = estimateLocationFromRoute_(info.route);
+    currentLocation = estimateLocationFromRoute_(info.route, info.meta || (apiLive && apiLive.meta));
     source = 'sheet';
   }
 
@@ -443,14 +498,14 @@ function enrichTrainsAndSyncToSheets_(ss, trainNumbers, seedMetaByKey, stCoords)
     var num = pathToTrain[p];
     var tk = normTrainKey_(num);
     var json = jsonMap[p];
-    cache.put('enriched_' + tk, '1', TRAIN_ENRICH_CACHE_TTL_SECONDS);
     if (!json) continue;
     var d = json.data || json;
     if (!d) continue;
 
     var trMeta = extractTrainMeta_(d, (seedMetaByKey || {})[tk]);
     var route = normalizeExternalRoute_(Array.isArray(d.route) ? d.route : [], stCoords);
-    if (!route.length) continue;
+    if (route.length < 2) continue;
+    cache.put('enriched_' + tk, '1', TRAIN_ENRICH_CACHE_TTL_SECONDS);
 
     var halts = [];
     var day = 1, prevMin = null;
@@ -469,6 +524,8 @@ function enrichTrainsAndSyncToSheets_(ss, trainNumbers, seedMetaByKey, stCoords)
 
       var arrVal = (st.arrival && st.arrival !== '--:--') ? st.arrival : 'None';
       var depVal = (st.departure && st.departure !== '--:--') ? st.departure : 'None';
+      if (ri === 0) arrVal = 'None';
+      if (ri === route.length - 1) depVal = 'None';
       if (st.isHalt === false) {
         var passT = st.scheduledTime && st.scheduledTime !== '--:--' ? st.scheduledTime : (arrVal !== 'None' ? arrVal : depVal);
         if (passT && passT !== 'None') {
@@ -484,7 +541,8 @@ function enrichTrainsAndSyncToSheets_(ss, trainNumbers, seedMetaByKey, stCoords)
         stationName: st.stationName || st.stationCode,
         arrival: arrVal,
         departure: depVal,
-        day: st.day || day
+        day: st.day || day,
+        isHalt: st.isHalt !== false ? 'Y' : 'N'
       });
     }
 
@@ -542,7 +600,7 @@ function enrichTrainsAndSyncToSheets_(ss, trainNumbers, seedMetaByKey, stCoords)
 
   if (allStations.length) upsertStationsSheet_(ss.getSheetByName('Station'), allStations);
   if (allTrainItems.length) upsertTrainSheet_(ss.getSheetByName('Train'), allTrainItems, false);
-  if (allSched.length) upsertScheduleSheet_(ss.getSheetByName('Schedule'), allSched);
+  if (allSched.length) upsertScheduleSheet_(ss.getSheetByName('Schedule'), allSched, true);
   return out;
 }
 
@@ -596,60 +654,9 @@ function searchBetweenFromSheets_(ss, stCoords, fromCode, toCode) {
     : 0;
 
   var byTrain = {};
+  var trainMetaByKey = {};
 
-  // 1) Schedule শিট (শুধুমাত্র কমার্শিয়াল স্টপেজ — 0-মিনিট পাস-থ্রু বাদ দিয়ে)
-  if (schedSheet && schedSheet.getLastRow() >= 2) {
-    var sDisp = schedSheet.getDataRange().getDisplayValues();
-    var shm = headerMap_(sDisp[0]);
-    var cId = shm.scheduleid != null ? shm.scheduleid : 0;
-    var cNo = shm.trainnumber != null ? shm.trainnumber : 1;
-    var cName = shm.trainname != null ? shm.trainname : 2;
-    var cSt = shm.stationcode != null ? shm.stationcode : 3;
-    var cArr = shm.arrival != null ? shm.arrival : 5;
-    var cDep = shm.departure != null ? shm.departure : 6;
-    var cDay = shm.day != null ? shm.day : 7;
-
-    var grouped = {};
-    for (var r = 1; r < sDisp.length; r++) {
-      var stC = String(sDisp[r][cSt] || '').trim().toUpperCase();
-      if (stC !== fromCode && stC !== toCode) continue;
-      var tNoRaw = String(sDisp[r][cNo] || '').replace(/\D/g, '');
-      var tk = normTrainKey_(tNoRaw);
-      if (!tk) continue;
-      var arrStr = normHHmm_(sDisp[r][cArr]);
-      var depStr = normHHmm_(sDisp[r][cDep]);
-      if (!isScheduledStopTimes_(arrStr, depStr)) continue;
-      if (!grouped[tk]) grouped[tk] = { num: tNoRaw, name: '', from: null, to: null };
-      var rowObj = {
-        id: Number(sDisp[r][cId]) || r,
-        name: String(sDisp[r][cName] || '').trim(),
-        arr: arrStr,
-        dep: depStr,
-        day: parseInt(sDisp[r][cDay], 10) || 1,
-        order: r
-      };
-      if (!grouped[tk].name && rowObj.name) grouped[tk].name = rowObj.name;
-      if (stC === fromCode && !grouped[tk].from) grouped[tk].from = rowObj;
-      if (stC === toCode && !grouped[tk].to) grouped[tk].to = rowObj;
-    }
-
-    for (var k in grouped) {
-      var g = grouped[k];
-      if (!g.from || !g.to) continue;
-      var fm = (g.from.day - 1) * 1440 + (parseTimeMins_(g.from.dep || g.from.arr) || 0);
-      var tm = (g.to.day - 1) * 1440 + (parseTimeMins_(g.to.arr || g.to.dep) || 0);
-      if (tm <= fm && !(g.to.id > g.from.id && g.to.day === g.from.day && fm === tm)) continue;
-      byTrain[k] = {
-        train: { number: g.num, name: g.name },
-        from: { departure: g.from.dep || g.from.arr || '--:--', stationCode: fromCode },
-        to: { arrival: g.to.arr || g.to.dep || '--:--', stationCode: toCode },
-        distance: approxDist,
-        runDays: ''
-      };
-    }
-  }
-
-  // 2) Train শিটের নাম, রানিং ডে ও সরাসরি / Train_Stops ম্যাচ
+  // 1) প্রথমে Train শিট পড়ি যাতে প্রতিটি ট্রেনের Train_Stops, Running_Days ও সঠিক সোর্স/ডেস্ট মেলে
   if (trainSheet && trainSheet.getLastRow() >= 2) {
     var tDisp = trainSheet.getDataRange().getDisplayValues();
     var thm = headerMap_(tDisp[0]);
@@ -677,28 +684,34 @@ function searchBetweenFromSheets_(ss, stCoords, fromCode, toCode) {
       var fc = String(row[tcFrom] || '').trim().toUpperCase();
       var tc = String(row[tcTo] || '').trim().toUpperCase();
 
-      if (byTrain[tk2]) {
-        if (!byTrain[tk2].train.name && tName) byTrain[tk2].train.name = tName;
-        if (rDays && !byTrain[tk2].runDays) byTrain[tk2].runDays = rDays;
-        if (tType) byTrain[tk2].train.type = tType;
-        if (tZone) byTrain[tk2].train.zone = tZone;
-        if (fc) byTrain[tk2].train.sourceCode = fc;
-        if (tc) byTrain[tk2].train.destCode = tc;
-        continue;
-      }
-
       var stopsRaw = String(row[tcStops] || '').trim();
       var tokens = stopsRaw ? stopsRaw.split(/[,;|\n\r]+|->|→/) : [];
       var codes = [];
+      var stopSet = {};
       for (var i = 0; i < tokens.length; i++) {
         var cTok = extractStopCode_(tokens[i]);
-        if (cTok) codes.push(cTok);
+        if (cTok) {
+          codes.push(cTok);
+          stopSet[cTok] = true;
+        }
       }
       if (!codes.length && fc && tc) codes = [fc, tc];
       else {
         if (fc && (!codes.length || codes[0] !== fc)) codes.unshift(fc);
         if (tc && (!codes.length || codes[codes.length - 1] !== tc)) codes.push(tc);
       }
+
+      trainMetaByKey[tk2] = {
+        number: num,
+        name: tName,
+        type: tType,
+        zone: tZone,
+        sourceCode: fc,
+        destCode: tc,
+        runDays: rDays,
+        stopSet: codes.length >= 3 ? stopSet : null
+      };
+
       var fIdx = codes.indexOf(fromCode);
       var tIdx = fIdx >= 0 ? codes.indexOf(toCode, fIdx + 1) : -1;
       if (fIdx >= 0 && tIdx > fIdx) {
@@ -713,6 +726,73 @@ function searchBetweenFromSheets_(ss, stCoords, fromCode, toCode) {
           runDays: rDays
         };
       }
+    }
+  }
+
+  // 2) Schedule শিট (Arr == Dep হওয়া আসল ট্রেন যেমন MEMU/প্যাসেঞ্জার বা টার্মিনাল স্টপ বাদ দেব না — শুধু Is_Halt=N বা নন-হল্ট Train_Stops বাদ দেব)
+  if (schedSheet && schedSheet.getLastRow() >= 2) {
+    var sDisp = schedSheet.getDataRange().getDisplayValues();
+    var shm = headerMap_(sDisp[0]);
+    var cId = shm.scheduleid != null ? shm.scheduleid : 0;
+    var cNo = shm.trainnumber != null ? shm.trainnumber : 1;
+    var cName = shm.trainname != null ? shm.trainname : 2;
+    var cSt = shm.stationcode != null ? shm.stationcode : 3;
+    var cArr = shm.arrival != null ? shm.arrival : 5;
+    var cDep = shm.departure != null ? shm.departure : 6;
+    var cDay = shm.day != null ? shm.day : 7;
+    var cHalt = shm.ishalt != null ? shm.ishalt : -1;
+
+    var grouped = {};
+    for (var r = 1; r < sDisp.length; r++) {
+      var stC = String(sDisp[r][cSt] || '').trim().toUpperCase();
+      if (stC !== fromCode && stC !== toCode) continue;
+      var tNoRaw = String(sDisp[r][cNo] || '').replace(/\D/g, '');
+      var tk = normTrainKey_(tNoRaw);
+      if (!tk) continue;
+      var arrStr = normHHmm_(sDisp[r][cArr]);
+      var depStr = normHHmm_(sDisp[r][cDep]);
+      var explicitHalt = parseHaltCell_(cHalt >= 0 ? sDisp[r][cHalt] : '');
+      var metaSet = trainMetaByKey[tk] ? trainMetaByKey[tk].stopSet : null;
+      if (!isBetweenScheduleStop_(arrStr, depStr, explicitHalt, stC, metaSet)) continue;
+
+      if (!grouped[tk]) grouped[tk] = { num: tNoRaw, name: '', from: null, to: null };
+      var rowObj = {
+        id: Number(sDisp[r][cId]) || r,
+        name: String(sDisp[r][cName] || '').trim(),
+        arr: arrStr,
+        dep: depStr,
+        day: parseInt(sDisp[r][cDay], 10) || 1,
+        order: r
+      };
+      if (!grouped[tk].name && rowObj.name) grouped[tk].name = rowObj.name;
+      if (stC === fromCode && !grouped[tk].from) grouped[tk].from = rowObj;
+      if (stC === toCode && !grouped[tk].to) grouped[tk].to = rowObj;
+    }
+
+    for (var k in grouped) {
+      var g = grouped[k];
+      if (!g.from || !g.to) continue;
+      var fm = (g.from.day - 1) * 1440 + (parseTimeMins_(g.from.dep || g.from.arr) || 0);
+      var tm = (g.to.day - 1) * 1440 + (parseTimeMins_(g.to.arr || g.to.dep) || 0);
+      if (tm <= fm && !(g.to.id > g.from.id && g.to.day === g.from.day && fm === tm)) continue;
+      var meta2 = trainMetaByKey[k] || {};
+      var exItem = byTrain[k];
+      var depOut = g.from.dep || g.from.arr || (exItem ? exItem.from.departure : '--:--') || '--:--';
+      var arrOut = g.to.arr || g.to.dep || (exItem ? exItem.to.arrival : '--:--') || '--:--';
+      byTrain[k] = {
+        train: {
+          number: g.num,
+          name: g.name || meta2.name || '',
+          type: meta2.type || '',
+          zone: meta2.zone || '',
+          sourceCode: meta2.sourceCode || '',
+          destCode: meta2.destCode || ''
+        },
+        from: { departure: depOut, stationCode: fromCode },
+        to: { arrival: arrOut, stationCode: toCode },
+        distance: (exItem && exItem.distance) || approxDist,
+        runDays: meta2.runDays || (exItem ? exItem.runDays : '') || ''
+      };
     }
   }
 
@@ -732,6 +812,9 @@ function loadTrainAndRouteFromSheets_(ss, stMap, trainNo) {
   var targetKey = normTrainKey_(trainNo);
   var trainName = '';
   var schedRows = [];
+  var trainMeta = null;
+  var trainStopsSet = {};
+  var trainStopsCount = 0;
 
   var trainSheet = ss.getSheetByName('Train');
   if (trainSheet && trainSheet.getLastRow() >= 2) {
@@ -739,9 +822,38 @@ function loadTrainAndRouteFromSheets_(ss, stMap, trainNo) {
     var thm = headerMap_(tDisp[0]);
     var tcNum = thm.trainnumber != null ? thm.trainnumber : 0;
     var tcName = thm.trainname != null ? thm.trainname : 1;
+    var tcFrom = thm.fromstationcode != null ? thm.fromstationcode : 4;
+    var tcDep = thm.departure != null ? thm.departure : 6;
+    var tcTo = thm.tostationcode != null ? thm.tostationcode : 7;
+    var tcArr = thm.arrival != null ? thm.arrival : 9;
+    var tcPts = thm.routepointscount != null ? thm.routepointscount : 20;
+    var tcStops = thm.trainstops != null ? thm.trainstops : 21;
+    var tcDays = thm.runningdays != null ? thm.runningdays : (thm.rundays != null ? thm.rundays : -1);
+
     for (var r = 1; r < tDisp.length; r++) {
       if (normTrainKey_(tDisp[r][tcNum]) === targetKey) {
         trainName = String(tDisp[r][tcName] || '').trim();
+        var sRaw = String(tDisp[r][tcStops] || '').trim();
+        if (sRaw) {
+          var toks = sRaw.split(/[,;|\n\r]+|->|→/);
+          for (var ti = 0; ti < toks.length; ti++) {
+            var sc = extractStopCode_(toks[ti]);
+            if (sc) {
+              trainStopsSet[sc] = true;
+              trainStopsCount++;
+            }
+          }
+        }
+        trainMeta = {
+          trainName: trainName,
+          sourceCode: String(tDisp[r][tcFrom] || '').trim().toUpperCase(),
+          originDeparture: normHHmm_(tDisp[r][tcDep]) || '',
+          destCode: String(tDisp[r][tcTo] || '').trim().toUpperCase(),
+          destArrival: normHHmm_(tDisp[r][tcArr]) || '',
+          routePointsCount: parseInt(tDisp[r][tcPts], 10) || 0,
+          trainStops: sRaw,
+          runningDays: tcDays >= 0 ? normalizeRunDays_(tDisp[r][tcDays]) : ''
+        };
         break;
       }
     }
@@ -759,6 +871,7 @@ function loadTrainAndRouteFromSheets_(ss, stMap, trainNo) {
     var cArr = shm.arrival != null ? shm.arrival : 5;
     var cDep = shm.departure != null ? shm.departure : 6;
     var cDay = shm.day != null ? shm.day : 7;
+    var cHalt = shm.ishalt != null ? shm.ishalt : -1;
 
     for (var r2 = 1; r2 < sDisp.length; r2++) {
       if (normTrainKey_(sDisp[r2][cNo]) !== targetKey) continue;
@@ -766,6 +879,7 @@ function loadTrainAndRouteFromSheets_(ss, stMap, trainNo) {
       var code = String(sDisp[r2][cSt] || '').trim().toUpperCase();
       var arr = normHHmm_(sDisp[r2][cArr]);
       var dep = normHHmm_(sDisp[r2][cDep]);
+      var expHalt = parseHaltCell_(cHalt >= 0 ? sDisp[r2][cHalt] : '');
       schedRows.push({
         id: Number(sDisp[r2][cId]) || r2,
         code: code,
@@ -774,27 +888,59 @@ function loadTrainAndRouteFromSheets_(ss, stMap, trainNo) {
         dep: dep,
         day: parseInt(sDisp[r2][cDay], 10) || 1,
         order: r2,
-        isStop: isScheduledStopTimes_(arr, dep)
+        explicitHalt: expHalt
       });
     }
   }
 
+  // সোর্স স্টেশনে কখনো নষ্ট Arrival (যেমন ১৬:৪৬ > ০৬:৫০+৬০) থাকলে Departure দিয়ে সর্ট করি
+  var rowSortMin = function (row) {
+    var am = parseTimeMins_(row.arr);
+    var dm = parseTimeMins_(row.dep);
+    if (am != null && dm != null && row.day <= 1 && am > dm + 60) return dm;
+    return am != null ? am : (dm != null ? dm : 99999);
+  };
   schedRows.sort(function (a, b) {
     if (a.day !== b.day) return a.day - b.day;
-    var ma = parseTimeMins_(a.arr || a.dep);
-    var mb = parseTimeMins_(b.arr || b.dep);
-    if (ma == null) ma = 99999;
-    if (mb == null) mb = 99999;
+    var ma = rowSortMin(a);
+    var mb = rowSortMin(b);
     if (ma !== mb) return ma - mb;
     return a.id !== b.id ? a.id - b.id : a.order - b.order;
   });
 
-  // ট্র্যাকিং টাইমলাইনে সব স্টেশন রাখি, তবে যেগুলোতে থামবে না সেগুলো isHalt: false হিসেবে চিহ্নিত করি
+  var hasDiffArrDep = false;
+  var hasCorruptedTimes = false;
+  for (var hi = 0; hi < schedRows.length; hi++) {
+    var rChk = schedRows[hi];
+    if (rChk.arr && rChk.dep && rChk.arr !== rChk.dep) {
+      hasDiffArrDep = true;
+      var amChk = parseTimeMins_(rChk.arr);
+      var dmChk = parseTimeMins_(rChk.dep);
+      if (hi === 0 && amChk != null && dmChk != null && amChk > dmChk + 60) {
+        hasCorruptedTimes = true;
+      }
+    }
+  }
+
+  // টার্মিনাল স্টেশন (প্রথম ও শেষ) সবসময় থামবে; মাঝের স্টেশন কেবল Is_Halt=N / Train_Stops বাদ পড়লে / ভিন্ন Arr-Dep রুটে Arr==Dep হলে নন-হল্ট হবে
   var route = [];
   for (var j = 0; j < schedRows.length; j++) {
     var sr = schedRows[j];
     var stGeo = stMap[sr.code] || {};
     var sched = sr.arr || sr.dep || '--:--';
+    var isTerminal = (j === 0 || j === schedRows.length - 1);
+    var isHaltVal = true;
+    if (!isTerminal) {
+      if (sr.explicitHalt !== null) {
+        isHaltVal = sr.explicitHalt;
+      } else if (trainStopsCount >= 3) {
+        isHaltVal = !!trainStopsSet[sr.code];
+      } else if (sr.arr && sr.dep && sr.arr === sr.dep && hasDiffArrDep) {
+        isHaltVal = false;
+      } else if (!sr.arr && !sr.dep) {
+        isHaltVal = false;
+      }
+    }
     route.push({
       stationCode: sr.code,
       stationName: sr.name || stGeo.name || sr.code,
@@ -802,13 +948,20 @@ function loadTrainAndRouteFromSheets_(ss, stMap, trainNo) {
       lat: stGeo.lat != null ? stGeo.lat : null,
       lon: stGeo.lon != null ? stGeo.lon : null,
       scheduledTime: sched,
-      arrival: sr.arr || sched,
+      arrival: (j === 0 && sr.dep) ? sr.dep : (sr.arr || sched),
       departure: sr.dep || sched,
-      isHalt: sr.isStop
+      day: sr.day,
+      isHalt: isHaltVal
     });
   }
 
-  return { trainName: trainName, route: route };
+  var needsEnrich = route.length < 2 ||
+    !trainMeta ||
+    !trainMeta.runningDays ||
+    !trainMeta.destCode ||
+    hasCorruptedTimes;
+
+  return { trainName: trainName, route: route, meta: trainMeta, needsEnrich: needsEnrich };
 }
 
 function readStationMap_(sheet) {
@@ -852,11 +1005,12 @@ function extractTrainMeta_(obj, seed) {
 
   var originDep = normHHmm_(tr.departure || tr.departureTime || (typeof srcObj === 'object' ? srcObj.departure : '')) || s.originDeparture || '';
   var destArr = normHHmm_(tr.arrival || tr.arrivalTime || (typeof dstObj === 'object' ? dstObj.arrival : '')) || s.destArrival || '';
-  var totalDist = Number(tr.distanceKm || tr.distance || (obj && obj.distanceKm) || s.totalDistanceKm) || 0;
-  var durTotalMins = Number(tr.durationMinutes || tr.travelTimeMinutes || tr.duration || (obj && obj.durationMinutes) || s.durationMinutesTotal) || 0;
+  var totalDist = Number(tr.distanceKm || tr.distance || (obj && obj.distanceKm) || (obj && obj.distance) || s.totalDistanceKm) || 0;
+  var durTotalMins = Number(tr.durationMinutes || tr.travelTimeMinutes || tr.duration || (obj && (obj.durationMinutes || obj.travelTimeMinutes)) || s.durationMinutesTotal) || 0;
   var returnTrain = String(tr.returnTrain || tr.returnTrainNumber || (obj && obj.returnTrain) || s.returnTrain || '').replace(/\D/g, '');
   var runDaysRaw = tr.runningDays || tr.runDays || tr.daysOfWeek || tr.days || (obj && (obj.runningDays || obj.runDays || obj.days)) || s.runningDays || '';
-  var runningDays = normalizeRunDays_(runDaysRaw);
+  var bitmap = tr.runningDaysBitmap != null ? tr.runningDaysBitmap : (obj && obj.runningDaysBitmap != null ? obj.runningDaysBitmap : s.runningDaysBitmap);
+  var runningDays = normalizeRunDays_(runDaysRaw, bitmap);
 
   var classesObj = tr.classes || tr.availableClasses || tr.coaches || (obj && (obj.classes || obj.availableClasses)) || s.classesRaw || null;
   var clsFlags = parseCoachClassFlags_(classesObj);
@@ -1054,11 +1208,17 @@ function fetchBetweenFromExternalApi_(fromCode, toCode, stCoords) {
 }
 
 function fetchLiveAndRouteFromExternalApi_(trainNo, stMap) {
-  // পূর্ণ রুটের সাথে নন-স্টপ পাস-থ্রু স্টেশনগুলোও (isHalt: false) রাখার জন্য haltsOnly ছাড়া কল করি
+  // পূর্ণ রুটের সাথে স্টেশন কোঅর্ডিনেট ও নন-স্টপ পাস-থ্রু স্টেশনগুলো (isHalt: false) পাওয়ার জন্য includeCoordinates=true সহ কল করি
   var livePaths = [
-    '/v1/trains/' + encodeURIComponent(trainNo) + '/live',
-    '/v1/trains/' + encodeURIComponent(trainNo)
+    '/v1/trains/' + encodeURIComponent(trainNo) + '/live?includeCoordinates=true',
+    '/v1/trains/' + encodeURIComponent(trainNo) + '?includeCoordinates=true'
   ];
+
+  var bestMeta = null;
+  var bestName = '';
+  var bestRoute = [];
+  var bestLoc = null;
+  var isEstimated = false;
 
   for (var idx = 0; idx < livePaths.length; idx++) {
     var rrJson = fetchRailRadarJson_(livePaths[idx]);
@@ -1066,29 +1226,44 @@ function fetchLiveAndRouteFromExternalApi_(trainNo, stMap) {
     var d = rrJson.data || rrJson;
     if (!d) continue;
 
-    var meta = extractTrainMeta_(d);
-    var trainName = meta.trainName;
+    var meta = extractTrainMeta_(d, bestMeta);
+    bestMeta = meta;
+    if (meta.trainName && !bestName) bestName = meta.trainName;
     var rawRoute = Array.isArray(d.route) ? d.route : [];
     var route = normalizeExternalRoute_(rawRoute, stMap);
-    if (!route.length && idx === 0) {
-      var schedJson = fetchRailRadarJson_('/v1/trains/' + encodeURIComponent(trainNo));
-      if (schedJson && schedJson.data) {
-        var schedMeta = extractTrainMeta_(schedJson.data, meta);
-        meta = schedMeta;
-        if (!trainName) trainName = schedMeta.trainName;
-        route = normalizeExternalRoute_(schedJson.data.route || [], stMap);
+    if (route.length > bestRoute.length) bestRoute = route;
+
+    if (idx === 0) {
+      // যদি /live রুট না দেয় (যেমন আজকে ট্রেন না চললে), তবুও /v1/trains/{trainNo} থেকে পূর্ণ স্ট্যাটিক রুট নিই
+      if (bestRoute.length < 2) {
+        var schedJson = fetchRailRadarJson_('/v1/trains/' + encodeURIComponent(trainNo) + '?includeCoordinates=true');
+        if (schedJson) {
+          var sd0 = schedJson.data || schedJson;
+          var schedMeta = extractTrainMeta_(sd0, bestMeta);
+          bestMeta = schedMeta;
+          if (!bestName && schedMeta.trainName) bestName = schedMeta.trainName;
+          var sRoute = normalizeExternalRoute_(Array.isArray(sd0.route) ? sd0.route : [], stMap);
+          if (sRoute.length > bestRoute.length) bestRoute = sRoute;
+        }
       }
+      bestLoc = resolveRailRadarCurrentLocation_(d, bestRoute, stMap, bestMeta);
     }
 
-    var curLoc = resolveRailRadarCurrentLocation_(d, route, stMap);
-    if (route.length || curLoc) {
-      return {
-        trainName: trainName,
-        meta: meta,
-        currentLocation: curLoc,
-        route: route
-      };
+    if (bestRoute.length >= 2) break;
+  }
+
+  if (bestRoute.length || bestLoc) {
+    if (!bestLoc && bestRoute.length) {
+      bestLoc = estimateLocationFromRoute_(bestRoute, bestMeta);
+      isEstimated = true;
     }
+    return {
+      trainName: bestName,
+      meta: bestMeta,
+      currentLocation: bestLoc,
+      route: bestRoute,
+      isEstimated: isEstimated
+    };
   }
 
   // RapidAPI fallback
@@ -1107,11 +1282,13 @@ function fetchLiveAndRouteFromExternalApi_(trainNo, stMap) {
         var sd = sj.data || sj;
         var rArr = normalizeExternalRoute_(sd.route || [], stMap);
         if (rArr.length) {
+          var rMeta = extractTrainMeta_(sd);
           return {
             trainName: String(sd.trainName || '').trim(),
-            meta: extractTrainMeta_(sd),
-            currentLocation: null,
-            route: rArr
+            meta: rMeta,
+            currentLocation: estimateLocationFromRoute_(rArr, rMeta),
+            route: rArr,
+            isEstimated: true
           };
         }
       }
@@ -1121,30 +1298,67 @@ function fetchLiveAndRouteFromExternalApi_(trainNo, stMap) {
   return null;
 }
 
-function resolveRailRadarCurrentLocation_(d, route, stMap) {
-  if (d.currentLocation && typeof d.currentLocation === 'object') {
+function resolveRailRadarCurrentLocation_(d, route, stMap, meta) {
+  var nextHaltObj = (d && d.nextHalt && typeof d.nextHalt === 'object') ? d.nextHalt : null;
+  var nextHaltName = nextHaltObj ? String(nextHaltObj.stationName || nextHaltObj.stationCode || '').trim() : '';
+
+  if (d && d.currentLocation && typeof d.currentLocation === 'object') {
     var cl = d.currentLocation;
     var clCode = String(cl.stationCode || cl.code || '').trim().toUpperCase();
     var geo = clCode ? (stMap[clCode] || {}) : {};
-    var lat = (cl.lat != null && isFinite(Number(cl.lat))) ? Number(cl.lat) : (cl.latitude != null ? Number(cl.latitude) : geo.lat);
-    var lon = (cl.lon != null && isFinite(Number(cl.lon))) ? Number(cl.lon) : (cl.longitude != null ? Number(cl.longitude) : geo.lon);
+    var clCoords = (cl.coordinates && typeof cl.coordinates === 'object') ? cl.coordinates : null;
+    var rawLat = clCoords ? clCoords.lat : (cl.lat != null ? cl.lat : (cl.latitude != null ? cl.latitude : geo.lat));
+    var rawLon = clCoords ? (clCoords.lng != null ? clCoords.lng : clCoords.lon) : (cl.lng != null ? cl.lng : (cl.lon != null ? cl.lon : (cl.longitude != null ? cl.longitude : geo.lon)));
+    var lat = rawLat != null ? Number(rawLat) : null;
+    var lon = rawLon != null ? Number(rawLon) : null;
+
+    var curRouteIdx = -1;
+    if (clCode && route.length) {
+      for (var ri = 0; ri < route.length; ri++) {
+        if (route[ri].stationCode === clCode) { curRouteIdx = ri; break; }
+      }
+    }
+    var stMatch = curRouteIdx >= 0 ? route[curRouteIdx] : null;
+    var nxtMatch = (curRouteIdx >= 0 && curRouteIdx + 1 < route.length) ? route[curRouteIdx + 1] : null;
+    if (lat == null && stMatch) lat = stMatch.lat;
+    if (lon == null && stMatch) lon = stMatch.lon;
+
+    var outNext = String(cl.nextStationName || nextHaltName || (nxtMatch ? (nxtMatch.stationName || nxtMatch.stationCode) : '') || '').trim() || null;
+    if ((lat != null && isFinite(lat) && lon != null && isFinite(lon)) || clCode) {
+      return {
+        stationCode: clCode || (stMatch && stMatch.stationCode) || null,
+        stationName: String(cl.stationName || cl.name || geo.name || (stMatch && stMatch.stationName) || clCode || ''),
+        sequence: cl.sequence || (stMatch ? stMatch.sequence : null),
+        lat: (lat != null && isFinite(lat)) ? lat : null,
+        lon: (lon != null && isFinite(lon)) ? lon : null,
+        speedKmh: Number(cl.speedKmh || cl.speed) || 0,
+        bearingDegrees: cl.bearingDegrees != null ? Number(cl.bearingDegrees) : null,
+        segmentProgress: Number(cl.segmentProgress) || (cl.status === 'departed' ? 0.35 : 0),
+        nextStationName: outNext
+      };
+    }
+  }
+
+  var liveStatus = String((d && d.status) || '').toLowerCase();
+  if (liveStatus === 'completed' && route.length) {
+    var lastSt = route[route.length - 1];
     return {
-      stationCode: clCode || null,
-      stationName: String(cl.stationName || cl.name || geo.name || clCode || ''),
-      sequence: cl.sequence || null,
-      lat: (lat != null && isFinite(lat)) ? lat : null,
-      lon: (lon != null && isFinite(lon)) ? lon : null,
-      speedKmh: Number(cl.speedKmh || cl.speed) || 0,
-      bearingDegrees: cl.bearingDegrees != null ? Number(cl.bearingDegrees) : null,
-      segmentProgress: Number(cl.segmentProgress) || 0,
-      nextStationName: cl.nextStationName || null
+      stationCode: lastSt.stationCode || null,
+      stationName: lastSt.stationName || lastSt.stationCode || '',
+      sequence: lastSt.sequence || route.length,
+      lat: lastSt.lat,
+      lon: lastSt.lon,
+      speedKmh: 0,
+      bearingDegrees: null,
+      segmentProgress: 0,
+      nextStationName: null
     };
   }
 
-  var curCode = String(d.currentStation || d.currentStationCode || '').trim().toUpperCase();
-  if (!curCode) {
+  var curCode = String((d && (d.currentStation || d.currentStationCode)) || '').trim().toUpperCase();
+  if (!curCode && route.length) {
     for (var i = route.length - 1; i >= 0; i--) {
-      if (route[i]._status === 'arrived' || route[i]._status === 'departed') {
+      if (route[i]._status === 'arrived' || route[i]._status === 'departed' || route[i]._status === 'passed') {
         curCode = route[i].stationCode;
         break;
       }
@@ -1169,32 +1383,59 @@ function resolveRailRadarCurrentLocation_(d, route, stMap) {
     sequence: stHit ? stHit.sequence : 1,
     lat: finalLat,
     lon: finalLon,
-    speedKmh: 0,
+    speedKmh: (stHit && stHit._status === 'departed') ? 55 : 0,
     bearingDegrees: null,
     segmentProgress: (stHit && stHit._status === 'departed') ? 0.35 : 0,
-    nextStationName: nextHit ? (nextHit.stationName || nextHit.stationCode) : null
+    nextStationName: nextHaltName || (nextHit ? (nextHit.stationName || nextHit.stationCode) : null)
   };
 }
 
 function normalizeExternalRoute_(rawRoute, stMap) {
   stMap = stMap || {};
   var out = [];
+  if (!Array.isArray(rawRoute) || !rawRoute.length) return out;
+
+  // রুটটিতে আসলেই ভিন্ন Arr/Dep টাইম আছে নাকি সব স্টেশনে একই ফরম্যাট (যেমন MEMU) তা আগে দেখে নিই
+  var hasDifferentArrDep = false;
+  for (var p = 0; p < rawRoute.length; p++) {
+    var ps = rawRoute[p] || {};
+    var pArr = normHHmm_(ps.scheduledArrival || ps.arrival || ps.std_arr || ps.actualArrival);
+    var pDep = normHHmm_(ps.scheduledDeparture || ps.departure || ps.std_dep || ps.actualDeparture);
+    if (pArr && pDep && pArr !== pDep) {
+      hasDifferentArrDep = true;
+      break;
+    }
+  }
+
   for (var i = 0; i < rawRoute.length; i++) {
-    var st = rawRoute[i];
-    var code = String(st.stationCode || st.station_code || st.code || '').trim().toUpperCase();
+    var st = rawRoute[i] || {};
+    var stObj = (st.station && typeof st.station === 'object') ? st.station : {};
+    var code = String(st.stationCode || st.station_code || st.code || stObj.code || stObj.stationCode || '').trim().toUpperCase();
     var geo = code ? (stMap[code] || {}) : {};
-    var name = String(st.stationName || st.station_name || st.name || geo.name || code).trim();
+    var name = String(st.stationName || st.station_name || st.name || stObj.name || stObj.stationName || geo.name || code).trim();
     if (!code && !name) continue;
-    var arr = normHHmm_(st.scheduledArrival || st.arrival || st.std_arr || st.actualArrival) || null;
-    var dep = normHHmm_(st.scheduledDeparture || st.departure || st.std_dep || st.actualDeparture) || null;
-    var explicitlyNonHalt = (st.isHalt === false || st.isHalt === 'false' || st.isHalt === 0);
-    var midPassThrough = (arr && dep && arr === dep && rawRoute.length > 2 && i > 0 && i < rawRoute.length - 1);
-    var isHalt = !explicitlyNonHalt && !midPassThrough;
-    var sched = normHHmm_(st.scheduledTime) || dep || arr || '--:--';
-    var lat = (st.lat != null && isFinite(Number(st.lat))) ? Number(st.lat)
-      : ((st.latitude != null && isFinite(Number(st.latitude))) ? Number(st.latitude) : geo.lat);
-    var lon = (st.lon != null && isFinite(Number(st.lon))) ? Number(st.lon)
-      : ((st.longitude != null && isFinite(Number(st.longitude))) ? Number(st.longitude) : geo.lon);
+
+    var arr = normHHmm_(st.scheduledArrival || st.arrival || st.std_arr || st.actualArrival || st.eta) || null;
+    var dep = normHHmm_(st.scheduledDeparture || st.departure || st.std_dep || st.actualDeparture || st.etd) || null;
+    var isTerminal = (i === 0 || i === rawRoute.length - 1);
+    var isHalt = true;
+    if (!isTerminal) {
+      if (typeof st.isHalt === 'boolean') {
+        isHalt = st.isHalt;
+      } else if (st.isHalt === 'false' || st.isHalt === 0) {
+        isHalt = false;
+      } else if (arr && dep && arr === dep && hasDifferentArrDep) {
+        isHalt = false;
+      }
+    }
+
+    var sched = normHHmm_(st.scheduledTime) || (i === 0 ? (dep || arr) : (arr || dep)) || '--:--';
+    var rawLat = st.lat != null ? st.lat : (st.latitude != null ? st.latitude : (stObj.lat != null ? stObj.lat : (stObj.latitude != null ? stObj.latitude : geo.lat)));
+    var rawLon = st.lng != null ? st.lng : (st.lon != null ? st.lon : (st.longitude != null ? st.longitude : (stObj.lng != null ? stObj.lng : (stObj.lon != null ? stObj.lon : (stObj.longitude != null ? stObj.longitude : geo.lon)))));
+    var lat = rawLat != null && rawLat !== '' ? Number(rawLat) : null;
+    var lon = rawLon != null && rawLon !== '' ? Number(rawLon) : null;
+    var dayVal = parseInt(st.day || st.arrivalDay || st.departureDay, 10) || null;
+
     out.push({
       stationCode: code,
       stationName: name,
@@ -1202,17 +1443,21 @@ function normalizeExternalRoute_(rawRoute, stMap) {
       lat: (lat != null && isFinite(lat)) ? lat : null,
       lon: (lon != null && isFinite(lon)) ? lon : null,
       scheduledTime: sched,
-      arrival: arr || sched,
+      arrival: (i === 0 && dep) ? dep : (arr || sched),
       departure: dep || sched,
-      day: parseInt(st.day, 10) || null,
+      day: dayVal,
       isHalt: isHalt,
       _status: String(st.status || '').toLowerCase()
     });
   }
+  if (out.length) {
+    out[0].isHalt = true;
+    out[out.length - 1].isHalt = true;
+  }
   return out;
 }
 
-function syncExternalTrainToSheets_(ss, trainNo, trainName, route, meta) {
+function syncExternalTrainToSheets_(ss, trainNo, trainName, route, meta, forceTimeSync) {
   if (!route || route.length < 2) return;
   try {
     var m = meta || {};
@@ -1230,11 +1475,13 @@ function syncExternalTrainToSheets_(ss, trainNo, trainName, route, meta) {
         if (s.lat != null && s.lon != null) { stObj.latitude = s.lat; stObj.longitude = s.lon; }
         stations.push(stObj);
       }
-      var minNow = parseTimeMins_(s.arrival || s.scheduledTime || s.departure);
+      var minNow = parseTimeMins_(i === 0 ? (s.departure || s.scheduledTime) : (s.arrival || s.scheduledTime || s.departure));
       if (prevMin != null && minNow != null && minNow + 120 < prevMin) day++;
       if (minNow != null) prevMin = minNow;
       var arrVal = (s.arrival && s.arrival !== '--:--') ? s.arrival : 'None';
       var depVal = (s.departure && s.departure !== '--:--') ? s.departure : 'None';
+      if (i === 0) arrVal = 'None';
+      if (i === route.length - 1) depVal = 'None';
       if (s.isHalt === false) {
         var passT = s.scheduledTime && s.scheduledTime !== '--:--' ? s.scheduledTime : (arrVal !== 'None' ? arrVal : depVal);
         if (passT && passT !== 'None') { arrVal = passT; depVal = passT; }
@@ -1247,7 +1494,8 @@ function syncExternalTrainToSheets_(ss, trainNo, trainName, route, meta) {
         stationName: s.stationName || s.stationCode,
         arrival: arrVal,
         departure: depVal,
-        day: s.day || day
+        day: s.day || day,
+        isHalt: s.isHalt !== false ? 'Y' : 'N'
       });
     }
     var depOrigin = firstHalt.departure || firstHalt.scheduledTime || m.originDeparture || '';
@@ -1280,7 +1528,7 @@ function syncExternalTrainToSheets_(ss, trainNo, trainName, route, meta) {
       trainStops: stopsArr.join(', '),
       runningDays: m.runningDays || ''
     }], false);
-    upsertScheduleSheet_(ss.getSheetByName('Schedule'), sched);
+    upsertScheduleSheet_(ss.getSheetByName('Schedule'), sched, !!forceTimeSync);
   } catch (_) {}
 }
 
@@ -1307,19 +1555,114 @@ function buildLocationFromGps_(gps, route) {
   };
 }
 
-function estimateLocationFromRoute_(route) {
-  if (!route.length) return null;
-  var cur = route[0];
-  var nxt = route[1] || null;
+function estimateLocationFromRoute_(route, meta) {
+  if (!route || !route.length) return null;
+  var istNow = new Date(Date.now() + 19800000);
+  var nowMin = istNow.getUTCHours() * 60 + istNow.getUTCMinutes();
+  var nowDow = istNow.getUTCDay();
+
+  var absMins = [];
+  var curDay = 1;
+  var prevMod = null;
+  for (var i = 0; i < route.length; i++) {
+    var st = route[i];
+    var m = (i === 0)
+      ? (parseTimeMins_(st.departure) != null ? parseTimeMins_(st.departure) : (parseTimeMins_(st.scheduledTime) != null ? parseTimeMins_(st.scheduledTime) : parseTimeMins_(st.arrival)))
+      : (parseTimeMins_(st.arrival) != null ? parseTimeMins_(st.arrival) : (parseTimeMins_(st.scheduledTime) != null ? parseTimeMins_(st.scheduledTime) : parseTimeMins_(st.departure)));
+    if (st.day != null && Number(st.day) >= 1) {
+      curDay = Number(st.day);
+    } else if (prevMod != null && m != null && m + 120 < prevMod) {
+      curDay++;
+    }
+    if (m != null) prevMod = m;
+    absMins.push(m != null ? ((curDay - 1) * 1440 + m) : null);
+  }
+
+  var firstAbs = absMins[0];
+  var lastAbs = absMins[absMins.length - 1];
+  for (var fi = 0; fi < absMins.length && firstAbs == null; fi++) firstAbs = absMins[fi];
+  for (var li = absMins.length - 1; li >= 0 && lastAbs == null; li--) lastAbs = absMins[li];
+
+  var allowedDays = parseRunningDaysSet_(meta && meta.runningDays);
+  var activeIdx = 0;
+  var segFrac = 0;
+  var isRunningNow = false;
+
+  if (firstAbs != null && lastAbs != null && lastAbs > firstAbs && route.length >= 2) {
+    var maxDays = Math.ceil((lastAbs + 120) / 1440);
+    var targetMin = null;
+    for (var dayOff = 0; dayOff <= maxDays; dayOff++) {
+      var cand = nowMin + dayOff * 1440;
+      if (cand >= firstAbs && cand <= lastAbs) {
+        if (allowedDays) {
+          var startDow = (nowDow - dayOff + 70) % 7;
+          if (!allowedDays[startDow]) continue;
+        }
+        targetMin = cand;
+        break;
+      }
+    }
+    if (targetMin != null) {
+      isRunningNow = true;
+      var lastValidIdx = 0;
+      for (var j = 0; j < absMins.length; j++) {
+        if (absMins[j] == null) continue;
+        if (absMins[j] <= targetMin) {
+          lastValidIdx = j;
+        } else {
+          var prevT = absMins[lastValidIdx];
+          var nextT = absMins[j];
+          activeIdx = lastValidIdx;
+          if (prevT != null && nextT > prevT) {
+            segFrac = Math.min(1, Math.max(0, (targetMin - prevT) / (nextT - prevT)));
+          }
+          break;
+        }
+      }
+      if (targetMin >= lastAbs) {
+        activeIdx = route.length - 1;
+        segFrac = 0;
+      }
+    }
+  }
+
+  var cur = route[activeIdx];
+  var nxt = route[activeIdx + 1] || null;
+  var lat = cur.lat;
+  var lon = cur.lon;
+  var bearing = null;
+  var estSpeed = 0;
+  if (isRunningNow && cur.lat != null && cur.lon != null && nxt && nxt.lat != null && nxt.lon != null) {
+    lat = cur.lat + (nxt.lat - cur.lat) * segFrac;
+    lon = cur.lon + (nxt.lon - cur.lon) * segFrac;
+    var dLat = nxt.lat - cur.lat;
+    var dLon = nxt.lon - cur.lon;
+    if (Math.abs(dLat) > 1e-6 || Math.abs(dLon) > 1e-6) {
+      var toRad = Math.PI / 180;
+      var y = Math.sin(dLon * toRad) * Math.cos(nxt.lat * toRad);
+      var x = Math.cos(cur.lat * toRad) * Math.sin(nxt.lat * toRad) -
+        Math.sin(cur.lat * toRad) * Math.cos(nxt.lat * toRad) * Math.cos(dLon * toRad);
+      bearing = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+    }
+    var segDist = haversineKm_(cur.lat, cur.lon, nxt.lat, nxt.lon) * 1.2;
+    var tA = absMins[activeIdx];
+    var tB = absMins[activeIdx + 1];
+    if (tA != null && tB != null && tB > tA && segDist > 0.2) {
+      estSpeed = Math.min(130, Math.max(20, Math.round((segDist / ((tB - tA) / 60)) * 10) / 10));
+    } else if (segDist > 0.2) {
+      estSpeed = 48;
+    }
+  }
+
   return {
     stationCode: cur.stationCode || null,
     stationName: cur.stationName || cur.stationCode || '',
-    sequence: 1,
-    lat: cur.lat,
-    lon: cur.lon,
-    speedKmh: 0,
-    bearingDegrees: null,
-    segmentProgress: 0,
+    sequence: cur.sequence || (activeIdx + 1),
+    lat: lat,
+    lon: lon,
+    speedKmh: estSpeed,
+    bearingDegrees: bearing,
+    segmentProgress: segFrac,
     nextStationName: nxt ? (nxt.stationName || nxt.stationCode) : null
   };
 }
@@ -1354,7 +1697,7 @@ function handleSyncSheetData_(data) {
     }
 
     if (Array.isArray(data.schedule) && data.schedule.length) {
-      stats.scheduleUpserted = upsertScheduleSheet_(ss.getSheetByName('Schedule'), data.schedule);
+      stats.scheduleUpserted = upsertScheduleSheet_(ss.getSheetByName('Schedule'), data.schedule, !!data.authoritativeSync);
     }
 
     return { success: true, stats: stats };
@@ -1612,23 +1955,34 @@ function upsertTrainSheet_(sheet, trainItems, onlyInsertIfMissingOrFillBlank) {
   return { updated: updated, added: added };
 }
 
-function upsertScheduleSheet_(sheet, schedItems) {
+function upsertScheduleSheet_(sheet, schedItems, forceTimeSync) {
   if (!sheet || !schedItems.length) return 0;
   var lastRow = sheet.getLastRow();
-  var lastCol = Math.max(sheet.getLastColumn(), 8);
+  var lastCol = Math.max(sheet.getLastColumn(), 9);
   var range = lastRow >= 1 ? sheet.getRange(1, 1, lastRow, lastCol) : null;
   var values = range ? range.getValues() : [];
   var disp = range ? range.getDisplayValues() : [];
 
   if (!values.length) {
-    var header = [['Schedule_ID', 'Train_Number', 'Train_Name', 'Station_Code', 'Station_Name', 'Arrival', 'Departure', 'Day']];
-    sheet.getRange(1, 1, 1, 8).setValues(header);
+    var header = [['Schedule_ID', 'Train_Number', 'Train_Name', 'Station_Code', 'Station_Name', 'Arrival', 'Departure', 'Day', 'Is_Halt']];
+    sheet.getRange(1, 1, 1, 9).setValues(header);
     values = header;
     disp = header;
     lastRow = 1;
   }
 
   var hm = headerMap_(disp[0]);
+  if (hm.ishalt == null) {
+    var hCol = 8;
+    for (var hc = 0; hc < disp[0].length; hc++) {
+      if (!String(disp[0][hc] || '').trim()) { hCol = hc; break; }
+    }
+    if (hCol + 1 > lastCol) lastCol = hCol + 1;
+    sheet.getRange(1, hCol + 1).setValue('Is_Halt');
+    disp[0][hCol] = 'Is_Halt';
+    hm.ishalt = hCol;
+  }
+
   var cId = hm.scheduleid != null ? hm.scheduleid : 0;
   var cTrainNo = hm.trainnumber != null ? hm.trainnumber : 1;
   var cTrainName = hm.trainname != null ? hm.trainname : 2;
@@ -1637,6 +1991,7 @@ function upsertScheduleSheet_(sheet, schedItems) {
   var cArr = hm.arrival != null ? hm.arrival : 5;
   var cDep = hm.departure != null ? hm.departure : 6;
   var cDay = hm.day != null ? hm.day : 7;
+  var cHalt = hm.ishalt != null ? hm.ishalt : 8;
 
   var rowByKey = {};
   var maxSchedId = 0;
@@ -1657,18 +2012,38 @@ function upsertScheduleSheet_(sheet, schedItems) {
     var key = normTrainKey_(cleanNo) + '|' + stCode;
     var rowIdx = rowByKey[key];
 
-    var inArr = normHHmm_(s.arrival);
-    var inDep = normHHmm_(s.departure);
+    var rawArrStr = String(s.arrival == null ? '' : s.arrival).trim();
+    var rawDepStr = String(s.departure == null ? '' : s.departure).trim();
+    var inArr = normHHmm_(rawArrStr);
+    var inDep = normHHmm_(rawDepStr);
+    var explicitNoneArr = /^none$/i.test(rawArrStr);
+    var explicitNoneDep = /^none$/i.test(rawDepStr);
+    var inHalt = s.isHalt === false || String(s.isHalt).toUpperCase() === 'N' ? 'N'
+      : (s.isHalt === true || String(s.isHalt).toUpperCase() === 'Y' ? 'Y' : '');
 
     if (rowIdx != null) {
       var row = values[rowIdx];
       var dRow = disp[rowIdx];
+      while (row.length < lastCol) { row.push(''); dRow.push(''); }
       var changed = false;
       if (s.trainName && String(dRow[cTrainName]).trim() !== s.trainName) { row[cTrainName] = s.trainName; changed = true; }
       if (s.stationName && String(dRow[cStName]).trim() !== s.stationName) { row[cStName] = s.stationName; changed = true; }
-      if (inArr && normHHmm_(dRow[cArr]) !== inArr) { row[cArr] = inArr; changed = true; }
-      if (inDep && normHHmm_(dRow[cDep]) !== inDep) { row[cDep] = inDep; changed = true; }
-      if (s.day && Number(row[cDay]) !== Number(s.day)) { row[cDay] = Number(s.day); changed = true; }
+
+      if (forceTimeSync) {
+        if (explicitNoneArr && !isEmptyOrNone_(dRow[cArr])) { row[cArr] = 'None'; changed = true; }
+        else if (inArr && normHHmm_(dRow[cArr]) !== inArr) { row[cArr] = inArr; changed = true; }
+        if (explicitNoneDep && !isEmptyOrNone_(dRow[cDep])) { row[cDep] = 'None'; changed = true; }
+        else if (inDep && normHHmm_(dRow[cDep]) !== inDep) { row[cDep] = inDep; changed = true; }
+        if (s.day && Number(row[cDay]) !== Number(s.day)) { row[cDay] = Number(s.day); changed = true; }
+      } else {
+        if (inArr && isEmptyOrNone_(dRow[cArr]) && Number(s.sequence) > 1) { row[cArr] = inArr; changed = true; }
+        if (inDep && isEmptyOrNone_(dRow[cDep])) { row[cDep] = inDep; changed = true; }
+        if (s.day && isEmptyOrNone_(dRow[cDay])) { row[cDay] = Number(s.day); changed = true; }
+      }
+      if (inHalt && String(dRow[cHalt] || '').trim().toUpperCase() !== inHalt) {
+        row[cHalt] = inHalt;
+        changed = true;
+      }
       if (changed) {
         sheet.getRange(rowIdx + 1, 1, 1, lastCol).setValues([row]);
         touched++;
@@ -1684,6 +2059,7 @@ function upsertScheduleSheet_(sheet, schedItems) {
       newRow[cArr] = inArr || 'None';
       newRow[cDep] = inDep || 'None';
       newRow[cDay] = s.day ? Number(s.day) : 1;
+      newRow[cHalt] = inHalt;
       rowByKey[key] = values.length + toAppend.length;
       toAppend.push(newRow);
       touched++;
@@ -1697,13 +2073,34 @@ function upsertScheduleSheet_(sheet, schedItems) {
 
 /* ==================== RUNNING DAYS NORMALIZER ==================== */
 
-function normalizeRunDays_(raw) {
+function normalizeRunDays_(raw, bitmap) {
+  if ((raw == null || raw === '') && bitmap != null && isFinite(Number(bitmap))) {
+    var bm = parseInt(bitmap, 10);
+    if (bm > 0) {
+      var bmActive = [false, false, false, false, false, false, false];
+      // RailRadar runningDaysBitmap: bit 0 = Mon, bit 1 = Tue, ..., bit 5 = Sat, bit 6 = Sun (127 = Daily)
+      for (var bi0 = 0; bi0 < 7; bi0++) {
+        if ((bm & (1 << bi0)) !== 0) bmActive[(bi0 + 1) % 7] = true;
+      }
+      var bmOut = [];
+      for (var bd = 0; bd < 7; bd++) {
+        if (bmActive[bd]) bmOut.push(DAY_CODES[bd]);
+      }
+      if (bmOut.length === 7) return 'Daily';
+      if (bmOut.length) return bmOut.join(', ');
+    }
+  }
+
   if (raw == null || raw === '') return '';
+  if (typeof raw === 'object' && !Array.isArray(raw)) {
+    if (raw.allDays === true && !raw.days) return 'Daily';
+    if (raw.days != null) return normalizeRunDays_(raw.days, bitmap);
+  }
   if (typeof raw === 'string') {
     var trimmed = raw.trim();
     if (!trimmed) return '';
     if (/month/i.test(trimmed)) return 'Monthly';
-    if (/^(daily|all days|everyday|every day)$/i.test(trimmed)) return 'Daily';
+    if (/^(daily|all\s*days|everyday|every\s*day)$/i.test(trimmed)) return 'Daily';
   }
   var active = [false, false, false, false, false, false, false];
   var matched = false;
@@ -1721,7 +2118,6 @@ function normalizeRunDays_(raw) {
 
   if (Array.isArray(raw)) {
     if (raw.length === 7 && (typeof raw[0] === 'boolean' || raw[0] === 0 || raw[0] === 1)) {
-      // [M,T,W,T,F,S,S] বা [S,M,T,W,T,F,S] — সাধারণত Indian Rail এ Mon প্রথম অথবা Sun প্রথম; নাম না থাকলে Mon=0 ধরে না নিয়ে string map অগ্রাধিকার
       for (var bi = 0; bi < 7; bi++) {
         if (raw[bi]) { active[(bi + 1) % 7] = true; matched = true; }
       }
@@ -1745,13 +2141,32 @@ function normalizeRunDays_(raw) {
     }
   }
 
-  if (!matched) return typeof raw === 'string' ? raw.trim() : '';
+  if (!matched) {
+    if (bitmap != null && isFinite(Number(bitmap))) return normalizeRunDays_('', bitmap);
+    return typeof raw === 'string' ? raw.trim() : '';
+  }
   var res = [];
   for (var di = 0; di < 7; di++) {
     if (active[di]) res.push(DAY_CODES[di]);
   }
   if (res.length === 7) return 'Daily';
   return res.join(', ');
+}
+
+function parseRunningDaysSet_(str) {
+  var norm = normalizeRunDays_(str);
+  if (!norm || /month/i.test(norm)) return null;
+  if (norm === 'Daily') return { 0: true, 1: true, 2: true, 3: true, 4: true, 5: true, 6: true };
+  var set = {};
+  var count = 0;
+  var parts = norm.split(/[,;\s]+/);
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i].toLowerCase().trim();
+    for (var d = 0; d < 7; d++) {
+      if (p === DAY_CODES[d].toLowerCase()) { set[d] = true; count++; break; }
+    }
+  }
+  return count > 0 ? set : null;
 }
 
 /* ==================== UTILITIES ==================== */
@@ -1782,6 +2197,14 @@ function isEmptyOrNone_(val) {
 function normHHmm_(raw) {
   var s = String(raw == null ? '' : raw).trim();
   if (isEmptyOrNone_(s)) return null;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?Z$/i.test(s)) {
+    var dUtc = new Date(s);
+    if (!isNaN(dUtc.getTime())) {
+      var ist = new Date(dUtc.getTime() + 19800000);
+      var ih = ist.getUTCHours(), im = ist.getUTCMinutes();
+      return (ih < 10 ? '0' + ih : '' + ih) + ':' + (im < 10 ? '0' + im : '' + im);
+    }
+  }
   var iso = s.match(/T(\d{2}):(\d{2})/);
   if (iso) return iso[1] + ':' + iso[2];
   var m = s.match(/^(\d{1,2}):(\d{2})(?::\d{2})?\s*([AaPp][Mm])?$/);
@@ -1802,9 +2225,24 @@ function parseTimeMins_(hhmm) {
   return parseInt(parts[0], 10) * 60 + parseInt(parts[1], 10);
 }
 
+function parseHaltCell_(raw) {
+  var s = String(raw == null ? '' : raw).trim().toLowerCase();
+  if (!s) return null;
+  if (s === 'n' || s === 'no' || s === 'false' || s === '0') return false;
+  if (s === 'y' || s === 'yes' || s === 'true' || s === '1') return true;
+  return null;
+}
+
+function isBetweenScheduleStop_(arrHHmm, depHHmm, explicitHalt, stCode, metaStopSet) {
+  if (!arrHHmm && !depHHmm) return false;
+  if (explicitHalt !== null) return explicitHalt;
+  if (metaStopSet) return !!metaStopSet[stCode];
+  if (arrHHmm && depHHmm && arrHHmm === depHHmm) return false;
+  return true;
+}
+
 function isScheduledStopTimes_(arrHHmm, depHHmm) {
   if (!arrHHmm && !depHHmm) return false;
-  if (arrHHmm && depHHmm && arrHHmm === depHHmm) return false;
   return true;
 }
 

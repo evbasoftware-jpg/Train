@@ -450,7 +450,8 @@ private fun RouteTrackStrip(
       }
 
       val scheduledText = GeoMath.extractStationTime(station)
-      val etaText = if (index >= activeIdx && locatedTrain != null) {
+      val isStaticAtOrigin = !insideTrain && activeIdx == 0 && rawProgress <= 0.01f && effectiveSpeed <= 0.5
+      val etaText = if (index >= activeIdx && locatedTrain != null && !isStaticAtOrigin) {
         GeoMath.calculateEta(locatedTrain, station, effectiveSpeed)
       } else {
         null

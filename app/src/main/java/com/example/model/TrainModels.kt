@@ -624,6 +624,7 @@ data class RouteStation(
   val arrival: String?,
   val departure: String?,
   val isHalt: Boolean = true,
+  val day: Int? = null,
 )
 
 data class CurrentLocationDto(

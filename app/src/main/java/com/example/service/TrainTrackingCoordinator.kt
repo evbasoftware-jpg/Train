@@ -804,14 +804,6 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     }
 
     scheduleDynamicTranslations()
-    reportLiveObservationIfChanged(
-      trainNo = trainNo,
-      trainName = payload.trainName ?: _uiState.value.trainName,
-      route = payload.route,
-      located = located,
-      passedKm = distances.passedFromCurrentKm,
-      timeMillis = System.currentTimeMillis(),
-    )
     verifyAndSync()
     checkStationAlarmProximity()
     updateTrackingNotification()
@@ -1032,13 +1024,13 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     passedKm: Double?,
     timeMillis: Long,
   ) {
-    if (trainNo.isBlank() || route.isEmpty()) return
+    if (trainNo.isBlank() || route.isEmpty() || !_uiState.value.insideTrain) return
     val st = route.getOrNull(located.idx) ?: return
     val stCode = st.stationCode.trim()
     val stName = st.stationName.ifBlank { located.name }
     if (stCode.isBlank() && stName.isBlank()) return
 
-    val atStationNow = passedKm != null && passedKm <= 0.6
+    val atStationNow = passedKm != null && passedKm <= 0.6 && located.idx > 0
     val obsKey = "$trainNo|${stCode.ifBlank { stName }}|$atStationNow"
     if (obsKey == lastObservedSyncKey) return
     lastObservedSyncKey = obsKey

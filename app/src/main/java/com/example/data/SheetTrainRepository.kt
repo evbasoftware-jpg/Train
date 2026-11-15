@@ -43,6 +43,7 @@ data class SheetScheduleRow(
   val arrivalRaw: String,
   val departureRaw: String,
   val day: Int?,
+  val isHalt: Boolean? = null,
   val rowOrder: Int,
 )
 
@@ -132,7 +133,7 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
       downloadGvizQuery("Train", tq)?.let(::parseTrainsCsv).orEmpty()
     }
     val schedDeferred = async(Dispatchers.IO) {
-      val tq = "select A, B, C, D, E, F, G, H where D = '$fromCode' or D = '$toCode'"
+      val tq = "select * where D = '$fromCode' or D = '$toCode'"
       downloadGvizQuery("Schedule", tq)?.let(::parseScheduleCsv).orEmpty()
     }
 
@@ -182,14 +183,14 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
       val cond = variants.joinToString(" or ") { v ->
         if (v.all(Char::isDigit)) "B = ${v.toLongOrNull() ?: 0} or B = '$v'" else "B = '$v'"
       }
-      downloadGvizQuery("Schedule", "select A, B, C, D, E, F, G, H where $cond")?.let(::parseScheduleCsv).orEmpty()
+      downloadGvizQuery("Schedule", "select * where $cond")?.let(::parseScheduleCsv).orEmpty()
     }
 
     val entry = trainDeferred.await().firstOrNull()
     val schedRows = sortScheduleRows(schedDeferred.await())
     if (entry == null && schedRows.isEmpty()) return@coroutineScope null
 
-    val routeFromSched = buildRouteFromScheduleRows(schedRows, effectiveDb)
+    val routeFromSched = buildRouteFromScheduleRows(schedRows, effectiveDb, entry)
     val routeFromTrain = entry?.let { buildRouteFromTrainEntry(it, effectiveDb) }.orEmpty()
 
     val chosenRoute = when {
@@ -198,8 +199,13 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
       else -> emptyList()
     }
 
-    val completeness = isSheetRouteComplete(entry, chosenRoute)
-    val needsStops = entry == null || entry.trainStopsRaw.isBlank()
+    val firstSchedRow = schedRows.firstOrNull()
+    val firstArrMin = firstSchedRow?.let { parseSheetTimeMinutes(it.arrivalRaw) }
+    val firstDepMin = firstSchedRow?.let { parseSheetTimeMinutes(it.departureRaw) }
+    val hasCorruptedOrigin = firstArrMin != null && firstDepMin != null && firstArrMin > firstDepMin + 60
+
+    val completeness = isSheetRouteComplete(entry, chosenRoute) && !hasCorruptedOrigin
+    val needsStops = entry == null || entry.trainStopsRaw.isBlank() || entry.runningDaysRaw.isBlank()
     SheetTrainLookup(
       entry = entry,
       route = chosenRoute,
@@ -218,18 +224,22 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
   ): List<TrainBetweenItem> {
     val byTrain = LinkedHashMap<String, TrainBetweenItem>()
     val entriesByKey = trainEntries.associateBy { normalizeTrainKey(it.trainNumber) }
+    val stopsSetByKey = entriesByKey.mapValues { (_, e) ->
+      e.stopTokens.mapNotNull { parseStopToken(it, stationDb, null)?.stationCode?.uppercase(Locale.US)?.takeIf(String::isNotBlank) }.toSet()
+    }
 
     // 1) Matches from Schedule sheet (handles all intermediate stoppages)
     val grouped = scheduleRows
       .filter { it.trainNumber.isNotBlank() }
       .groupBy { normalizeTrainKey(it.trainNumber) }
 
-    for ((_, rows) in grouped) {
+    for ((key, rows) in grouped) {
+      val metaStops = stopsSetByKey[key].orEmpty()
       val fromRow = rows.firstOrNull {
-        it.stationCode.equals(fromCode, ignoreCase = true) && isScheduledStop(it)
+        it.stationCode.equals(fromCode, ignoreCase = true) && isScheduledStop(it, metaStops)
       } ?: continue
       val toRow = rows.firstOrNull {
-        it.stationCode.equals(toCode, ignoreCase = true) && isScheduledStop(it)
+        it.stationCode.equals(toCode, ignoreCase = true) && isScheduledStop(it, metaStops)
       } ?: continue
       if (!isChronologicallyBefore(fromRow, toRow)) continue
 
@@ -313,10 +323,16 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
     )
   }
 
-  fun isScheduledStop(row: SheetScheduleRow): Boolean {
+  fun isScheduledStop(
+    row: SheetScheduleRow,
+    metaStopsSet: Set<String> = emptySet(),
+  ): Boolean {
     val arr = formatSheetTime(row.arrivalRaw)
     val dep = formatSheetTime(row.departureRaw)
     if (arr == null && dep == null) return false
+    if (row.isHalt != null) return row.isHalt
+    val code = row.stationCode.trim().uppercase(Locale.US)
+    if (metaStopsSet.size >= 3 && code.isNotEmpty()) return metaStopsSet.contains(code)
     if (arr != null && dep != null && arr == dep) return false
     return true
   }
@@ -390,16 +406,56 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
   fun buildRouteFromScheduleRows(
     rows: List<SheetScheduleRow>,
     stationDb: List<StationDbEntry>,
+    entry: SheetTrainEntry? = null,
   ): List<RouteStation> {
     if (rows.isEmpty()) return emptyList()
     val sorted = sortScheduleRows(rows)
     val dbByCode = stationDb.associateBy { it.code.uppercase(Locale.US) }
+    val stopTokensSet = entry?.stopTokens
+      ?.mapNotNull { parseStopToken(it, stationDb, null)?.stationCode?.uppercase(Locale.US)?.takeIf(String::isNotBlank) }
+      ?.toSet()
+      .orEmpty()
+    val hasDiffArrDep = sorted.any { r ->
+      val a = formatSheetTime(r.arrivalRaw)
+      val d = formatSheetTime(r.departureRaw)
+      a != null && d != null && a != d
+    }
+
+    var inferredDay = 1
+    var prevMin: Int? = null
     return sorted.mapIndexed { idx, r ->
       val code = r.stationCode.trim().uppercase(Locale.US)
       val dbHit = dbByCode[code]
       val arr = formatSheetTime(r.arrivalRaw)
       val dep = formatSheetTime(r.departureRaw)
-      val sched = arr ?: dep ?: "--:--"
+      val isOrigin = idx == 0
+      val isDest = idx == sorted.lastIndex
+      val cleanArr = if (isOrigin && dep != null) dep else (arr ?: dep)
+      val sched = (if (isOrigin) (dep ?: cleanArr) else (cleanArr ?: dep)) ?: "--:--"
+      val mNow = parseSheetTimeMinutes(sched)
+      if (r.day != null && r.day >= 1) {
+        inferredDay = r.day
+      } else if (prevMin != null && mNow != null && mNow + 120 < prevMin!!) {
+        inferredDay++
+      }
+      if (mNow != null) prevMin = mNow
+
+      val isHalt = when {
+        r.isHalt != null -> r.isHalt
+        isOrigin -> true
+        isDest -> when {
+          dep == null -> true
+          entry != null && entry.toCode.equals(code, ignoreCase = true) -> true
+          stopTokensSet.size >= 3 && code.isNotEmpty() -> stopTokensSet.contains(code)
+          arr != null && dep == arr && hasDiffArrDep -> false
+          else -> true
+        }
+        stopTokensSet.size >= 3 && code.isNotEmpty() -> stopTokensSet.contains(code)
+        arr != null && dep != null && arr == dep && hasDiffArrDep -> false
+        arr == null && dep == null -> false
+        else -> true
+      }
+
       RouteStation(
         stationCode = code,
         stationName = r.stationName.ifBlank { dbHit?.name ?: code },
@@ -407,9 +463,10 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
         lat = dbHit?.lat,
         lon = dbHit?.lon,
         scheduledTimeRaw = sched,
-        arrival = arr ?: sched,
+        arrival = cleanArr ?: sched,
         departure = dep ?: sched,
-        isHalt = isScheduledStop(r),
+        isHalt = isHalt,
+        day = r.day ?: inferredDay,
       )
     }
   }
@@ -439,32 +496,126 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
   fun estimateLocationFromSheetSchedule(
     entry: SheetTrainEntry?,
     route: List<RouteStation>,
+    nowMillis: Long = System.currentTimeMillis(),
   ): CurrentLocationDto? {
     if (route.isEmpty()) return null
-    val firstTime = parseSheetTimeMinutes(entry?.departureRaw ?: route.first().scheduledTimeRaw.orEmpty())
-    val lastTime = parseSheetTimeMinutes(entry?.arrivalRaw ?: route.last().scheduledTimeRaw.orEmpty())
-    val cal = Calendar.getInstance()
-    val nowMin = cal.get(Calendar.HOUR_OF_DAY) * 60 + cal.get(Calendar.MINUTE)
-    var prog = 0.0
-    if (firstTime != null && lastTime != null && route.size >= 2) {
-      val dur = if (lastTime >= firstTime) lastTime - firstTime else (1440 - firstTime) + lastTime
-      if (dur > 0) {
-        val elp = if (lastTime >= firstTime) nowMin - firstTime else if (nowMin >= firstTime) nowMin - firstTime else (1440 - firstTime) + nowMin
-        if (elp in 0..dur) prog = (elp.toDouble() / dur).coerceIn(0.0, 1.0)
+    val istCal = Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Kolkata")).apply {
+      timeInMillis = nowMillis
+    }
+    val nowMin = istCal.get(Calendar.HOUR_OF_DAY) * 60 + istCal.get(Calendar.MINUTE)
+    val nowDow = when (istCal.get(Calendar.DAY_OF_WEEK)) {
+      Calendar.SUNDAY -> 0
+      Calendar.MONDAY -> 1
+      Calendar.TUESDAY -> 2
+      Calendar.WEDNESDAY -> 3
+      Calendar.THURSDAY -> 4
+      Calendar.FRIDAY -> 5
+      Calendar.SATURDAY -> 6
+      else -> 0
+    }
+
+    val absMins = ArrayList<Int?>(route.size)
+    var curDay = 1
+    var prevMod: Int? = null
+    for (i in route.indices) {
+      val st = route[i]
+      val m = if (i == 0) {
+        parseSheetTimeMinutes(st.departure.orEmpty())
+          ?: parseSheetTimeMinutes(st.scheduledTimeRaw.orEmpty())
+          ?: parseSheetTimeMinutes(st.arrival.orEmpty())
+      } else {
+        parseSheetTimeMinutes(st.arrival.orEmpty())
+          ?: parseSheetTimeMinutes(st.scheduledTimeRaw.orEmpty())
+          ?: parseSheetTimeMinutes(st.departure.orEmpty())
+      }
+      val stDay = st.day
+      if (stDay != null && stDay >= 1) {
+        curDay = stDay
+      } else if (prevMod != null && m != null && m + 120 < prevMod!!) {
+        curDay++
+      }
+      if (m != null) prevMod = m
+      absMins.add(m?.let { (curDay - 1) * 1440 + it })
+    }
+
+    val firstAbs = absMins.firstOrNull { it != null }
+    val lastAbs = absMins.lastOrNull { it != null }
+    val (allowedDays, isMonthly) = entry?.runningDaysRaw
+      ?.takeIf { it.isNotBlank() }
+      ?.let { com.example.model.RunningScheduleHelper.parseDaysSet(it) }
+      ?: (emptySet<Int>() to false)
+    val checkDays = !isMonthly && allowedDays.isNotEmpty()
+
+    var activeIdx = 0
+    var segFrac = 0.0
+    var isRunningNow = false
+
+    if (firstAbs != null && lastAbs != null && lastAbs > firstAbs && route.size >= 2) {
+      val maxDays = ((lastAbs + 120 + 1439) / 1440).coerceAtLeast(1)
+      var targetMin: Int? = null
+      for (dayOff in 0..maxDays) {
+        val cand = nowMin + dayOff * 1440
+        if (cand in firstAbs..lastAbs) {
+          if (checkDays) {
+            val startDow = ((nowDow - dayOff) % 7 + 7) % 7
+            if (!allowedDays.contains(startDow)) continue
+          }
+          targetMin = cand
+          break
+        }
+      }
+      if (targetMin != null) {
+        isRunningNow = true
+        var lastValid = 0
+        for (j in absMins.indices) {
+          val mj = absMins[j] ?: continue
+          if (mj <= targetMin) {
+            lastValid = j
+          } else {
+            activeIdx = lastValid
+            val prevT = absMins[lastValid]
+            if (prevT != null && mj > prevT) {
+              segFrac = ((targetMin - prevT).toDouble() / (mj - prevT)).coerceIn(0.0, 1.0)
+            }
+            break
+          }
+        }
+        if (targetMin >= lastAbs) {
+          activeIdx = route.lastIndex
+          segFrac = 0.0
+        }
       }
     }
-    val idx = (prog * (route.size - 1)).toInt().coerceIn(0, route.lastIndex)
-    val cur = route[idx]
-    val next = route.getOrNull(idx + 1)
+
+    val cur = route[activeIdx]
+    val next = route.getOrNull(activeIdx + 1)
+    var lat = cur.lat
+    var lon = cur.lon
+    var bearing: Double? = null
+    var estSpeed = 0.0
+    if (isRunningNow && cur.lat != null && cur.lon != null && next?.lat != null && next.lon != null) {
+      lat = cur.lat + (next.lat - cur.lat) * segFrac
+      lon = cur.lon + (next.lon - cur.lon) * segFrac
+      bearing = GeoMath.bearingDegrees(cur.lat, cur.lon, next.lat, next.lon)
+      val segDist = GeoMath.haversineKm(cur.lat, cur.lon, next.lat, next.lon) * 1.2
+      val tA = absMins.getOrNull(activeIdx)
+      val tB = absMins.getOrNull(activeIdx + 1)
+      if (tA != null && tB != null && tB > tA && segDist > 0.2) {
+        estSpeed = ((segDist / ((tB - tA) / 60.0)) * 10.0).toInt().div(10.0).coerceIn(20.0, 130.0)
+      } else if (segDist > 0.2) {
+        estSpeed = 48.0
+      }
+    }
+
     return CurrentLocationDto(
       stationCode = cur.stationCode.ifBlank { null },
       stationName = cur.stationName.ifBlank { cur.stationCode },
-      sequence = idx + 1,
-      lat = cur.lat,
-      lon = cur.lon,
-      speedKmh = 0.0,
-      bearingDegrees = null,
-      segmentProgress = if (route.size >= 2) ((prog * (route.size - 1)) - idx).coerceIn(0.0, 1.0) else 0.0,
+      sequence = cur.sequence ?: (activeIdx + 1),
+      lat = lat,
+      lon = lon,
+      speedKmh = estSpeed,
+      bearingDegrees = bearing,
+      segmentProgress = segFrac,
       nextStationName = next?.stationName?.ifBlank { next.stationCode },
     )
   }
@@ -542,6 +693,12 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
       val trainNo = colVal(r, hdr, "trainnumber", "trainno", "number").filter { it.isDigit() }
       val stCode = colVal(r, hdr, "stationcode", "code").uppercase(Locale.US)
       if (trainNo.isBlank() && stCode.isBlank()) continue
+      val haltRaw = colVal(r, hdr, "ishalt", "halt").lowercase(Locale.US)
+      val isHalt = when (haltRaw) {
+        "" -> null
+        "n", "no", "false", "0" -> false
+        else -> true
+      }
       out.add(
         SheetScheduleRow(
           scheduleId = colVal(r, hdr, "scheduleid", "id").toLongOrNull(),
@@ -552,6 +709,7 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
           arrivalRaw = colVal(r, hdr, "arrival"),
           departureRaw = colVal(r, hdr, "departure"),
           day = colVal(r, hdr, "day").toIntOrNull(),
+          isHalt = isHalt,
           rowOrder = i,
         ),
       )
@@ -559,11 +717,20 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
     return out
   }
 
+  private fun scheduleRowSortMinutes(row: SheetScheduleRow): Int {
+    val am = parseSheetTimeMinutes(row.arrivalRaw)
+    val dm = parseSheetTimeMinutes(row.departureRaw)
+    if (am != null && dm != null && (row.day == null || row.day <= 1) && am > dm + 60) {
+      return dm
+    }
+    return am ?: dm ?: Int.MAX_VALUE
+  }
+
   private fun sortScheduleRows(rows: List<SheetScheduleRow>): List<SheetScheduleRow> =
     rows.sortedWith(
       compareBy<SheetScheduleRow>(
         { it.day ?: Int.MAX_VALUE },
-        { parseSheetTimeMinutes(it.arrivalRaw) ?: parseSheetTimeMinutes(it.departureRaw) ?: Int.MAX_VALUE },
+        { scheduleRowSortMinutes(it) },
         { it.scheduleId ?: Long.MAX_VALUE },
         { it.rowOrder },
       ),

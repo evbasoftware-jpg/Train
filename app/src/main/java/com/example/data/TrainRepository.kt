@@ -237,9 +237,9 @@ class TrainRepository(private val cacheDir: File? = null) {
       } catch (_: Exception) {
         emptyList()
       }
-      val needsSheetEnrichment = sheetMatches.any { it.runningDaysRaw.isBlank() }
+      val needsSheetEnrichment = sheetMatches.isEmpty() || sheetMatches.any { it.runningDaysRaw.isBlank() }
       val pairKey = "${fromCode.uppercase(Locale.US)}->${toCode.uppercase(Locale.US)}"
-      if (sheetMatches.isNotEmpty() && (!needsSheetEnrichment || pairKey in enrichedBetweenPairs)) {
+      if (sheetMatches.isNotEmpty() && ((!needsSheetEnrichment && sheetMatches.size >= 3) || pairKey in enrichedBetweenPairs)) {
         return@withContext sheetMatches
       }
 
@@ -282,7 +282,31 @@ class TrainRepository(private val cacheDir: File? = null) {
       if (apiList.isNotEmpty()) {
         enrichedBetweenPairs.add(pairKey)
       }
-      val merged = if (apiList.isNotEmpty()) apiList else sheetMatches
+      val mergedMap = LinkedHashMap<String, TrainBetweenItem>()
+      sheetMatches.forEach { item ->
+        val k = item.trainNumber.filter(Char::isDigit).trimStart('0').ifEmpty { item.trainNumber }
+        if (k.isNotEmpty()) mergedMap[k] = item
+      }
+      apiList.forEach { item ->
+        val k = item.trainNumber.filter(Char::isDigit).trimStart('0').ifEmpty { item.trainNumber }
+        if (k.isNotEmpty()) {
+          val ex = mergedMap[k]
+          mergedMap[k] = if (ex == null) {
+            item
+          } else {
+            ex.copy(
+              trainName = item.trainName.ifBlank { ex.trainName },
+              departure = if (item.departure != "--:--") item.departure else ex.departure,
+              arrival = if (item.arrival != "--:--") item.arrival else ex.arrival,
+              distanceKm = if (item.distanceKm > 0.0) item.distanceKm else ex.distanceKm,
+              runningDaysRaw = item.runningDaysRaw.ifBlank { ex.runningDaysRaw },
+              sourceCode = item.sourceCode.ifBlank { ex.sourceCode },
+              destCode = item.destCode.ifBlank { ex.destCode },
+            )
+          }
+        }
+      }
+      val merged = if (mergedMap.isNotEmpty()) mergedMap.values.toList() else sheetMatches
       val sortedResult = merged.sortedWith(
         compareBy<TrainBetweenItem>(
           { parseDepartureMinutesOrMax(it.departure) },
@@ -294,12 +318,32 @@ class TrainRepository(private val cacheDir: File? = null) {
 
   private val enrichedBetweenPairs = java.util.Collections.synchronizedSet(HashSet<String>())
 
+  private fun decodeRunningDaysBitmap(bitmap: Int): String {
+    if (bitmap <= 0) return ""
+    val days = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+    val active = (0..6).mapNotNull { i -> if ((bitmap and (1 shl i)) != 0) days[i] else null }
+    return if (active.size == 7) "Daily" else active.joinToString(", ")
+  }
+
   private fun extractRunningDaysRaw(obj: JSONObject, trainObj: JSONObject?): String {
     val raw = obj.opt("runDays")
       ?: obj.opt("runningDays")
       ?: trainObj?.opt("runDays")
       ?: trainObj?.opt("runningDays")
-      ?: return ""
+    val bitmap = when {
+      obj.has("runningDaysBitmap") && !obj.isNull("runningDaysBitmap") -> obj.optInt("runningDaysBitmap", 0)
+      trainObj?.has("runningDaysBitmap") == true && !trainObj.isNull("runningDaysBitmap") ->
+        trainObj.optInt("runningDaysBitmap", 0)
+      else -> 0
+    }
+    if (raw == null || raw == JSONObject.NULL) {
+      return decodeRunningDaysBitmap(bitmap)
+    }
+    val parsed = parseRunDaysValue(raw)
+    return parsed.ifBlank { decodeRunningDaysBitmap(bitmap) }
+  }
+
+  private fun parseRunDaysValue(raw: Any): String {
     return when (raw) {
       is JSONArray -> (0 until raw.length()).mapNotNull { idx ->
         val elem = raw.opt(idx)
@@ -309,9 +353,17 @@ class TrainRepository(private val cacheDir: File? = null) {
           else -> elem?.toString()?.trim()?.takeIf { it.isNotEmpty() }
         }
       }.joinToString(", ")
-      is JSONObject -> raw.keys().asSequence()
-        .filter { k -> raw.optBoolean(k, false) || raw.optInt(k, 0) == 1 }
-        .joinToString(", ")
+      is JSONObject -> {
+        if (raw.optBoolean("allDays", false) && !raw.has("days")) {
+          "Daily"
+        } else if (raw.has("days") && !raw.isNull("days")) {
+          parseRunDaysValue(raw.get("days"))
+        } else {
+          raw.keys().asSequence()
+            .filter { k -> raw.optBoolean(k, false) || raw.optInt(k, 0) == 1 }
+            .joinToString(", ")
+        }
+      }
       else -> raw.toString().trim().takeUnless { it == "null" } ?: ""
     }
   }
@@ -385,13 +437,20 @@ class TrainRepository(private val cacheDir: File? = null) {
       throw liveError
     }
 
+    val chosenRoutePre = enrichRouteFromStationDb(mergedRoute, stationDb)
     val apiLoc = parseCurrentLocation(payload?.optJSONObject("currentLocation"))
-    val currentLoc = apiLoc ?: sheetLookup?.let {
-      sheetRepository.estimateLocationFromSheetSchedule(it.entry, mergedRoute)
+    val apiSource = payload?.optStringOrNull("source") ?: root?.optStringOrNull("source")
+    val useClientSchedEstimate = apiLoc == null ||
+      (apiSource == "sheet" && (apiLoc.speedKmh ?: 0.0) <= 0.1 && (apiLoc.segmentProgress ?: 0.0) == 0.0)
+
+    val currentLoc = if (useClientSchedEstimate) {
+      sheetRepository.estimateLocationFromSheetSchedule(sheetLookup?.entry, chosenRoutePre) ?: apiLoc
+    } else {
+      apiLoc
     }
 
     val chosenRouteRaw = when {
-      mergedRoute.isNotEmpty() -> mergedRoute
+      chosenRoutePre.isNotEmpty() -> chosenRoutePre
       currentLoc?.lat != null && currentLoc.lon != null -> listOf(
         RouteStation(
           stationCode = currentLoc.stationCode ?: "",
@@ -423,9 +482,9 @@ class TrainRepository(private val cacheDir: File? = null) {
       ?: root?.optStringOrNull("trainName")
 
     val source = when {
-      apiLoc != null -> payload?.optStringOrNull("source") ?: root?.optStringOrNull("source")
+      !useClientSchedEstimate -> apiSource
       sheetLookup != null -> "sheet"
-      else -> payload?.optStringOrNull("source") ?: root?.optStringOrNull("source")
+      else -> apiSource ?: "sheet"
     }
 
     // 4) Auto-sync missing/incomplete/corrected Train, Train_Stops, Station, & Schedule data back to Google Sheets
@@ -512,7 +571,8 @@ class TrainRepository(private val cacheDir: File? = null) {
     return primary.mapIndexed { idx, st ->
       val code = st.stationCode.trim().uppercase(Locale.US)
       val d = if (code.isNotBlank()) donorByCode[code] else null
-      if (d == null) {
+      val isTerm = (idx == 0 || idx == primary.lastIndex)
+      val merged = if (d == null) {
         st.copy(sequence = idx + 1)
       } else {
         st.copy(
@@ -523,8 +583,10 @@ class TrainRepository(private val cacheDir: File? = null) {
           scheduledTimeRaw = if (hasValidTime(st.scheduledTimeRaw)) st.scheduledTimeRaw else d.scheduledTimeRaw,
           arrival = if (hasValidTime(st.arrival)) st.arrival else d.arrival,
           departure = if (hasValidTime(st.departure)) st.departure else d.departure,
+          day = st.day ?: d.day,
         )
       }
+      if (isTerm && !merged.isHalt) merged.copy(isHalt = true) else merged
     }
   }
 
@@ -538,11 +600,18 @@ class TrainRepository(private val cacheDir: File? = null) {
     sheetScheduleRows: List<SheetScheduleRow>,
   ): Boolean {
     if (sheetScheduleRows.isEmpty()) return resolvedRoute.isNotEmpty()
+    val firstRow = sheetScheduleRows.firstOrNull()
+    if (firstRow != null && hasValidTime(firstRow.arrivalRaw)) {
+      val fa = sheetRepository.formatSheetTime(firstRow.arrivalRaw)
+      val fd = sheetRepository.formatSheetTime(firstRow.departureRaw)
+      if (fa != null && fd != null && fa != fd) return true
+    }
     val byCode = sheetScheduleRows.associateBy { it.stationCode.trim().uppercase(Locale.US) }
     return resolvedRoute.any { st ->
       val code = st.stationCode.trim().uppercase(Locale.US)
       val row = if (code.isNotBlank()) byCode[code] else null
       row == null ||
+        row.isHalt == null ||
         ((!hasValidTime(row.arrivalRaw) && hasValidTime(st.arrival ?: st.scheduledTimeRaw)) ||
           (!hasValidTime(row.departureRaw) && hasValidTime(st.departure ?: st.scheduledTimeRaw)))
     }
@@ -677,8 +746,13 @@ class TrainRepository(private val cacheDir: File? = null) {
     } else {
       null
     }
-    val lat = obj.optDoubleOrNull("lat") ?: obj.optDoubleOrNull("latitude")
-    val lon = obj.optDoubleOrNull("lng")
+    val coordsObj = obj.optJSONObject("coordinates")
+    val lat = coordsObj?.optDoubleOrNull("lat")
+      ?: obj.optDoubleOrNull("lat")
+      ?: obj.optDoubleOrNull("latitude")
+    val lon = coordsObj?.optDoubleOrNull("lng")
+      ?: coordsObj?.optDoubleOrNull("lon")
+      ?: obj.optDoubleOrNull("lng")
       ?: obj.optDoubleOrNull("lon")
       ?: obj.optDoubleOrNull("longitude")
     val speed = obj.optDoubleOrNull("speedKmh") ?: obj.optDoubleOrNull("speed")
@@ -701,33 +775,68 @@ class TrainRepository(private val cacheDir: File? = null) {
 
   private fun parseRouteArray(arr: JSONArray?): List<RouteStation>? {
     if (arr == null || arr.length() == 0) return null
+    val hasDiffArrDep = (0 until arr.length()).any { idx ->
+      val s = arr.optJSONObject(idx) ?: return@any false
+      val a = sheetRepository.formatSheetTime(
+        (s.optStringOrNull("arrivalTime")
+          ?: s.optStringOrNull("arrival")
+          ?: s.optStringOrNull("scheduledArrival")
+          ?: s.optStringOrNull("eta")).orEmpty(),
+      )
+      val d = sheetRepository.formatSheetTime(
+        (s.optStringOrNull("departure") ?: s.optStringOrNull("scheduledDeparture")).orEmpty(),
+      )
+      a != null && d != null && a != d
+    }
+
     val list = ArrayList<RouteStation>(arr.length())
     for (i in 0 until arr.length()) {
       val s = arr.optJSONObject(i) ?: continue
-      val code = (s.optStringOrNull("stationCode") ?: s.optStringOrNull("code") ?: "")
-        .trim()
-        .uppercase(Locale.US)
+      val stObj = s.optJSONObject("station")
+      val code = (s.optStringOrNull("stationCode")
+        ?: s.optStringOrNull("code")
+        ?: stObj?.optStringOrNull("code")
+        ?: stObj?.optStringOrNull("stationCode")
+        ?: "").trim().uppercase(Locale.US)
       val name = s.optStringOrNull("stationName")
         ?: s.optStringOrNull("name")
+        ?: stObj?.optStringOrNull("name")
+        ?: stObj?.optStringOrNull("stationName")
         ?: code
       val seq = if (s.has("sequence") && !s.isNull("sequence")) s.optInt("sequence") else null
-      val lat = s.optDoubleOrNull("lat") ?: s.optDoubleOrNull("latitude")
+      val lat = s.optDoubleOrNull("lat")
+        ?: s.optDoubleOrNull("latitude")
+        ?: stObj?.optDoubleOrNull("lat")
+        ?: stObj?.optDoubleOrNull("latitude")
       val lon = s.optDoubleOrNull("lng")
         ?: s.optDoubleOrNull("lon")
         ?: s.optDoubleOrNull("longitude")
+        ?: stObj?.optDoubleOrNull("lng")
+        ?: stObj?.optDoubleOrNull("lon")
+        ?: stObj?.optDoubleOrNull("longitude")
       val arrival = s.optStringOrNull("arrivalTime")
         ?: s.optStringOrNull("arrival")
         ?: s.optStringOrNull("scheduledArrival")
         ?: s.optStringOrNull("eta")
-      val departure = s.optStringOrNull("departure")
-      val schedRaw = arrival ?: departure
-      val isHalt = if (s.has("isHalt") && !s.isNull("isHalt")) {
-        s.optBoolean("isHalt", true)
-      } else {
-        val arrNorm = sheetRepository.formatSheetTime(arrival.orEmpty())
-        val depNorm = sheetRepository.formatSheetTime(departure.orEmpty())
-        !(arrNorm != null && depNorm != null && arrNorm == depNorm && arr.length() > 2 && i > 0 && i < arr.length() - 1)
+      val departure = s.optStringOrNull("departure") ?: s.optStringOrNull("scheduledDeparture")
+      val dayVal = when {
+        s.has("day") && !s.isNull("day") -> s.optInt("day", 0).takeIf { it > 0 }
+        s.has("arrivalDay") && !s.isNull("arrivalDay") -> s.optInt("arrivalDay", 0).takeIf { it > 0 }
+        s.has("departureDay") && !s.isNull("departureDay") -> s.optInt("departureDay", 0).takeIf { it > 0 }
+        else -> null
       }
+      val isTerminal = (i == 0 || i == arr.length() - 1)
+      val isHalt = when {
+        isTerminal -> true
+        s.has("isHalt") && !s.isNull("isHalt") -> s.optBoolean("isHalt", true)
+        else -> {
+          val arrNorm = sheetRepository.formatSheetTime(arrival.orEmpty())
+          val depNorm = sheetRepository.formatSheetTime(departure.orEmpty())
+          !(arrNorm != null && depNorm != null && arrNorm == depNorm && hasDiffArrDep)
+        }
+      }
+      val cleanArr = if (i == 0 && !departure.isNullOrBlank()) departure else arrival
+      val schedRaw = if (i == 0) (departure ?: cleanArr) else (cleanArr ?: departure)
 
       list.add(
         RouteStation(
@@ -737,9 +846,10 @@ class TrainRepository(private val cacheDir: File? = null) {
           lat = lat,
           lon = lon,
           scheduledTimeRaw = schedRaw,
-          arrival = arrival,
+          arrival = cleanArr,
           departure = departure,
           isHalt = isHalt,
+          day = dayVal,
         ),
       )
     }

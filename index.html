@@ -2103,18 +2103,31 @@
       }
 
       function extractApiRunDays(obj) {
-        const raw = obj?.runDays ?? obj?.runningDays ?? obj?.train?.runDays ?? obj?.train?.runningDays;
-        if (raw == null) return '';
+        const bitmap = obj?.runningDaysBitmap ?? obj?.train?.runningDaysBitmap;
+        let raw = obj?.runDays ?? obj?.runningDays ?? obj?.train?.runDays ?? obj?.train?.runningDays;
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+          if (raw.allDays === true && !raw.days) return 'Daily';
+          if (raw.days != null) raw = raw.days;
+        }
+        if (raw == null) {
+          if (Number.isFinite(Number(bitmap)) && Number(bitmap) > 0) {
+            const bm = parseInt(bitmap, 10);
+            const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+            const out = names.filter((_, i) => (bm & (1 << i)) !== 0);
+            return out.length === 7 ? 'Daily' : out.join(', ');
+          }
+          return '';
+        }
         if (Array.isArray(raw)) {
           const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-          return raw.map((v, i) => {
+          const mapped = raw.map((v, i) => {
             if (typeof v === 'boolean') return v ? names[i] : null;
             if (typeof v === 'number') return v !== 0 ? names[i] : null;
             const t = String(v || '').trim();
             return t || null;
-          }).filter(Boolean).join(', ');
-        }
-        if (typeof raw === 'object') {
+          }).filter(Boolean);
+          if (mapped.length) return mapped.join(', ');
+        } else if (typeof raw === 'object') {
           const out = [];
           if (raw.sun || raw.sunday) out.push('Sun');
           if (raw.mon || raw.monday) out.push('Mon');
@@ -2123,9 +2136,18 @@
           if (raw.thu || raw.thursday) out.push('Thu');
           if (raw.fri || raw.friday) out.push('Fri');
           if (raw.sat || raw.saturday) out.push('Sat');
-          return out.join(', ');
+          if (out.length) return out.join(', ');
+        } else {
+          const str = String(raw).trim();
+          if (str) return str;
         }
-        return String(raw).trim();
+        if (Number.isFinite(Number(bitmap)) && Number(bitmap) > 0) {
+          const bm = parseInt(bitmap, 10);
+          const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+          const out = names.filter((_, i) => (bm & (1 << i)) !== 0);
+          return out.length === 7 ? 'Daily' : out.join(', ');
+        }
+        return '';
       }
 
       function normalizeSheetCol(raw) {
@@ -2291,6 +2313,10 @@
           if (!trainNo && !stCode) continue;
           const sid = Number(col(r, 'scheduleid', 'id'));
           const dayNum = parseInt(col(r, 'day'), 10);
+          const haltRaw = col(r, 'ishalt', 'halt').toLowerCase();
+          const isHalt = haltRaw
+            ? !(['n', 'no', 'false', '0'].includes(haltRaw))
+            : null;
           out.push({
             scheduleId: Number.isFinite(sid) && col(r, 'scheduleid', 'id') !== '' ? sid : null,
             trainNumber: trainNo,
@@ -2300,18 +2326,28 @@
             arrivalRaw: col(r, 'arrival'),
             departureRaw: col(r, 'departure'),
             day: Number.isFinite(dayNum) ? dayNum : null,
+            isHalt,
             rowOrder: i
           });
         }
         return out;
       }
 
+      function scheduleRowSortMinutes(row) {
+        const am = parseTimeToMins(row.arrivalRaw);
+        const dm = parseTimeToMins(row.departureRaw);
+        if (am != null && dm != null && (row.day == null || row.day <= 1) && am > dm + 60) {
+          return dm;
+        }
+        return am ?? dm ?? 999999;
+      }
+
       function sortScheduleRows(rows) {
         return [...rows].sort((a, b) => {
           const da = a.day ?? 999999, db = b.day ?? 999999;
           if (da !== db) return da - db;
-          const ma = parseTimeToMins(a.arrivalRaw) ?? parseTimeToMins(a.departureRaw) ?? 999999;
-          const mb = parseTimeToMins(b.arrivalRaw) ?? parseTimeToMins(b.departureRaw) ?? 999999;
+          const ma = scheduleRowSortMinutes(a);
+          const mb = scheduleRowSortMinutes(b);
           if (ma !== mb) return ma - mb;
           const sa = a.scheduleId ?? Number.MAX_SAFE_INTEGER;
           const sb = b.scheduleId ?? Number.MAX_SAFE_INTEGER;
@@ -2434,25 +2470,55 @@
         return combined.map((st, idx) => ({ ...st, sequence: idx + 1 }));
       }
 
-      function isScheduledStopRow(row) {
+      function isScheduledStopRow(row, metaStopsSet = null) {
         if (!row) return false;
         const arr = formatSheetTimeStr(row.arrivalRaw);
         const dep = formatSheetTimeStr(row.departureRaw);
         if (!arr && !dep) return false;
+        if (row.isHalt !== null && row.isHalt !== undefined) return !!row.isHalt;
+        const c = (row.stationCode || '').trim().toUpperCase();
+        if (metaStopsSet && metaStopsSet.size >= 3) return c ? metaStopsSet.has(c) : true;
         if (arr && dep && arr === dep) return false;
         return true;
       }
 
-      function buildRouteFromScheduleRows(rows) {
+      function buildRouteFromScheduleRows(rows, entry = null) {
         if (!rows || !rows.length) return [];
         const sorted = sortScheduleRows(rows);
         const dbByCode = new Map(state.stationDb.map(s => [s.code.toUpperCase(), s]));
+        const stopTokensSet = new Set(
+          (entry?.stopTokens || [])
+            .map(t => parseSheetStopToken(t, null)?.stationCode || '')
+            .filter(Boolean)
+            .map(c => c.toUpperCase())
+        );
+        const hasDiffArrDep = sorted.some(r => {
+          const a = formatSheetTimeStr(r.arrivalRaw);
+          const d = formatSheetTimeStr(r.departureRaw);
+          return a && d && a !== d;
+        });
+        let inferredDay = 1, prevMin = null;
         return sorted.map((r, idx) => {
           const code = (r.stationCode || '').trim().toUpperCase();
           const hit = dbByCode.get(code);
           const arr = formatSheetTimeStr(r.arrivalRaw);
           const dep = formatSheetTimeStr(r.departureRaw);
-          const sched = arr || dep || '--:--';
+          const isTerminal = (idx === 0 || idx === sorted.length - 1);
+          const cleanArr = (idx === 0 && dep) ? dep : (arr || dep);
+          const sched = (idx === 0 ? (dep || cleanArr) : (cleanArr || dep)) || '--:--';
+          const mNow = parseTimeToMins(sched);
+          if (r.day != null) inferredDay = r.day;
+          else if (prevMin != null && mNow != null && mNow + 120 < prevMin) inferredDay++;
+          if (mNow != null) prevMin = mNow;
+
+          let isHalt = true;
+          if (!isTerminal) {
+            if (r.isHalt === false) isHalt = false;
+            else if (r.isHalt === true) isHalt = true;
+            else if (stopTokensSet.size >= 3 && code) isHalt = stopTokensSet.has(code);
+            else if (arr && dep && arr === dep && hasDiffArrDep) isHalt = false;
+            else if (!arr && !dep) isHalt = false;
+          }
           return {
             stationCode: code,
             stationName: r.stationName || hit?.name || code,
@@ -2460,9 +2526,10 @@
             lat: hit?.lat ?? null,
             lon: hit?.lon ?? null,
             scheduledTimeRaw: sched,
-            arrival: arr || sched,
+            arrival: cleanArr || sched,
             departure: dep || sched,
-            isHalt: isScheduledStopRow(r)
+            day: r.day ?? inferredDay,
+            isHalt
           };
         });
       }
@@ -2522,14 +2589,13 @@
 
         const [trainCsv, schedCsv] = await Promise.all([
           downloadGvizQuery('Train', `select * where (E = '${fromCode}' and H = '${toCode}') or (V contains '${fromCode}' and V contains '${toCode}')`),
-          downloadGvizQuery('Schedule', `select A, B, C, D, E, F, G, H where D = '${fromCode}' or D = '${toCode}'`)
+          downloadGvizQuery('Schedule', `select * where D = '${fromCode}' or D = '${toCode}'`)
         ]);
 
         let trainEntries = trainCsv ? parseSheetTrainsCsv(trainCsv) : [];
         const schedRows = schedCsv ? parseSheetScheduleCsv(schedCsv) : [];
         const byTrain = new Map();
 
-        // 1) Schedule sheet matches (handles all intermediate stations)
         const grouped = new Map();
         for (const r of schedRows) {
           if (!r.trainNumber) continue;
@@ -2538,7 +2604,6 @@
           grouped.get(k).push(r);
         }
 
-        // Also load Train metadata rows for any train matched only via Schedule (for Running_Days & Source/Dest)
         const knownKeys = new Set(trainEntries.map(e => normalizeTrainKey(e.trainNumber)));
         const missingNums = [];
         for (const [k, rows] of grouped.entries()) {
@@ -2560,11 +2625,20 @@
         }
 
         const entriesByKey = new Map();
-        for (const e of trainEntries) entriesByKey.set(normalizeTrainKey(e.trainNumber), e);
+        const stopsSetByKey = new Map();
+        for (const e of trainEntries) {
+          const ek = normalizeTrainKey(e.trainNumber);
+          entriesByKey.set(ek, e);
+          const sSet = new Set(
+            e.stopTokens.map(t => parseSheetStopToken(t, null)?.stationCode || '').filter(Boolean).map(c => c.toUpperCase())
+          );
+          if (sSet.size >= 3) stopsSetByKey.set(ek, sSet);
+        }
 
         for (const [k, rows] of grouped.entries()) {
-          const fRow = rows.find(r => r.stationCode.toUpperCase() === fromCode && isScheduledStopRow(r));
-          const tRow = rows.find(r => r.stationCode.toUpperCase() === toCode && isScheduledStopRow(r));
+          const mSet = stopsSetByKey.get(k) || null;
+          const fRow = rows.find(r => r.stationCode.toUpperCase() === fromCode && isScheduledStopRow(r, mSet));
+          const tRow = rows.find(r => r.stationCode.toUpperCase() === toCode && isScheduledStopRow(r, mSet));
           if (!fRow || !tRow || !isScheduleRowBefore(fRow, tRow)) continue;
           const dep = formatSheetTimeStr(fRow.departureRaw) || formatSheetTimeStr(fRow.arrivalRaw) || '--:--';
           const arr = formatSheetTimeStr(tRow.arrivalRaw) || formatSheetTimeStr(tRow.departureRaw) || '--:--';
@@ -2585,7 +2659,6 @@
           });
         }
 
-        // 2) Train sheet direct / Train_Stops matches
         for (const entry of trainEntries) {
           const k = normalizeTrainKey(entry.trainNumber);
           const route = buildRouteFromSheetEntry(entry);
@@ -2642,13 +2715,13 @@
 
         const [trainCsv, schedCsv] = await Promise.all([
           downloadGvizQuery('Train', `select * where ${condTrain}`),
-          downloadGvizQuery('Schedule', `select A, B, C, D, E, F, G, H where ${condSched}`)
+          downloadGvizQuery('Schedule', `select * where ${condSched}`)
         ]);
         const entry = trainCsv ? (parseSheetTrainsCsv(trainCsv)[0] || null) : null;
         const scheduleRows = schedCsv ? sortScheduleRows(parseSheetScheduleCsv(schedCsv)) : [];
         if (!entry && !scheduleRows.length) return null;
 
-        const routeFromSched = buildRouteFromScheduleRows(scheduleRows);
+        const routeFromSched = buildRouteFromScheduleRows(scheduleRows, entry);
         const routeFromTrain = entry ? buildRouteFromSheetEntry(entry) : [];
         const route = (routeFromSched.length >= routeFromTrain.length && routeFromSched.length)
           ? routeFromSched : routeFromTrain;
@@ -2662,31 +2735,88 @@
         };
       }
 
-      function estimateLocationFromSheetSchedule(entry, route) {
+      function estimateLocationFromSheetSchedule(entry, route, nowMs = Date.now()) {
         if (!route || !route.length) return null;
-        const sMin = parseTimeToMins(entry?.departureRaw || route[0]?.scheduledTimeRaw);
-        const rMin = parseTimeToMins(entry?.arrivalRaw || route[route.length - 1]?.scheduledTimeRaw);
-        const now = new Date();
-        const nowMin = now.getHours() * 60 + now.getMinutes();
-        let prog = 0;
-        if (sMin != null && rMin != null && route.length >= 2) {
-          const dur = rMin >= sMin ? (rMin - sMin) : ((1440 - sMin) + rMin);
-          if (dur > 0) {
-            const elp = rMin >= sMin ? (nowMin - sMin) : (nowMin >= sMin ? (nowMin - sMin) : ((1440 - sMin) + nowMin));
-            if (elp >= 0 && elp <= dur) prog = Math.min(1, Math.max(0, elp / dur));
+        const istDate = new Date(nowMs + 19800000);
+        const nowMin = istDate.getUTCHours() * 60 + istDate.getUTCMinutes();
+        const nowDow = istDate.getUTCDay();
+
+        const absMins = [];
+        let curDay = 1, prevMod = null;
+        for (let i = 0; i < route.length; i++) {
+          const st = route[i];
+          const m = i === 0
+            ? (parseTimeToMins(st.departure) ?? parseTimeToMins(st.scheduledTimeRaw) ?? parseTimeToMins(st.arrival))
+            : (parseTimeToMins(st.arrival) ?? parseTimeToMins(st.scheduledTimeRaw) ?? parseTimeToMins(st.departure));
+          if (st.day != null && st.day >= 1) curDay = st.day;
+          else if (prevMod != null && m != null && m + 120 < prevMod) curDay++;
+          if (m != null) prevMod = m;
+          absMins.push(m != null ? ((curDay - 1) * 1440 + m) : null);
+        }
+
+        const firstAbs = absMins.find(v => v != null) ?? null;
+        const lastAbs = [...absMins].reverse().find(v => v != null) ?? null;
+        const runParsed = entry?.runningDaysRaw ? parseRunningDaysSet(entry.runningDaysRaw) : null;
+        const allowedDays = runParsed && runParsed.days.size > 0 ? runParsed.days : null;
+
+        let activeIdx = 0, segFrac = 0, isRunningNow = false;
+        if (firstAbs != null && lastAbs != null && lastAbs > firstAbs && route.length >= 2) {
+          const maxDays = Math.ceil((lastAbs + 120) / 1440);
+          let targetMin = null;
+          for (let dayOff = 0; dayOff <= maxDays; dayOff++) {
+            const cand = nowMin + dayOff * 1440;
+            if (cand >= firstAbs && cand <= lastAbs) {
+              if (allowedDays && !allowedDays.has((nowDow - dayOff + 70) % 7)) continue;
+              targetMin = cand;
+              break;
+            }
+          }
+          if (targetMin != null) {
+            isRunningNow = true;
+            let lastValid = 0;
+            for (let j = 0; j < absMins.length; j++) {
+              if (absMins[j] == null) continue;
+              if (absMins[j] <= targetMin) {
+                lastValid = j;
+              } else {
+                activeIdx = lastValid;
+                const prevT = absMins[lastValid], nextT = absMins[j];
+                if (prevT != null && nextT > prevT) {
+                  segFrac = Math.min(1, Math.max(0, (targetMin - prevT) / (nextT - prevT)));
+                }
+                break;
+              }
+            }
+            if (targetMin >= lastAbs) {
+              activeIdx = route.length - 1;
+              segFrac = 0;
+            }
           }
         }
-        const scaled = Math.min(route.length - 1, Math.max(0, Math.floor(prog * (route.length - 1))));
-        const cur = route[scaled], nxt = route[scaled + 1];
-        const segFrac = route.length >= 2 ? Math.min(1, Math.max(0, prog * (route.length - 1) - scaled)) : 0;
+
+        const cur = route[activeIdx], nxt = route[activeIdx + 1];
+        let lat = cur.lat, lon = cur.lon, bearing = null, estSpeed = 0;
+        if (isRunningNow && cur.lat != null && cur.lon != null && nxt?.lat != null && nxt?.lon != null) {
+          lat = cur.lat + (nxt.lat - cur.lat) * segFrac;
+          lon = cur.lon + (nxt.lon - cur.lon) * segFrac;
+          bearing = bearingDegrees(cur.lat, cur.lon, nxt.lat, nxt.lon);
+          const segDist = haversineKm(cur.lat, cur.lon, nxt.lat, nxt.lon) * 1.2;
+          const tA = absMins[activeIdx], tB = absMins[activeIdx + 1];
+          if (tA != null && tB != null && tB > tA && segDist > 0.2) {
+            estSpeed = Math.min(130, Math.max(20, Math.round((segDist / ((tB - tA) / 60)) * 10) / 10));
+          } else if (segDist > 0.2) {
+            estSpeed = 48;
+          }
+        }
+
         return {
           stationCode: cur.stationCode || null,
           stationName: cur.stationName || cur.stationCode,
-          sequence: cur.sequence || (scaled + 1),
-          lat: cur.lat,
-          lon: cur.lon,
-          speedKmh: 0,
-          bearingDegrees: null,
+          sequence: cur.sequence || (activeIdx + 1),
+          lat,
+          lon,
+          speedKmh: estSpeed,
+          bearingDegrees: bearing,
           segmentProgress: segFrac,
           nextStationName: nxt ? (nxt.stationName || nxt.stationCode) : null
         };
@@ -2758,9 +2888,10 @@
             trainName: finalName,
             stationCode: st.stationCode,
             stationName: st.stationName,
-            arrival: arr,
-            departure: dep,
-            day: ex?.day || day
+            arrival: idx === 0 ? 'None' : arr,
+            departure: idx === resolvedRoute.length - 1 ? 'None' : dep,
+            day: st.day || ex?.day || day,
+            isHalt: st.isHalt !== false ? 'Y' : 'N'
           };
         });
 
@@ -2813,7 +2944,7 @@
 
       function reportLiveObservationToSheet(trainNo, trainName, route, located, passedKm, timeMs) {
         const cleanNo = String(trainNo || '').replace(/\D/g, '');
-        if (!cleanNo || !route || !route.length || !located) return;
+        if (!cleanNo || !route || !route.length || !located || !state.insideTrain) return;
         const st = route[located.idx];
         if (!st) return;
         const stCode = (st.stationCode || '').trim().toUpperCase();
@@ -2825,7 +2956,7 @@
         lastObservedSyncKey = key;
 
         let obsTime = null;
-        if (atStation) {
+        if (atStation && located.idx > 0) {
           const d = new Date(timeMs || Date.now());
           obsTime = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
         }
@@ -2864,7 +2995,7 @@
                 stationName: stName || dbHit?.name || stCode,
                 arrival: obsTime,
                 departure: '',
-                day: 1
+                day: st.day || 1
               }]
             } : {})
           } : {})
@@ -3002,18 +3133,18 @@
         state.betweenError = null;
         renderBetween();
         try {
-          // 1) Search Train, Station & Schedule Google Sheets first (zero API calls when complete)
+          // 1) Search Train, Station & Schedule Google Sheets first
           let sheetList = [];
           try {
             sheetList = await searchTrainsBetweenFromSheet(state.fromInput || f, state.toInput || t);
           } catch (_) { sheetList = []; }
 
           const pairKey = `${f.toUpperCase()}->${t.toUpperCase()}`;
-          const needsEnrichment = sheetList.some(it => !it.runningDaysRaw);
+          const needsEnrichment = !sheetList.length || sheetList.some(it => !it.runningDaysRaw);
           let list = sheetList;
 
-          // 2) Call action=between when sheet has no matches OR lacks Running_Days / full columns once per session
-          if (!sheetList.length || (needsEnrichment && !enrichedBetweenPairs.has(pairKey))) {
+          // 2) Call action=between when sheet has gaps / lacks Running_Days / hasn't synced this session
+          if (!enrichedBetweenPairs.has(pairKey) && (needsEnrichment || sheetList.length < 3)) {
             try {
               const r = await fetch(`${API_URL}?action=between&from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`);
               const json = await r.json();
@@ -3026,14 +3157,23 @@
                 runningDaysRaw: extractApiRunDays(obj),
                 sourceCode: obj.train?.sourceCode || '',
                 destCode: obj.train?.destCode || ''
-              })).sort((a, b) => {
-                const ma = parseTimeToMins(a.departure) ?? 9999;
-                const mb = parseTimeToMins(b.departure) ?? 9999;
-                return ma !== mb ? ma - mb : String(a.trainNumber).localeCompare(String(b.trainNumber));
-              });
+              })).filter(it => it.trainNumber);
               if (apiList.length) {
                 enrichedBetweenPairs.add(pairKey);
-                list = apiList;
+                const mergedMap = new Map();
+                for (const item of apiList) {
+                  const k = normalizeTrainKey(item.trainNumber);
+                  if (!mergedMap.has(k)) mergedMap.set(k, item);
+                }
+                for (const sItem of sheetList) {
+                  const k = normalizeTrainKey(sItem.trainNumber);
+                  if (!mergedMap.has(k)) mergedMap.set(k, sItem);
+                }
+                list = Array.from(mergedMap.values()).sort((a, b) => {
+                  const ma = parseTimeToMins(a.departure) ?? 9999;
+                  const mb = parseTimeToMins(b.departure) ?? 9999;
+                  return ma !== mb ? ma - mb : String(a.trainNumber).localeCompare(String(b.trainNumber));
+                });
               }
             } catch (_) {
               // Keep sheetList if API call fails
@@ -3206,7 +3346,8 @@
           }
           routeArr = best.map((st, i) => {
             const d = st.stationCode ? donor.get(st.stationCode.toUpperCase()) : null;
-            return !d ? { ...st, sequence: i + 1 } : {
+            const isTerm = (i === 0 || i === best.length - 1);
+            const mergedSt = !d ? { ...st, sequence: i + 1 } : {
               ...st,
               sequence: i + 1,
               stationName: st.stationName || d.stationName,
@@ -3215,8 +3356,11 @@
               scheduledTimeRaw: hasValidSheetTime(st.scheduledTimeRaw) ? st.scheduledTimeRaw : d.scheduledTimeRaw,
               arrival: hasValidSheetTime(st.arrival) ? st.arrival : d.arrival,
               departure: hasValidSheetTime(st.departure) ? st.departure : d.departure,
+              day: st.day ?? d.day ?? null,
               isHalt: st.isHalt !== undefined ? st.isHalt : (d.isHalt !== false)
             };
+            if (isTerm) mergedSt.isHalt = true;
+            return mergedSt;
           });
         }
 
@@ -3229,23 +3373,27 @@
         });
 
         const apiLoc = payload.currentLocation || null;
-        const curLoc = apiLoc || (sheetLookup ? estimateLocationFromSheetSchedule(sheetLookup.entry, routeArr) : null);
+        const apiLocSpeed = numOrNull(apiLoc?.speedKmh ?? apiLoc?.speed) ?? 0;
+        const useClientSchedEstimate = !apiLoc || (payload.source === 'sheet' && apiLocSpeed <= 0.1 && (apiLoc?.segmentProgress || 0) === 0);
+        const curLoc = useClientSchedEstimate
+          ? (estimateLocationFromSheetSchedule(sheetLookup?.entry, routeArr) || apiLoc)
+          : apiLoc;
         if (!routeArr.length && curLoc?.lat != null && curLoc?.lon != null) {
           routeArr = [
-            { stationCode: curLoc.stationCode || '', stationName: curLoc.stationName || 'Train', lat: curLoc.lat, lon: curLoc.lon, scheduledTimeRaw: '--:--' },
-            { stationCode: '', stationName: curLoc.nextStationName || 'Next', lat: curLoc.lat + 0.05, lon: curLoc.lon + 0.05, scheduledTimeRaw: '--:--' }
+            { stationCode: curLoc.stationCode || '', stationName: curLoc.stationName || 'Train', lat: curLoc.lat, lon: curLoc.lon, scheduledTimeRaw: '--:--', isHalt: true },
+            { stationCode: '', stationName: curLoc.nextStationName || 'Next', lat: curLoc.lat + 0.05, lon: curLoc.lon + 0.05, scheduledTimeRaw: '--:--', isHalt: true }
           ];
         }
 
         const prevTrain = state.locatedTrain;
         state.route = routeArr;
         state.trainName = (sheetLookup?.entry?.trainName || '').trim() || payload.trainName || json.trainName || state.trainName;
-        state.rawSource = apiLoc ? (payload.source || json.source || 'api') : (sheetLookup ? 'sheet' : (payload.source || json.source || 'api'));
+        state.rawSource = !useClientSchedEstimate ? (payload.source || json.source || 'api') : (sheetLookup ? 'sheet' : (payload.source || json.source || 'api'));
         state.locatedTrain = locateTrain(curLoc, routeArr);
         state.stoppageDistances = computeStoppageDistances(state.locatedTrain, routeArr);
         if (state.trainName) saveRecentTrain(trainNo, state.trainName);
 
-        // Auto-sync missing/incomplete/corrected Train, Train_Stops, Station, Schedule to sheets
+        // Auto-sync missing/incomplete Train, Train_Stops, Station, Schedule to sheets (never fake observation clock!)
         const schedByCode = new Map((sheetLookup?.scheduleRows || []).map(r => [r.stationCode.toUpperCase(), r]));
         const hasNewSchedData = routeArr.some(st => {
           const row = st.stationCode ? schedByCode.get(st.stationCode.toUpperCase()) : null;
@@ -3254,7 +3402,6 @@
         if (routeArr.length >= 2 && (!sheetLookup || !sheetLookup.isComplete || sheetLookup.needsTrainStopsFill || routeArr.length > sheetLookup.route.length || hasNewSchedData)) {
           syncResolvedTrainToSheet(trainNo, state.trainName, sheetLookup, routeArr);
         }
-        reportLiveObservationToSheet(trainNo, state.trainName, routeArr, state.locatedTrain, state.stoppageDistances.passedKm, Date.now());
 
         if (prevTrain && state.rawSource === 'gps') {
           setStatusBanner(state.strings.otherUserGpsMsg, 'ok');
@@ -3274,28 +3421,38 @@
       function parseRoute(arr) {
         if (!Array.isArray(arr)) return [];
         const len = arr.length;
+        const hasDiffArrDep = arr.some(s => {
+          const a = formatSheetTimeStr(s.arrivalTime || s.arrival || s.scheduledArrival || s.eta || '');
+          const d = formatSheetTimeStr(s.departure || s.scheduledDeparture || '');
+          return a && d && a !== d;
+        });
         return arr.map((s, i) => {
+          const stObj = (s.station && typeof s.station === 'object') ? s.station : {};
           const arrival = s.arrivalTime || s.arrival || s.scheduledArrival || s.eta || '';
-          const departure = s.departure || '';
+          const departure = s.departure || s.scheduledDeparture || '';
+          const isTerminal = (i === 0 || i === len - 1);
           let isHalt = true;
-          if (typeof s.isHalt === 'boolean') {
-            isHalt = s.isHalt;
-          } else {
-            const arrNorm = formatSheetTimeStr(arrival);
-            const depNorm = formatSheetTimeStr(departure);
-            if (arrNorm && depNorm && arrNorm === depNorm && len > 2 && i > 0 && i < len - 1) {
-              isHalt = false;
+          if (!isTerminal) {
+            if (typeof s.isHalt === 'boolean') {
+              isHalt = s.isHalt;
+            } else {
+              const arrNorm = formatSheetTimeStr(arrival);
+              const depNorm = formatSheetTimeStr(departure);
+              if (arrNorm && depNorm && arrNorm === depNorm && hasDiffArrDep) {
+                isHalt = false;
+              }
             }
           }
           return {
-            stationCode: (s.stationCode || s.code || '').trim().toUpperCase(),
-            stationName: (s.stationName || s.name || s.stationCode || s.code || '').trim(),
+            stationCode: (s.stationCode || s.code || stObj.code || stObj.stationCode || '').trim().toUpperCase(),
+            stationName: (s.stationName || s.name || stObj.name || stObj.stationName || s.stationCode || s.code || '').trim(),
             sequence: s.sequence ?? (i + 1),
-            lat: numOrNull(s.lat ?? s.latitude),
-            lon: numOrNull(s.lng ?? s.lon ?? s.longitude),
-            scheduledTimeRaw: arrival || departure || '--:--',
-            arrival: arrival || null,
+            lat: numOrNull(s.lat ?? s.latitude ?? stObj.lat ?? stObj.latitude),
+            lon: numOrNull(s.lng ?? s.lon ?? s.longitude ?? stObj.lng ?? stObj.lon ?? stObj.longitude),
+            scheduledTimeRaw: (i === 0 ? (departure || arrival) : (arrival || departure)) || '--:--',
+            arrival: (i === 0 && departure) ? departure : (arrival || null),
             departure: departure || null,
+            day: numOrNull(s.day ?? s.arrivalDay ?? s.departureDay),
             isHalt
           };
         });
@@ -3329,7 +3486,9 @@
         if (code) idx = route.findIndex(s => s.stationCode === code);
         if (idx < 0 && name) idx = route.findIndex(s => { const sn = s.stationName.toUpperCase(); return sn === name || sn.includes(name) || name.includes(sn); });
         if (idx < 0 && c?.sequence != null) idx = route.findIndex(s => s.sequence === c.sequence);
-        const cLat = numOrNull(c?.lat ?? c?.latitude), cLon = numOrNull(c?.lng ?? c?.lon ?? c?.longitude);
+        const coords = c?.coordinates || null;
+        const cLat = numOrNull(coords?.lat ?? c?.lat ?? c?.latitude);
+        const cLon = numOrNull(coords?.lng ?? coords?.lon ?? c?.lng ?? c?.lon ?? c?.longitude);
         if (idx < 0 && cLat != null && cLon != null && route.length) {
           let best = 1e9;
           route.forEach((s, i) => {
@@ -4616,7 +4775,10 @@
           schedEl.textContent = `🕒 ${sched}`;
           node.appendChild(schedEl);
 
-          if (loc && idx >= activeIdx && st.lat != null && st.lon != null) {
+          const isStaticAtOrigin = !state.insideTrain && state.rawSource !== 'gps' && activeIdx === 0 && frac <= 0.01 && effSpeed <= 0.5;
+          const showLiveEta = loc && idx >= activeIdx && st.lat != null && st.lon != null && !isStaticAtOrigin &&
+            (state.insideTrain || state.rawSource === 'gps' || state.rawSource === 'api' || (loc.speedKmh || 0) > 0.5 || frac > 0.01);
+          if (showLiveEta) {
             const trackKm = haversineKm(loc.lat, loc.lon, st.lat, st.lon) * 1.2;
             const mins = Math.round((trackKm / (effSpeed > 15 ? effSpeed : 45)) * 60);
             const etaD = new Date(Date.now() + mins * 60000);

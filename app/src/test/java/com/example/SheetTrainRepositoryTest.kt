@@ -224,4 +224,102 @@ class SheetTrainRepositoryTest {
     assertEquals("মাসিক", monthly.frequencyLabel)
     assertEquals(null, monthly.runsToday)
   }
+
+  @Test
+  fun originAndDestinationAreAlwaysHaltsEvenWhenCorruptedOrSameTimeAndOriginSortsFirst() {
+    val stations = listOf(
+      StationDbEntry("SEALDAH", "SDAH", 22.5678, 88.3705),
+      StationDbEntry("DAKSHINESWAR", "DAKE", 22.6548, 88.3619),
+      StationDbEntry("BARDDHAMAN JN", "BWN", 23.2504, 87.8705),
+      StationDbEntry("SILCHAR", "SCL", 24.8333, 92.7789),
+    )
+
+    val trainCsv = """
+      "Train_Number","Train_Name","From_Station_Code","From_Station_Name","Departure","To_Station_Code","To_Station_Name","Arrival","Distance_KM","Route_Points_Count","Train_Stops","Running_Days"
+      "13175","Silchar Kanchanjungha Express","SDAH","SEALDAH","06:50","SCL","SILCHAR","14:40","1350","4","SDAH, BWN, SCL","Mon, Wed, Sat"
+    """.trimIndent()
+    val entry = repo.parseTrainsCsv(trainCsv).first()
+
+    // SDAH mistakenly received 16:46 as Arrival from an old passive observer while Departure is 06:50
+    // SCL destination has arr == dep (14:40 / 14:40) without Train_Stops listing intermediate DKAE
+    val corruptedScheduleCsv = """
+      "Schedule_ID","Train_Number","Train_Name","Station_Code","Station_Name","Arrival","Departure","Day"
+      "1","13175","Silchar Kanchanjungha Express","SDAH","SEALDAH","16:46:00","06:50:00","1"
+      "2","13175","Silchar Kanchanjungha Express","DAKE","DAKSHINESWAR","07:06:00","07:06:00","1"
+      "3","13175","Silchar Kanchanjungha Express","BWN","BARDDHAMAN JN","08:34:00","08:36:00","1"
+      "4","13175","Silchar Kanchanjungha Express","SCL","SILCHAR","14:40:00","14:40:00","2"
+    """.trimIndent()
+
+    val schedRows = repo.parseScheduleCsv(corruptedScheduleCsv)
+    val route = repo.buildRouteFromScheduleRows(schedRows, stations, entry)
+
+    assertEquals(listOf("SDAH", "DAKE", "BWN", "SCL"), route.map { it.stationCode })
+    assertEquals("06:50", route[0].scheduledTimeRaw)
+    assertTrue("Origin SDAH must always be a halt", route[0].isHalt)
+    assertFalse("Pass-through DAKE should be non-halt", route[1].isHalt)
+    assertTrue("Commercial BWN must be a halt", route[2].isHalt)
+    assertTrue("Destination SCL must always be a halt", route[3].isHalt)
+  }
+
+  @Test
+  fun handlesIsHaltColumnAndMetaStopsForMemuAndBetweenMatching() {
+    val stations = listOf(
+      StationDbEntry("BARDDHAMAN JN", "BWN", 23.2504, 87.8705),
+      StationDbEntry("AHMADPUR JN", "AMP", 23.8359, 87.7033),
+    )
+
+    val scheduleCsv = """
+      "Schedule_ID","Train_Number","Train_Name","Station_Code","Station_Name","Arrival","Departure","Day","Is_Halt"
+      "1","63581","Barddhaman - Rampurhat MEMU","BWN","BARDDHAMAN JN","08:55:00","08:55:00","1","Y"
+      "2","63581","Barddhaman - Rampurhat MEMU","AMP","AHMADPUR JN","10:20:00","10:20:00","1","Y"
+      "3","12345","Saraighat SF Exp","BWN","BARDDHAMAN JN","17:07:00","17:09:00","1","Y"
+      "4","12345","Saraighat SF Exp","AMP","AHMADPUR JN","18:18:00","18:18:00","1","N"
+    """.trimIndent()
+
+    val rows = repo.parseScheduleCsv(scheduleCsv)
+    val matches = repo.combineBetweenMatches("BWN", "AMP", emptyList(), rows, stations)
+    assertEquals(listOf("63581"), matches.map { it.trainNumber })
+    assertEquals("08:55", matches[0].departure)
+    assertEquals("10:20", matches[0].arrival)
+  }
+
+  @Test
+  fun estimatesMultiDayLocationAlongRouteUsingIstAndRunningDays() {
+    val trainCsv = """
+      "Train_Number","Train_Name","From_Station_Code","From_Station_Name","Departure","To_Station_Code","To_Station_Name","Arrival","Distance_KM","Route_Points_Count","Train_Stops","Running_Days"
+      "13175","Silchar Kanchanjungha Express","SDAH","SEALDAH","06:50","SCL","SILCHAR","14:40","1350","4","SDAH, BWN, AMP, SCL","Mon, Wed, Sat"
+    """.trimIndent()
+    val entry = repo.parseTrainsCsv(trainCsv).first()
+    val route = listOf(
+      RouteStation("SDAH", "SEALDAH", 1, 22.5678, 88.3705, "06:50", "06:50", "06:50", isHalt = true, day = 1),
+      RouteStation("BWN", "BARDDHAMAN JN", 2, 23.2504, 87.8705, "08:36", "08:34", "08:36", isHalt = true, day = 1),
+      RouteStation("AMP", "AHMADPUR JN", 3, 23.8359, 87.7033, "09:46", "09:44", "09:46", isHalt = true, day = 1),
+      RouteStation("SCL", "SILCHAR", 4, 24.8333, 92.7789, "14:40", "14:40", "14:40", isHalt = true, day = 2),
+    )
+
+    // 2026-11-16 is Monday; 09:10 IST -> between BWN (08:34) and AMP (09:44)
+    val istCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Kolkata")).apply {
+      set(2026, java.util.Calendar.NOVEMBER, 16, 9, 10, 0)
+    }
+    val monMorning = repo.estimateLocationFromSheetSchedule(entry, route, istCal.timeInMillis)
+    assertEquals("BWN", monMorning?.stationCode)
+    assertTrue((monMorning?.segmentProgress ?: 0.0) > 0.4)
+    assertTrue((monMorning?.speedKmh ?: 0.0) >= 20.0)
+
+    // 2026-11-17 is Tuesday 09:10 IST: Monday train IS still on Day 2 between AMP (Day 1 09:44) and SCL (Day 2 14:40)!
+    val tueCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Kolkata")).apply {
+      set(2026, java.util.Calendar.NOVEMBER, 17, 9, 10, 0)
+    }
+    val tueMorning = repo.estimateLocationFromSheetSchedule(entry, route, tueCal.timeInMillis)
+    assertEquals("AMP", tueMorning?.stationCode)
+    assertTrue((tueMorning?.speedKmh ?: 0.0) >= 20.0)
+
+    // 2026-11-17 Tuesday 16:50 IST: Monday train ended at 14:40, and no Tuesday departure -> idle at origin SDAH
+    val tueEveCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Kolkata")).apply {
+      set(2026, java.util.Calendar.NOVEMBER, 17, 16, 50, 0)
+    }
+    val tueEve = repo.estimateLocationFromSheetSchedule(entry, route, tueEveCal.timeInMillis)
+    assertEquals("SDAH", tueEve?.stationCode)
+    assertEquals(0.0, tueEve?.speedKmh ?: -1.0, 0.01)
+  }
 }
