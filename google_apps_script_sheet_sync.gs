@@ -40,6 +40,11 @@ function doGet(e) {
       var schedTrainNo = String(p.trainNo || p.trainNumber || '').replace(/\D/g, '');
       return jsonResponse_(handleGetSchedule_(sheetId, schedTrainNo));
     }
+    if (action === 'testapi' || action === 'diag') {
+      var testFrom = String(p.from || 'BWN').trim().toUpperCase();
+      var testTo = String(p.to || 'AMP').trim().toUpperCase();
+      return jsonResponse_(handleTestRailRadarApi_(testFrom, testTo));
+    }
 
     var rrKeys = getRailRadarApiKeys_();
     var props = PropertiesService.getScriptProperties();
@@ -121,17 +126,105 @@ function getRailRadarApiKeys_() {
   return keys;
 }
 
-function fetchRailRadarJson_(pathAndQuery) {
+var LAST_RAILRADAR_ERROR_ = null;
+var FAILED_RR_KEYS_ = {};
+
+function maskApiKey_(key) {
+  var s = String(key || '');
+  if (s.length <= 8) return '***';
+  return s.slice(0, 4) + '...' + s.slice(-4) + ' (len:' + s.length + ')';
+}
+
+function parseRailRadarErr_(code, txt) {
+  var msg = '';
+  var errCode = '';
+  try {
+    var parsed = JSON.parse(txt || '{}');
+    if (parsed && parsed.error) {
+      if (typeof parsed.error === 'string') msg = parsed.error;
+      else {
+        errCode = String(parsed.error.code || '');
+        msg = String(parsed.error.message || '');
+      }
+    } else if (parsed && parsed.message) {
+      msg = String(parsed.message);
+    }
+  } catch (_) {
+    msg = String(txt || '').slice(0, 140);
+  }
+  return {
+    httpStatus: code,
+    code: errCode || ('HTTP_' + code),
+    message: msg || ('HTTP ' + code)
+  };
+}
+
+function handleTestRailRadarApi_(fromCode, toCode) {
   var keys = getRailRadarApiKeys_();
-  if (!keys.length) return null;
-  var url = 'https://api.railradar.in' + pathAndQuery;
+  var url = 'https://api.railradar.in/v1/trains/between/' + encodeURIComponent(fromCode) + '/' + encodeURIComponent(toCode);
+  var results = [];
   for (var i = 0; i < keys.length; i++) {
     var key = keys[i];
     try {
       var resp = UrlFetchApp.fetch(url, {
         headers: {
           'X-Api-Key': key,
-          'Authorization': 'Bearer ' + key,
+          'Accept': 'application/json'
+        },
+        muteHttpExceptions: true
+      });
+      var code = resp.getResponseCode();
+      var txt = resp.getContentText() || '{}';
+      if (code >= 200 && code < 300) {
+        var json = JSON.parse(txt);
+        var trains = (json && json.data && Array.isArray(json.data.trains)) ? json.data.trains : [];
+        results.push({
+          keyIndex: i + 1,
+          keyMask: maskApiKey_(key),
+          ok: true,
+          httpStatus: code,
+          trainsFound: trains.length
+        });
+      } else {
+        var errObj = parseRailRadarErr_(code, txt);
+        results.push({
+          keyIndex: i + 1,
+          keyMask: maskApiKey_(key),
+          ok: false,
+          httpStatus: code,
+          errorCode: errObj.code,
+          errorMessage: errObj.message
+        });
+      }
+    } catch (e) {
+      results.push({
+        keyIndex: i + 1,
+        keyMask: maskApiKey_(key),
+        ok: false,
+        httpStatus: 0,
+        errorMessage: String(e && e.message ? e.message : e)
+      });
+    }
+  }
+  return {
+    success: true,
+    routeTested: fromCode + ' -> ' + toCode,
+    railRadarKeyCount: keys.length,
+    keys: results
+  };
+}
+
+function fetchRailRadarJson_(pathAndQuery) {
+  var keys = getRailRadarApiKeys_();
+  if (!keys.length) return null;
+  var url = 'https://api.railradar.in' + pathAndQuery;
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
+    if (FAILED_RR_KEYS_[key]) continue;
+    try {
+      var resp = UrlFetchApp.fetch(url, {
+        headers: {
+          'X-Api-Key': key,
           'Accept': 'application/json'
         },
         muteHttpExceptions: true
@@ -141,30 +234,48 @@ function fetchRailRadarJson_(pathAndQuery) {
       if (code >= 200 && code < 300) {
         var json = JSON.parse(txt);
         if (json && json.success !== false) {
+          LAST_RAILRADAR_ERROR_ = null;
           return json;
         }
+      } else {
+        LAST_RAILRADAR_ERROR_ = parseRailRadarErr_(code, txt);
+        if (code === 401 || code === 403 || code === 429) {
+          FAILED_RR_KEYS_[key] = code;
+        }
       }
-    } catch (_) {}
+    } catch (e) {
+      LAST_RAILRADAR_ERROR_ = { httpStatus: 0, code: 'FETCH_ERROR', message: String(e && e.message ? e.message : e) };
+    }
   }
   return null;
 }
 
 function fetchRailRadarJsonBatch_(paths) {
   var keys = getRailRadarApiKeys_();
-  if (!keys.length || !paths.length) return {};
+  var activeKeys = [];
+  for (var ki = 0; ki < keys.length; ki++) {
+    if (!FAILED_RR_KEYS_[keys[ki]]) activeKeys.push(keys[ki]);
+  }
+  if (!activeKeys.length || !paths.length) return {};
   var out = {};
-  var batchSize = 10;
+  var batchSize = 5;
   for (var start = 0; start < paths.length; start += batchSize) {
+    activeKeys = [];
+    for (var ak = 0; ak < keys.length; ak++) {
+      if (!FAILED_RR_KEYS_[keys[ak]]) activeKeys.push(keys[ak]);
+    }
+    if (!activeKeys.length) break;
     var slice = paths.slice(start, start + batchSize);
     var reqs = [];
+    var reqKeys = [];
     for (var i = 0; i < slice.length; i++) {
-      var key = keys[(start + i) % keys.length];
+      var key = activeKeys[(start + i) % activeKeys.length];
+      reqKeys.push(key);
       reqs.push({
         url: 'https://api.railradar.in' + slice[i],
         method: 'get',
         headers: {
           'X-Api-Key': key,
-          'Authorization': 'Bearer ' + key,
           'Accept': 'application/json'
         },
         muteHttpExceptions: true
@@ -174,13 +285,19 @@ function fetchRailRadarJsonBatch_(paths) {
       var responses = UrlFetchApp.fetchAll(reqs);
       for (var j = 0; j < responses.length; j++) {
         var code = responses[j].getResponseCode();
+        var txt = responses[j].getContentText() || '{}';
         if (code >= 200 && code < 300) {
           try {
-            var json = JSON.parse(responses[j].getContentText() || '{}');
+            var json = JSON.parse(txt);
             if (json && json.success !== false) {
               out[slice[j]] = json;
             }
           } catch (_) {}
+        } else {
+          LAST_RAILRADAR_ERROR_ = parseRailRadarErr_(code, txt);
+          if (code === 401 || code === 403 || code === 429) {
+            FAILED_RR_KEYS_[reqKeys[j]] = code;
+          }
         }
       }
     } catch (_) {
@@ -269,7 +386,7 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
         seedMetaByKey[tk] = tr._meta || {};
         var exMeta = trainSheetIndex[tk];
         if (!exMeta || exMeta.stopsCount <= 2 || exMeta.routePointsCount <= 2 || !exMeta.runningDays) {
-          if (trainNumsToEnrich.length < 12 && !cache.get('enriched_' + tk)) {
+          if (trainNumsToEnrich.length < 5 && !cache.get('enriched_' + tk)) {
             trainNumsToEnrich.push(tNo);
           }
         }
@@ -378,10 +495,19 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
         }
       }
     }
-    return { success: true, source: 'sheet', data: { trains: sheetTrains } };
+    return {
+      success: true,
+      source: 'sheet',
+      apiError: LAST_RAILRADAR_ERROR_ ? (LAST_RAILRADAR_ERROR_.code + ': ' + LAST_RAILRADAR_ERROR_.message) : undefined,
+      data: { trains: sheetTrains }
+    };
   }
 
-  return { success: true, data: { trains: [] } };
+  return {
+    success: true,
+    apiError: LAST_RAILRADAR_ERROR_ ? (LAST_RAILRADAR_ERROR_.code + ': ' + LAST_RAILRADAR_ERROR_.message) : undefined,
+    data: { trains: [] }
+  };
 }
 
 function handleGetSchedule_(sheetId, trainNo) {
@@ -438,6 +564,9 @@ function handleGetLive_(sheetId, trainNo) {
 
   return {
     success: true,
+    apiError: (source !== 'api' && source !== 'gps' && LAST_RAILRADAR_ERROR_)
+      ? (LAST_RAILRADAR_ERROR_.code + ': ' + LAST_RAILRADAR_ERROR_.message)
+      : undefined,
     data: {
       trainName: info.trainName || (apiLive && apiLive.trainName) || '',
       source: source,
@@ -1104,9 +1233,19 @@ function fetchBetweenFromExternalApi_(fromCode, toCode, stCoords) {
     : 0;
 
   var out = [];
+  var cache = CacheService.getScriptCache();
+  var apiCacheKey = 'rr_between_v1_' + fromCode + '_' + toCode;
+  var cachedRaw = cache.get(apiCacheKey);
+  if (cachedRaw) {
+    try {
+      var parsedCached = JSON.parse(cachedRaw);
+      if (Array.isArray(parsedCached) && parsedCached.length) return parsedCached;
+    } catch (_) {}
+  }
+
   var paths = [
     '/v1/trains/between/' + encodeURIComponent(fromCode) + '/' + encodeURIComponent(toCode),
-    '/v1/trains/between?from=' + encodeURIComponent(fromCode) + '&to=' + encodeURIComponent(toCode)
+    '/v1/legacy/trains/between?from=' + encodeURIComponent(fromCode) + '&to=' + encodeURIComponent(toCode)
   ];
 
   for (var pIdx = 0; pIdx < paths.length; pIdx++) {
@@ -1204,6 +1343,12 @@ function fetchBetweenFromExternalApi_(fromCode, toCode, stCoords) {
     if (mb == null) mb = 9999;
     return ma !== mb ? ma - mb : String(a.train.number).localeCompare(String(b.train.number));
   });
+  if (out.length) {
+    try {
+      var serialized = JSON.stringify(out);
+      if (serialized.length < 95000) cache.put(apiCacheKey, serialized, 1800);
+    } catch (_) {}
+  }
   return out;
 }
 
@@ -1211,7 +1356,7 @@ function fetchLiveAndRouteFromExternalApi_(trainNo, stMap) {
   // পূর্ণ রুটের সাথে স্টেশন কোঅর্ডিনেট ও নন-স্টপ পাস-থ্রু স্টেশনগুলো (isHalt: false) পাওয়ার জন্য includeCoordinates=true সহ কল করি
   var livePaths = [
     '/v1/trains/' + encodeURIComponent(trainNo) + '/live?includeCoordinates=true',
-    '/v1/trains/' + encodeURIComponent(trainNo) + '?includeCoordinates=true'
+    '/v1/trains/' + encodeURIComponent(trainNo)
   ];
 
   var bestMeta = null;
@@ -1236,7 +1381,7 @@ function fetchLiveAndRouteFromExternalApi_(trainNo, stMap) {
     if (idx === 0) {
       // যদি /live রুট না দেয় (যেমন আজকে ট্রেন না চললে), তবুও /v1/trains/{trainNo} থেকে পূর্ণ স্ট্যাটিক রুট নিই
       if (bestRoute.length < 2) {
-        var schedJson = fetchRailRadarJson_('/v1/trains/' + encodeURIComponent(trainNo) + '?includeCoordinates=true');
+        var schedJson = fetchRailRadarJson_('/v1/trains/' + encodeURIComponent(trainNo));
         if (schedJson) {
           var sd0 = schedJson.data || schedJson;
           var schedMeta = extractTrainMeta_(sd0, bestMeta);
