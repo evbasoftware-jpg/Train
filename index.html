@@ -3115,6 +3115,8 @@
       }
 
       // Trains Between & Live API
+      let betweenRequestSeq = 0;
+
       function maybeSearchBetween(force = false) {
         const f = extractCode(state.fromInput);
         const t = extractCode(state.toInput);
@@ -3123,12 +3125,13 @@
           if (force || state.lastBetweenPair !== key) {
             state.lastBetweenPair = key;
             clearTimeout(state.betweenTimer);
-            state.betweenTimer = setTimeout(() => fetchBetween(f, t), 250);
+            state.betweenTimer = setTimeout(() => fetchBetween(f, t), force ? 120 : 400);
           }
         }
       }
 
       async function fetchBetween(f, t) {
+        const reqSeq = ++betweenRequestSeq;
         state.betweenLoading = true;
         state.betweenError = null;
         renderBetween();
@@ -3138,16 +3141,20 @@
           try {
             sheetList = await searchTrainsBetweenFromSheet(state.fromInput || f, state.toInput || t);
           } catch (_) { sheetList = []; }
+          if (reqSeq !== betweenRequestSeq) return;
 
           const pairKey = `${f.toUpperCase()}->${t.toUpperCase()}`;
           const needsEnrichment = !sheetList.length || sheetList.some(it => !it.runningDaysRaw);
           let list = sheetList;
+          let apiErrMsg = '';
 
           // 2) Call action=between when sheet has gaps / lacks Running_Days / hasn't synced this session
           if (!enrichedBetweenPairs.has(pairKey) && (needsEnrichment || sheetList.length < 3)) {
             try {
               const r = await fetch(`${API_URL}?action=between&from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`);
               const json = await r.json();
+              if (reqSeq !== betweenRequestSeq) return;
+              if (json?.apiError) apiErrMsg = String(json.apiError).trim();
               const apiList = (json?.data?.trains || []).map(obj => ({
                 trainNumber: obj.train?.number || '',
                 trainName: obj.train?.name || '',
@@ -3180,12 +3187,16 @@
             }
           }
 
+          if (reqSeq !== betweenRequestSeq) return;
           state.betweenLoading = false;
           state.betweenTrains = list;
-          state.betweenError = list.length ? null : state.strings.noTrainsFoundTemplate.replace('{FROM}', f).replace('{TO}', t);
+          const baseNoTrains = state.strings.noTrainsFoundTemplate.replace('{FROM}', f).replace('{TO}', t);
+          state.betweenError = list.length ? null : (apiErrMsg ? `${baseNoTrains} (${apiErrMsg})` : baseNoTrains);
           if (list.length) saveRecentRoute(state.fromInput.trim() || f, state.toInput.trim() || t);
           await refreshDynamicTranslations();
+          if (reqSeq !== betweenRequestSeq) return;
         } catch (e) {
+          if (reqSeq !== betweenRequestSeq) return;
           state.betweenLoading = false;
           state.betweenTrains = [];
           state.betweenError = e.message || 'Error loading trains';
