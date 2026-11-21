@@ -223,6 +223,10 @@
       }
     }
 
+    .station-field-col {
+      scroll-margin-top: 66px;
+    }
+
     .field-box {
       position: relative;
       display: flex;
@@ -349,11 +353,14 @@
 
     .suggestions-list {
       margin-top: 4px;
-      border: 1px solid var(--border);
+      border: 1.5px solid var(--cobalt);
       border-radius: 10px;
       background: var(--surface);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-      overflow: hidden;
+      box-shadow: 0 6px 18px rgba(13, 71, 161, 0.16);
+      max-height: 215px;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      position: relative;
       z-index: 50;
     }
 
@@ -362,6 +369,7 @@
       align-items: center;
       justify-content: space-between;
       gap: 8px;
+      min-height: 44px;
       padding: 9px 12px;
       cursor: pointer;
       border-bottom: 1px solid rgba(148, 163, 184, 0.25);
@@ -371,18 +379,20 @@
       border-bottom: none;
     }
 
-    .suggestion-row:hover {
+    .suggestion-row:hover,
+    .suggestion-row:active {
       background: var(--surface-variant);
     }
 
     .code-badge {
       background: var(--cobalt-container);
       color: var(--cobalt);
-      padding: 2px 6px;
+      padding: 3px 8px;
       border-radius: 6px;
-      font-size: 11px;
-      font-weight: 700;
+      font-size: 12px;
+      font-weight: 800;
       font-family: 'JetBrains Mono', monospace;
+      flex-shrink: 0;
     }
 
     .chips-section-title {
@@ -580,6 +590,26 @@
     .btn-orange { background: var(--ntes-orange); }
     .btn-emerald { background: var(--emerald); }
     .btn-blue { background: #0057E7; }
+    .btn-onboard-off {
+      width: 100%;
+      margin-top: 8px;
+      background: var(--emerald-container);
+      color: var(--emerald-dark);
+      border: 1.5px solid var(--emerald);
+      white-space: normal;
+      line-height: 1.25;
+      padding: 10px 12px;
+    }
+    .btn-onboard-on {
+      width: 100%;
+      margin-top: 8px;
+      background: var(--emerald);
+      color: #FFFFFF;
+      border: 1.5px solid var(--emerald-dark);
+      white-space: normal;
+      line-height: 1.25;
+      padding: 10px 12px;
+    }
 
     /* Banners */
     .status-banner {
@@ -1172,6 +1202,7 @@
         <button id="btnStopTracking" class="btn btn-crimson" type="button" disabled>■ <span id="lblStopBtn">ট্র্যাকিং বন্ধ করুন</span></button>
         <button id="btnOpenNtes" class="btn btn-orange" type="button">↗ <span id="lblNtesBtn">অফিসিয়াল NTES</span></button>
       </div>
+      <button id="btnOnboardGps" class="btn btn-onboard-off hidden" type="button">📍 <span id="lblOnboardGpsBtn">আমি এই ট্রেনে আছি (GPS শেয়ার করুন)</span></button>
     </section>
 
     <!-- Alarm Banner -->
@@ -1526,7 +1557,10 @@
           dayWedShort: 'বুধ',
           dayThuShort: 'বৃহঃ',
           dayFriShort: 'শুক্র',
-          daySatShort: 'শনি'
+          daySatShort: 'শনি',
+          imOnTrainBtn: 'আমি এই ট্রেনে আছি (GPS শেয়ার করুন)',
+          sharingLiveGpsBtn: 'লাইভ GPS শেয়ার হচ্ছে — বন্ধ করতে ট্যাপ করুন',
+          manualGpsSharingActiveMsg: '📡 আপনার ফোনের লাইভ GPS শেয়ার হচ্ছে — অন্যান্য যাত্রী এখন এই ট্রেনের লোকেশন দেখতে পাবেন।'
         },
         hi: {
           appTitle: 'Train Live Location',
@@ -1618,7 +1652,10 @@
           dayWedShort: 'बुध',
           dayThuShort: 'गुरु',
           dayFriShort: 'शुक्र',
-          daySatShort: 'शनि'
+          daySatShort: 'शनि',
+          imOnTrainBtn: 'मैं इस ट्रेन में हूँ (GPS शेयर करें)',
+          sharingLiveGpsBtn: 'लाइव GPS शेयर हो रहा है — बंद करने के लिए टैप करें',
+          manualGpsSharingActiveMsg: '📡 आपका लाइव GPS शेयर हो रहा है — अन्य यात्री अब इस ट्रेन की लोकेशन देख सकते हैं।'
         },
         en: {
           appTitle: 'Train Live Location',
@@ -1710,7 +1747,10 @@
           dayWedShort: 'Wed',
           dayThuShort: 'Thu',
           dayFriShort: 'Fri',
-          daySatShort: 'Sat'
+          daySatShort: 'Sat',
+          imOnTrainBtn: "I'm on this Train (Share Live GPS)",
+          sharingLiveGpsBtn: 'Sharing Live GPS — Tap to Stop',
+          manualGpsSharingActiveMsg: '📡 Sharing your live GPS — other passengers can now see this train\'s live location.'
         }
       };
 
@@ -1733,6 +1773,7 @@
         locatedTrain: null,
         running: false,
         insideTrain: false,
+        manualOnboardGps: false,
         latestUserGps: null,
         gpsHistory: [],
         movement: { speedKmh: 0, bearingDegrees: 0, netDispKm: 0 },
@@ -1792,6 +1833,47 @@
         const y = Math.sin((lon2 - lon1) * r) * Math.cos(lat2 * r);
         const x = Math.cos(lat1 * r) * Math.sin(lat2 * r) - Math.sin(lat1 * r) * Math.cos(lat2 * r) * Math.cos((lon2 - lon1) * r);
         return ((Math.atan2(y, x) * 180 / Math.PI) + 360) % 360;
+      }
+
+      function findClosestRouteSegment(lat, lon, route) {
+        if (!Array.isArray(route) || route.length < 2) return null;
+        let best = null;
+        for (let i = 0; i < route.length - 1; i++) {
+          const a = route[i], b = route[i + 1];
+          if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) continue;
+          const segLen = haversineKm(a.lat, a.lon, b.lat, b.lon);
+          const distA = haversineKm(a.lat, a.lon, lat, lon);
+          const distB = haversineKm(b.lat, b.lon, lat, lon);
+          if (segLen <= 0.05) {
+            const d = Math.min(distA, distB);
+            if (!best || d < best.distanceKm) {
+              best = { segmentIdx: i, distanceKm: d, segmentBearing: 0 };
+            }
+            continue;
+          }
+          const segBear = bearingDegrees(a.lat, a.lon, b.lat, b.lon);
+          const userBear = bearingDegrees(a.lat, a.lon, lat, lon);
+          const theta = (userBear - segBear) * Math.PI / 180;
+          const along = distA * Math.cos(theta);
+          let distToSeg;
+          if (along < 0) distToSeg = distA;
+          else if (along > segLen) distToSeg = distB;
+          else distToSeg = Math.abs(distA * Math.sin(theta));
+          if (!best || distToSeg < best.distanceKm) {
+            best = { segmentIdx: i, distanceKm: distToSeg, segmentBearing: segBear };
+          }
+        }
+        return best;
+      }
+
+      function findNearestStationDbEntry(lat, lon) {
+        let best = null, bestDist = Infinity;
+        for (const s of state.stationDb) {
+          if (s.lat == null || s.lon == null) continue;
+          const d = haversineKm(lat, lon, s.lat, s.lon);
+          if (d < bestDist) { bestDist = d; best = s; }
+        }
+        return best ? { station: best, distanceKm: bestDist } : null;
       }
 
       function formatDistance(km) {
@@ -3069,6 +3151,13 @@
         state.fromResolved = resolveStation(state.fromInput);
         state.toResolved = resolveStation(state.toInput);
         renderStationFields();
+        const activeEl = document.activeElement;
+        if (state.fromInput.trim() && (activeEl === el('fromInput') || !el('fromSuggestions').classList.contains('hidden'))) {
+          renderSuggestions(el('fromSuggestions'), filterSuggestions(state.fromInput), true);
+        }
+        if (state.toInput.trim() && (activeEl === el('toInput') || !el('toSuggestions').classList.contains('hidden'))) {
+          renderSuggestions(el('toSuggestions'), filterSuggestions(state.toInput), false);
+        }
       }
 
       function resolveStation(q) {
@@ -3086,19 +3175,24 @@
       }
 
       function filterSuggestions(q) {
-        const up = (q || '').trim().toUpperCase();
+        const raw = (q || '').trim();
+        const up = raw.toUpperCase();
         if (!up) return [];
-        if (up.length === 1) return state.stationDb.filter(s => s.code.toUpperCase() === up).slice(0, 8);
+        if (up.length === 1) {
+          return state.stationDb.filter(s => s.code.toUpperCase() === up || s.code.toUpperCase().startsWith(up)).slice(0, 8);
+        }
         const hits = [];
         for (const s of state.stationDb) {
-          const c = s.code.toUpperCase(), n = s.name.toUpperCase();
+          const c = (s.code || '').toUpperCase();
+          const n = (s.name || '').toUpperCase();
+          const ln = locName(s.name || '').toUpperCase();
           let tier = 99;
           if (c === up) tier = 0;
           else if (c.startsWith(up)) tier = 1;
-          else if (n.startsWith(up)) tier = 2;
-          else if (n.split(/[\s\-.]/).some(w => w.startsWith(up))) tier = 3;
+          else if (n.startsWith(up) || (ln && ln.startsWith(up))) tier = 2;
+          else if (n.split(/[\s\-.]/).some(w => w.startsWith(up)) || (ln && ln.split(/[\s\-.]/).some(w => w.startsWith(up)))) tier = 3;
           else if (c.includes(up)) tier = 4;
-          else if (n.includes(up)) tier = 5;
+          else if (n.includes(up) || (ln && ln.includes(up))) tier = 5;
           if (tier < 99) hits.push({ tier, s });
         }
         hits.sort((a, b) => a.tier - b.tier || a.s.name.length - b.s.name.length || a.s.name.localeCompare(b.s.name));
@@ -3233,15 +3327,16 @@
       }
 
       // Live Train Tracking
-      async function startTracking(prefilledName = '') {
+      async function startTracking(prefilledName = '', enableManualOnboard = false) {
         const num = state.trainNo.trim();
         if (!/^\d{4,5}$/.test(num)) return;
         const token = ++state.startToken;
         stopTimers();
         state.running = true;
-        state.insideTrain = false;
-        state.trainName = prefilledName || '';
-        state.rawSource = null;
+        state.manualOnboardGps = !!enableManualOnboard;
+        state.insideTrain = !!enableManualOnboard;
+        state.trainName = prefilledName || state.trainName || '';
+        state.rawSource = enableManualOnboard ? 'gps' : null;
         state.route = [];
         state.locatedTrain = null;
         state.stoppageDistances = { passedKm: null, remainingKm: null };
@@ -3252,31 +3347,78 @@
         state.stationaryCount = 0;
         state.lastAnnouncedKey = '';
         state.lastCenteredStopKey = '';
-        saveRecentTrain(num, prefilledName);
-        setStatusBanner(state.strings.searchingLiveTemplate.replace('{TR}', num), 'info');
+        saveRecentTrain(num, state.trainName);
+        setStatusBanner(
+          enableManualOnboard
+            ? state.strings.manualGpsSharingActiveMsg
+            : state.strings.searchingLiveTemplate.replace('{TR}', num),
+          enableManualOnboard ? 'ok' : 'info'
+        );
         requestNotificationPermissionIfNeeded();
         startGpsWatch();
+        if (enableManualOnboard && state.latestUserGps) {
+          verifyAndSync(true);
+        }
         renderAllUi();
 
         try {
           await fetchLiveTrain(num, token);
           if (token !== state.startToken || !state.running) return;
-          if (!state.insideTrain) {
+          if (!state.insideTrain && !state.manualOnboardGps) {
             state.pollingTimer = setInterval(() => {
-              if (state.running && !state.insideTrain) fetchLiveTrain(num, token);
+              if (state.running && !state.insideTrain && !state.manualOnboardGps) fetchLiveTrain(num, token);
             }, API_MS);
             state.apiTimeoutTimer = setTimeout(() => {
-              if (token === state.startToken && state.running && !state.insideTrain) {
+              if (token === state.startToken && state.running && !state.insideTrain && !state.manualOnboardGps) {
                 stopTracking();
                 setStatusBanner(state.strings.apiTimeoutStopped, 'info');
               }
             }, MAX_API);
           }
         } catch (_) {
-          if (token === state.startToken && state.running) {
+          if (token === state.startToken && state.running && !state.manualOnboardGps) {
             setStatusBanner(state.strings.retryingSignal, 'info');
           }
         }
+      }
+
+      function toggleManualOnboardGps() {
+        const num = state.trainNo.trim();
+        if (!/^\d{4,5}$/.test(num)) return;
+
+        if (!state.running) {
+          startTracking(state.trainName, true);
+          return;
+        }
+
+        if (state.manualOnboardGps) {
+          state.manualOnboardGps = false;
+          state.insideTrain = false;
+          state.stationaryCount = 0;
+          const token = state.startToken;
+          setStatusBanner(state.strings.retryingSignal, 'info');
+          clearInterval(state.pollingTimer);
+          state.pollingTimer = setInterval(() => {
+            if (state.running && !state.insideTrain && !state.manualOnboardGps) fetchLiveTrain(num, token);
+          }, API_MS);
+          fetchLiveTrain(num, token).catch(() => {});
+          renderAllUi();
+          return;
+        }
+
+        state.manualOnboardGps = true;
+        state.insideTrain = true;
+        state.rawSource = 'gps';
+        state.stationaryCount = 0;
+        clearInterval(state.pollingTimer); state.pollingTimer = null;
+        clearTimeout(state.apiTimeoutTimer); state.apiTimeoutTimer = null;
+        setStatusBanner(state.strings.manualGpsSharingActiveMsg, 'ok');
+        startGpsWatch();
+        if (state.latestUserGps) {
+          verifyAndSync(true);
+          centerMap();
+        }
+        renderAllUi();
       }
 
       function stopTimers() {
@@ -3292,6 +3434,7 @@
         stopTimers();
         state.running = false;
         state.insideTrain = false;
+        state.manualOnboardGps = false;
         state.stoppageDistances = { passedKm: null, remainingKm: null };
         state.lastAnnouncedKey = '';
         state.lastAutoTrainNo = '';
@@ -3302,14 +3445,15 @@
       }
 
       async function fetchLiveTrain(trainNo, token) {
-        if (state.insideTrain) return;
+        const allowRouteLoadOnly = state.manualOnboardGps && state.route.length < 2;
+        if (state.insideTrain && !allowRouteLoadOnly) return;
 
         // 1) Check Train, Station & Schedule Google Sheets first
         let sheetLookup = null;
         try {
           sheetLookup = await findTrainRouteFromSheet(trainNo);
         } catch (_) { sheetLookup = null; }
-        if (token !== state.startToken || !state.running || state.insideTrain) return;
+        if (token !== state.startToken || !state.running || (state.insideTrain && !state.manualOnboardGps)) return;
         const sheetHasCompleteRoute = !!(sheetLookup && sheetLookup.isComplete);
 
         let json = {};
@@ -3320,7 +3464,7 @@
         } catch (err) {
           liveErr = err;
         }
-        if (token !== state.startToken || !state.running || state.insideTrain) return;
+        if (token !== state.startToken || !state.running || (state.insideTrain && !state.manualOnboardGps)) return;
         const payload = json?.data || json || {};
         const apiRoute = parseRoute(payload.route || json.route || payload.stations);
 
@@ -3397,12 +3541,22 @@
         }
 
         const prevTrain = state.locatedTrain;
-        state.route = routeArr;
+        if (routeArr.length) state.route = routeArr;
         state.trainName = (sheetLookup?.entry?.trainName || '').trim() || payload.trainName || json.trainName || state.trainName;
+        if (state.trainName) saveRecentTrain(trainNo, state.trainName);
+
+        if (state.manualOnboardGps) {
+          // Keep user's live GPS as primary position; only refresh route/name and snap GPS onto route
+          await refreshDynamicTranslations();
+          verifyAndSync(true);
+          renderAllUi();
+          if (!prevTrain && state.locatedTrain) centerMap();
+          return;
+        }
+
         state.rawSource = !useClientSchedEstimate ? (payload.source || json.source || 'api') : (sheetLookup ? 'sheet' : (payload.source || json.source || 'api'));
         state.locatedTrain = locateTrain(curLoc, routeArr);
         state.stoppageDistances = computeStoppageDistances(state.locatedTrain, routeArr);
-        if (state.trainName) saveRecentTrain(trainNo, state.trainName);
 
         // Auto-sync missing/incomplete Train, Train_Stops, Station, Schedule to sheets (never fake observation clock!)
         const schedByCode = new Map((sheetLookup?.scheduleRows || []).map(r => [r.stationCode.toUpperCase(), r]));
@@ -3414,7 +3568,7 @@
           syncResolvedTrainToSheet(trainNo, state.trainName, sheetLookup, routeArr);
         }
 
-        if (prevTrain && state.rawSource === 'gps') {
+        if (state.rawSource === 'gps') {
           setStatusBanner(state.strings.otherUserGpsMsg, 'ok');
         } else {
           setStatusBanner(null);
@@ -3569,9 +3723,13 @@
             heading: Number.isFinite(c.heading) && c.heading >= 0 ? c.heading : null,
             time: Date.now()
           };
-          if (c.accuracy > MAX_ACC) {
+          const maxAllowedAcc = state.manualOnboardGps ? Math.max(MAX_ACC, 250) : MAX_ACC;
+          if (c.accuracy > maxAllowedAcc) {
             if (!state.latestUserGps || c.accuracy <= 5000) {
               state.latestUserGps = sample;
+              if (state.running && state.manualOnboardGps && !state.locatedTrain && c.accuracy <= 500) {
+                verifyAndSync(true);
+              }
               renderAllAds();
               renderMap();
             }
@@ -3608,21 +3766,55 @@
         return { speedKmh, bearingDegrees: bearing, netDispKm };
       }
 
-      function verifyAndSync() {
-        const train = state.locatedTrain, user = state.latestUserGps;
-        if (!state.running || !train || !user) return;
-        const d = haversineKm(user.lat, user.lon, train.lat, train.lon);
-        let angDiff = Math.abs(state.movement.bearingDegrees - train.bearingDegrees);
-        if (angDiff > 180) angDiff = 360 - angDiff;
+      function verifyAndSync(forcePublish = false) {
+        const user = state.latestUserGps;
+        if (!state.running || !user) return;
+
+        // Manual Onboard GPS Share Mode (Option 2): works even if train is delayed, stopped, or route/sheet is empty
+        if (state.manualOnboardGps) {
+          const wasMissing = !state.locatedTrain;
+          state.insideTrain = true;
+          state.stationaryCount = 0;
+          clearInterval(state.pollingTimer); state.pollingTimer = null;
+          clearTimeout(state.apiTimeoutTimer); state.apiTimeoutTimer = null;
+          advanceByPhoneGps(user, forcePublish || wasMissing);
+          setStatusBanner(state.strings.manualGpsSharingActiveMsg, 'ok');
+          if (wasMissing) centerMap();
+          return;
+        }
+
+        const train = state.locatedTrain;
+        const routeMatch = state.route.length >= 2 ? findClosestRouteSegment(user.lat, user.lon, state.route) : null;
+        if (!train && !routeMatch) return;
+
         const hasMotion = state.movement.netDispKm >= 0.025 || (user.speedMs || 0) >= 2.3;
-        const movingWithTrain = state.movement.speedKmh >= 8.0 && hasMotion && angDiff <= 55.0;
-        const userBear = bearingDegrees(train.lat, train.lon, user.lat, user.lon);
-        const crossTrack = Math.abs(d * Math.sin((userBear - train.bearingDegrees) * Math.PI / 180));
-        const recognized = movingWithTrain && d <= 8.0 && crossTrack <= 0.8;
+        let d = Infinity, crossTrack = Infinity, recognized = false;
+        let matchedRouteIdx = null;
+
+        if (train) {
+          d = haversineKm(user.lat, user.lon, train.lat, train.lon);
+          let angDiff = Math.abs(state.movement.bearingDegrees - train.bearingDegrees);
+          if (angDiff > 180) angDiff = 360 - angDiff;
+          const movingWithTrain = state.movement.speedKmh >= 8.0 && hasMotion && angDiff <= 55.0;
+          const userBear = bearingDegrees(train.lat, train.lon, user.lat, user.lon);
+          crossTrack = Math.abs(d * Math.sin((userBear - train.bearingDegrees) * Math.PI / 180));
+          recognized = movingWithTrain && d <= 8.0 && crossTrack <= 0.8;
+        }
+
+        // Route-polyline auto-verification: allows trains running hours late vs sheet timetable to auto-verify
+        if (!recognized && routeMatch && state.movement.speedKmh >= 8.0 && hasMotion) {
+          let rDiff = Math.abs(state.movement.bearingDegrees - routeMatch.segmentBearing);
+          if (rDiff > 180) rDiff = 360 - rDiff;
+          if (routeMatch.distanceKm <= 1.2 && rDiff <= 55.0) {
+            recognized = true;
+            matchedRouteIdx = routeMatch.segmentIdx;
+          }
+        }
 
         if (state.insideTrain) {
           const stillMoving = state.movement.speedKmh >= 5.0 || state.movement.netDispKm >= 0.015;
-          const offTrack = state.movement.speedKmh >= 8.0 && crossTrack > 0.8 && d > 1.0;
+          const onRouteTrack = routeMatch && routeMatch.distanceKm <= 1.2;
+          const offTrack = state.movement.speedKmh >= 8.0 && !onRouteTrack && crossTrack > 0.8 && d > 1.0;
           state.stationaryCount = stillMoving ? 0 : state.stationaryCount + 1;
           if (offTrack || state.stationaryCount >= STATIONARY_EXIT_SAMPLES) {
             state.insideTrain = false;
@@ -3631,44 +3823,72 @@
             setStatusBanner(state.strings.retryingSignal, 'info');
             return;
           }
-          advanceByPhoneGps(user);
+          advanceByPhoneGps(user, forcePublish);
           return;
         }
+
         if (recognized) {
           state.insideTrain = true;
           state.stationaryCount = 0;
           clearInterval(state.pollingTimer); state.pollingTimer = null;
           clearTimeout(state.apiTimeoutTimer); state.apiTimeoutTimer = null;
+          if (matchedRouteIdx != null && state.locatedTrain) {
+            state.locatedTrain.idx = matchedRouteIdx;
+          }
           setStatusBanner(state.strings.gpsVerifiedInsideMsg, 'ok');
-          advanceByPhoneGps(user);
+          advanceByPhoneGps(user, true);
         }
       }
 
-      function advanceByPhoneGps(user) {
-        let idx = state.locatedTrain.idx;
-        while (idx < state.route.length - 1) {
-          const a = state.route[idx], b = state.route[idx + 1];
-          if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) break;
-          const distNext = haversineKm(user.lat, user.lon, b.lat, b.lon);
-          const segLen = haversineKm(a.lat, a.lon, b.lat, b.lon);
-          const proj = haversineKm(a.lat, a.lon, user.lat, user.lon) * Math.cos((bearingDegrees(a.lat, a.lon, user.lat, user.lon) - bearingDegrees(a.lat, a.lon, b.lat, b.lon)) * Math.PI / 180);
-          if (distNext <= 0.25 || (segLen > 0.2 && proj > segLen + 0.15)) idx++;
-          else break;
+      function advanceByPhoneGps(user, forcePublish = false) {
+        let idx = state.locatedTrain ? state.locatedTrain.idx : 0;
+        let name = state.locatedTrain?.name || '';
+        let next = state.locatedTrain?.next || '';
+
+        if (state.route.length >= 2) {
+          const segMatch = findClosestRouteSegment(user.lat, user.lon, state.route);
+          if (segMatch && segMatch.distanceKm <= 2.5 && (!state.locatedTrain || Math.abs(segMatch.segmentIdx - idx) > 1)) {
+            idx = segMatch.segmentIdx;
+          }
+          if (idx < 0) idx = 0;
+          if (idx >= state.route.length) idx = state.route.length - 1;
+          while (idx < state.route.length - 1) {
+            const a = state.route[idx], b = state.route[idx + 1];
+            if (a.lat == null || a.lon == null || b.lat == null || b.lon == null) break;
+            const distNext = haversineKm(user.lat, user.lon, b.lat, b.lon);
+            const segLen = haversineKm(a.lat, a.lon, b.lat, b.lon);
+            const proj = haversineKm(a.lat, a.lon, user.lat, user.lon) * Math.cos((bearingDegrees(a.lat, a.lon, user.lat, user.lon) - bearingDegrees(a.lat, a.lon, b.lat, b.lon)) * Math.PI / 180);
+            if (distNext <= 0.25 || (segLen > 0.2 && proj > segLen + 0.15)) idx++;
+            else break;
+          }
+          const cur = state.route[idx], nxt = state.route[idx + 1];
+          name = cur?.stationName || cur?.stationCode || name || 'Train';
+          next = nxt ? (nxt.stationName || nxt.stationCode) : '';
+        } else {
+          // Empty route fallback: resolve nearest station from Station sheet / stationDb
+          const near = findNearestStationDbEntry(user.lat, user.lon);
+          name = near ? (near.station.name || near.station.code) : (name || 'Train');
+          next = '';
+          idx = 0;
         }
-        const cur = state.route[idx], nxt = state.route[idx + 1];
+
         state.rawSource = 'gps';
         state.locatedTrain = {
           lat: user.lat,
           lon: user.lon,
-          speedKmh: state.movement.speedKmh > 0.5 ? state.movement.speedKmh : state.locatedTrain.speedKmh,
-          bearingDegrees: state.movement.speedKmh >= 4 ? state.movement.bearingDegrees : state.locatedTrain.bearingDegrees,
+          speedKmh: state.movement.speedKmh > 0.5 ? state.movement.speedKmh : (state.locatedTrain?.speedKmh || 0),
+          bearingDegrees: state.movement.speedKmh >= 4 ? state.movement.bearingDegrees : (state.locatedTrain?.bearingDegrees || 0),
           idx,
-          name: cur?.stationName || cur?.stationCode || state.locatedTrain.name,
-          next: nxt ? (nxt.stationName || nxt.stationCode) : ''
+          name,
+          next
         };
-        state.stoppageDistances = computeStoppageDistances(state.locatedTrain, state.route);
-        reportLiveObservationToSheet(state.trainNo, state.trainName, state.route, state.locatedTrain, state.stoppageDistances.passedKm, user.time);
-        if (Date.now() - state.lastPublishTs >= GPS_MS) {
+        state.stoppageDistances = state.route.length >= 2
+          ? computeStoppageDistances(state.locatedTrain, state.route)
+          : { passedKm: null, remainingKm: null };
+        if (state.route.length >= 2) {
+          reportLiveObservationToSheet(state.trainNo, state.trainName, state.route, state.locatedTrain, state.stoppageDistances.passedKm, user.time);
+        }
+        if (forcePublish || Date.now() - state.lastPublishTs >= GPS_MS) {
           state.lastPublishTs = Date.now();
           fetch(API_URL, {
             method: 'POST',
@@ -4486,6 +4706,26 @@
         }
       }
 
+      function scrollStationFieldIntoView(inputEl) {
+        if (!inputEl) return;
+        const container = inputEl.closest('.station-field-col') || inputEl;
+        requestAnimationFrame(() => {
+          try {
+            const topBar = document.querySelector('.topbar');
+            const offset = (topBar ? topBar.getBoundingClientRect().height : 56) + 10;
+            const rect = container.getBoundingClientRect();
+            if (rect.top < offset || rect.top > offset + 60) {
+              window.scrollTo({
+                top: Math.max(0, window.scrollY + rect.top - offset),
+                behavior: 'smooth'
+              });
+            }
+          } catch (_) {
+            container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        });
+      }
+
       function renderSuggestions(targetEl, suggestions, isFrom) {
         if (!suggestions.length) {
           targetEl.innerHTML = '';
@@ -4494,11 +4734,19 @@
         }
         targetEl.innerHTML = '';
         targetEl.classList.remove('hidden');
-        suggestions.slice(0, 6).forEach(entry => {
+        suggestions.slice(0, 8).forEach(entry => {
           const row = document.createElement('div');
           row.className = 'suggestion-row';
-          row.innerHTML = `<span style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(locName(entry.name))}</span><span class="code-badge">${escapeHtml(entry.code)}</span>`;
-          row.onclick = () => {
+          const displayName = locName(entry.name);
+          const subNameHtml = (displayName && entry.name && displayName.toUpperCase() !== entry.name.toUpperCase())
+            ? `<div style="font-size:11px;color:var(--text-secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(entry.name)}</div>`
+            : '';
+          row.innerHTML = `<div style="min-width:0;flex:1;"><div style="font-weight:700;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(displayName || entry.code)}</div>${subNameHtml}</div><span class="code-badge">${escapeHtml(entry.code)}</span>`;
+          let picked = false;
+          const pick = (ev) => {
+            if (picked) return;
+            picked = true;
+            if (ev) ev.preventDefault();
             const val = `${entry.name} (${entry.code})`;
             if (isFrom) {
               state.fromInput = val; state.fromResolved = entry;
@@ -4513,8 +4761,14 @@
             maybeSearchBetween(true);
             refreshDynamicTranslations();
           };
+          row.onmousedown = pick;
+          row.onclick = pick;
           targetEl.appendChild(row);
         });
+        const activeInput = isFrom ? el('fromInput') : el('toInput');
+        if (document.activeElement === activeInput) {
+          scrollStationFieldIntoView(activeInput);
+        }
       }
 
       function renderSavedChips() {
@@ -4654,6 +4908,18 @@
         favBtn.style.color = isFav ? 'var(--ntes-orange)' : 'var(--text-secondary)';
         el('btnStartTracking').classList.toggle('hidden', len < 4 || state.running);
         el('btnStopTracking').disabled = !state.running;
+
+        const onboardBtn = el('btnOnboardGps');
+        const onboardLbl = el('lblOnboardGpsBtn');
+        const showOnboard = len >= 4 || state.running;
+        onboardBtn.classList.toggle('hidden', !showOnboard);
+        onboardBtn.classList.toggle('btn-onboard-on', state.manualOnboardGps);
+        onboardBtn.classList.toggle('btn-onboard-off', !state.manualOnboardGps);
+        if (onboardLbl) {
+          onboardLbl.textContent = state.manualOnboardGps
+            ? state.strings.sharingLiveGpsBtn
+            : state.strings.imOnTrainBtn;
+        }
       }
 
       let statusBannerTag = '';
@@ -4980,12 +5246,28 @@
 
       // Event Wiring
       function bindEvents() {
+        el('fromInput').addEventListener('focus', () => {
+          if (state.fromInput.trim()) {
+            renderSuggestions(el('fromSuggestions'), filterSuggestions(state.fromInput), true);
+          }
+          scrollStationFieldIntoView(el('fromInput'));
+          setTimeout(() => scrollStationFieldIntoView(el('fromInput')), 280);
+        });
+
         el('fromInput').addEventListener('input', e => {
           state.fromInput = e.target.value;
           state.fromResolved = resolveStation(state.fromInput);
           renderStationFields();
           renderSuggestions(el('fromSuggestions'), filterSuggestions(state.fromInput), true);
           maybeSearchBetween();
+        });
+
+        el('toInput').addEventListener('focus', () => {
+          if (state.toInput.trim()) {
+            renderSuggestions(el('toSuggestions'), filterSuggestions(state.toInput), false);
+          }
+          scrollStationFieldIntoView(el('toInput'));
+          setTimeout(() => scrollStationFieldIntoView(el('toInput')), 280);
         });
 
         el('toInput').addEventListener('input', e => {
@@ -4995,6 +5277,15 @@
           renderSuggestions(el('toSuggestions'), filterSuggestions(state.toInput), false);
           maybeSearchBetween();
         });
+
+        if (window.visualViewport) {
+          window.visualViewport.addEventListener('resize', () => {
+            const ae = document.activeElement;
+            if (ae === el('fromInput') || ae === el('toInput')) {
+              scrollStationFieldIntoView(ae);
+            }
+          });
+        }
 
         el('btnClearFrom').onclick = () => {
           state.fromInput = ''; state.fromResolved = null; el('fromInput').value = '';
@@ -5042,6 +5333,7 @@
         el('btnToggleFavorite').onclick = toggleFavoriteTrain;
         el('btnStartTracking').onclick = () => startTracking();
         el('btnStopTracking').onclick = stopTracking;
+        el('btnOnboardGps').onclick = toggleManualOnboardGps;
         el('btnOpenNtes').onclick = () => window.open('https://enquiry.indianrail.gov.in/mntes/', '_blank', 'noopener,noreferrer');
 
         el('btnViewStationMap').onclick = () => {

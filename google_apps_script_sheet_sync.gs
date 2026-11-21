@@ -552,7 +552,7 @@ function handleGetLive_(sheetId, trainNo) {
   var source = null;
 
   if (gpsLoc) {
-    currentLocation = buildLocationFromGps_(gpsLoc, info.route);
+    currentLocation = buildLocationFromGps_(gpsLoc, info.route, stMap);
     source = 'gps';
   } else if (apiLive && apiLive.currentLocation) {
     currentLocation = apiLive.currentLocation;
@@ -1677,26 +1677,52 @@ function syncExternalTrainToSheets_(ss, trainNo, trainName, route, meta, forceTi
   } catch (_) {}
 }
 
-function buildLocationFromGps_(gps, route) {
-  var bestIdx = 0, bestDist = 1e9;
+function buildLocationFromGps_(gps, route, stMap) {
+  var bestIdx = -1, bestDist = 1e9;
   for (var i = 0; i < route.length; i++) {
     if (route[i].lat != null && route[i].lon != null) {
       var d = haversineKm_(gps.lat, gps.lon, route[i].lat, route[i].lon);
       if (d < bestDist) { bestDist = d; bestIdx = i; }
     }
   }
-  var cur = route[bestIdx] || {};
-  var nxt = route[bestIdx + 1] || null;
+  if (bestIdx >= 0) {
+    var cur = route[bestIdx] || {};
+    var nxt = route[bestIdx + 1] || null;
+    return {
+      stationCode: cur.stationCode || null,
+      stationName: cur.stationName || cur.stationCode || 'Train',
+      sequence: cur.sequence || (bestIdx + 1),
+      lat: gps.lat,
+      lon: gps.lon,
+      speedKmh: gps.speedKmh || 0,
+      bearingDegrees: gps.bearingDegrees,
+      segmentProgress: 0,
+      nextStationName: nxt ? (nxt.stationName || nxt.stationCode) : null
+    };
+  }
+  var nearCode = null, nearName = 'Train', nearDist = 1e9;
+  if (stMap) {
+    for (var code in stMap) {
+      var st = stMap[code];
+      if (!st || st.lat == null || st.lon == null) continue;
+      var sd = haversineKm_(gps.lat, gps.lon, st.lat, st.lon);
+      if (sd < nearDist) {
+        nearDist = sd;
+        nearCode = code;
+        nearName = st.name || code;
+      }
+    }
+  }
   return {
-    stationCode: cur.stationCode || null,
-    stationName: cur.stationName || 'Train',
-    sequence: cur.sequence || (bestIdx + 1),
+    stationCode: nearCode,
+    stationName: nearName,
+    sequence: 1,
     lat: gps.lat,
     lon: gps.lon,
     speedKmh: gps.speedKmh || 0,
     bearingDegrees: gps.bearingDegrees,
     segmentProgress: 0,
-    nextStationName: nxt ? (nxt.stationName || nxt.stationCode) : null
+    nextStationName: null
   };
 }
 

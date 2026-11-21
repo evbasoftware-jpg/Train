@@ -199,10 +199,76 @@ object GeoMath {
     )
   }
 
+  data class RouteSegmentMatch(
+    val segmentIdx: Int,
+    val distanceToTrackKm: Double,
+    val segmentBearing: Double,
+  )
+
+  fun findClosestRouteSegment(
+    lat: Double,
+    lon: Double,
+    route: List<RouteStation>,
+  ): RouteSegmentMatch? {
+    if (route.size < 2 || !lat.isFinite() || !lon.isFinite()) return null
+    var bestMatch: RouteSegmentMatch? = null
+    for (i in 0 until route.lastIndex) {
+      val a = route[i]
+      val b = route[i + 1]
+      val aLat = a.lat ?: continue
+      val aLon = a.lon ?: continue
+      val bLat = b.lat ?: continue
+      val bLon = b.lon ?: continue
+      val segLen = haversineKm(aLat, aLon, bLat, bLon)
+      val segBearing = bearingDegrees(aLat, aLon, bLat, bLon)
+      val distKm = if (segLen < 0.05) {
+        haversineKm(lat, lon, aLat, aLon)
+      } else {
+        val dA = haversineKm(aLat, aLon, lat, lon)
+        val relAngle = Math.toRadians(bearingDegrees(aLat, aLon, lat, lon) - segBearing)
+        val proj = dA * cos(relAngle)
+        when {
+          proj <= 0.0 -> dA
+          proj >= segLen -> haversineKm(bLat, bLon, lat, lon)
+          else -> abs(dA * sin(relAngle))
+        }
+      }
+      if (bestMatch == null || distKm < bestMatch.distanceToTrackKm) {
+        bestMatch = RouteSegmentMatch(
+          segmentIdx = i,
+          distanceToTrackKm = distKm,
+          segmentBearing = segBearing,
+        )
+      }
+    }
+    return bestMatch
+  }
+
+  fun findNearestStationDbEntry(
+    lat: Double,
+    lon: Double,
+    stationDb: List<StationDbEntry>,
+  ): StationDbEntry? {
+    if (!lat.isFinite() || !lon.isFinite() || stationDb.isEmpty()) return null
+    var best: StationDbEntry? = null
+    var bestDist = Double.POSITIVE_INFINITY
+    for (st in stationDb) {
+      val sLat = st.lat ?: continue
+      val sLon = st.lon ?: continue
+      val d = haversineKm(lat, lon, sLat, sLon)
+      if (d < bestDist) {
+        bestDist = d
+        best = st
+      }
+    }
+    return best
+  }
+
   fun computeVerification(
     user: GpsSample,
     movement: MovementStats,
     train: LocatedTrain,
+    route: List<RouteStation> = emptyList(),
   ): VerificationMetrics {
     val d = haversineKm(user.lat, user.lon, train.lat, train.lon)
     val trainBearing = train.bearingDegrees
@@ -211,30 +277,46 @@ object GeoMath {
     var angleDiff = abs(userHeading - trainBearing)
     if (angleDiff > 180.0) angleDiff = 360.0 - angleDiff
 
-    // Stationary phone GPS MUST NOT track the train. Require genuine moving velocity,
-    // real displacement (or Doppler speed fix >= 2.3 m/s), heading alignment, and path match.
+    // Stationary phone GPS MUST NOT auto-track the train. Require genuine moving velocity,
+    // real displacement (or Doppler speed fix >= 2.3 m/s), heading alignment, and track match.
     val hasMotionSignal = movement.netDisplacementKm >= 0.025 || (user.speedMetersPerSec ?: 0f) >= 2.3f
-    val isMovingWithTrain = (movement.speedKmh >= 8.0) && hasMotionSignal && (angleDiff <= 55.0)
+    val isMovingFastEnough = (movement.speedKmh >= 8.0) && hasMotionSignal
+    val isMovingWithTrain = isMovingFastEnough && (angleDiff <= 55.0)
     val userBearing = bearingDegrees(train.lat, train.lon, user.lat, user.lon)
     val relAngleRad = Math.toRadians(userBearing - trainBearing)
     val crossTrack = abs(d * sin(relAngleRad))
     val alongTrack = abs(d * cos(relAngleRad))
     val isWithinBounds = d <= 0.2
     val isOnTrainPath = d <= 8.0 && crossTrack <= 0.8
-    val recognizedInside = isMovingWithTrain && isOnTrainPath
+
+    // Route-wide track matching: allows delayed trains anywhere along the route polyline to auto-verify
+    val segMatch = findClosestRouteSegment(user.lat, user.lon, route)
+    var routeAngleDiff = angleDiff
+    val matchedOnRouteTrack = if (segMatch != null && isMovingFastEnough) {
+      var rDiff = abs(userHeading - segMatch.segmentBearing)
+      if (rDiff > 180.0) rDiff = 360.0 - rDiff
+      routeAngleDiff = rDiff
+      segMatch.distanceToTrackKm <= 1.2 && rDiff <= 55.0
+    } else {
+      false
+    }
+
+    val effectiveCrossTrack = segMatch?.distanceToTrackKm?.coerceAtMost(crossTrack) ?: crossTrack
+    val effectiveAngleDiff = if (matchedOnRouteTrack) routeAngleDiff else angleDiff
+    val recognizedInside = (isMovingWithTrain && isOnTrainPath) || matchedOnRouteTrack
     val confidence = when {
       recognizedInside -> 95
-      isMovingWithTrain -> 60
+      isMovingWithTrain || (segMatch != null && segMatch.distanceToTrackKm <= 1.2 && isMovingFastEnough) -> 60
       else -> 20
     }
 
     return VerificationMetrics(
       distanceKm = d,
-      crossTrackKm = crossTrack,
+      crossTrackKm = effectiveCrossTrack,
       alongTrackKm = alongTrack,
-      headingDiffDeg = angleDiff,
+      headingDiffDeg = effectiveAngleDiff,
       confidencePercent = confidence,
-      isMovingWithTrain = isMovingWithTrain,
+      isMovingWithTrain = isMovingWithTrain || matchedOnRouteTrack,
       isWithinBounds = isWithinBounds,
       recognizedInside = recognizedInside,
     )

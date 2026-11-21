@@ -137,6 +137,9 @@ data class LocalizedStrings(
   val dayThuShort: String = "বৃহঃ",
   val dayFriShort: String = "শুক্র",
   val daySatShort: String = "শনি",
+  val imOnTrainBtn: String = "আমি এই ট্রেনে আছি (GPS শেয়ার করুন)",
+  val sharingLiveGpsBtn: String = "লাইভ GPS শেয়ার চলছে — বন্ধ করুন",
+  val manualGpsSharingActiveMsg: String = "📡 আপনার ফোনের লাইভ GPS এই ট্রেনের জন্য শেয়ার হচ্ছে — অন্য যাত্রীরা দেখতে পাচ্ছেন।",
 ) {
   fun dayShortNames(): List<String> =
     listOf(daySunShort, dayMonShort, dayTueShort, dayWedShort, dayThuShort, dayFriShort, daySatShort)
@@ -291,6 +294,9 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     dayThuShort = "বৃহঃ",
     dayFriShort = "শুক্র",
     daySatShort = "শনি",
+    imOnTrainBtn = "আমি এই ট্রেনে আছি (GPS শেয়ার করুন)",
+    sharingLiveGpsBtn = "লাইভ GPS শেয়ার চলছে — বন্ধ করুন",
+    manualGpsSharingActiveMsg = "📡 আপনার ফোনের লাইভ GPS এই ট্রেনের জন্য শেয়ার হচ্ছে — অন্য যাত্রীরা দেখতে পাচ্ছেন।",
   )
 
   "hi" -> LocalizedStrings(
@@ -397,6 +403,9 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     dayThuShort = "गुरु",
     dayFriShort = "शुक्र",
     daySatShort = "शनि",
+    imOnTrainBtn = "मैं इस ट्रेन में हूँ (GPS शेयर करें)",
+    sharingLiveGpsBtn = "लाइव GPS शेयर चालू — बंद करें",
+    manualGpsSharingActiveMsg = "📡 आपके फ़ोन का लाइव GPS इस ट्रेन के लिए शेयर हो रहा है — अन्य यात्री देख सकते हैं।",
   )
 
   else -> LocalizedStrings(
@@ -503,6 +512,9 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     dayThuShort = "Thu",
     dayFriShort = "Fri",
     daySatShort = "Sat",
+    imOnTrainBtn = "I'm on this train (Share GPS)",
+    sharingLiveGpsBtn = "Sharing Live GPS — Stop",
+    manualGpsSharingActiveMsg = "📡 Sharing your live phone GPS for this train — other passengers can see it.",
   )
 }
 
@@ -724,6 +736,7 @@ data class TrackerUiState(
   val recentRoutes: List<SavedRoutePair> = emptyList(),
   val running: Boolean = false,
   val insideTrain: Boolean = false,
+  val manualOnboardGps: Boolean = false,
   val trainName: String? = null,
   val rawSource: String? = null,
   val route: List<RouteStation> = emptyList(),

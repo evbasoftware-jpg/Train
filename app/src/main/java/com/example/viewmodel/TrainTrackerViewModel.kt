@@ -55,6 +55,8 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
 
   fun stopTracking() = coordinator.stopTracking()
 
+  fun toggleManualOnboardGps() = coordinator.toggleManualOnboardGps()
+
   fun onStationNodeClicked(index: Int) = coordinator.onStationNodeClicked(index)
 
   fun focusStationOnMap(index: Int) = coordinator.focusStationOnMap(index)

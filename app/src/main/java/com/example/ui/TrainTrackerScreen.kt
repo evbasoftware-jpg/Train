@@ -8,6 +8,7 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -34,6 +35,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -53,6 +56,7 @@ import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
@@ -85,6 +89,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.focus.onFocusChanged
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -293,6 +300,7 @@ fun TrainTrackerScreen(
               recentTrains = state.recentTrains,
               recentRoutes = state.recentRoutes,
               running = state.running,
+              manualOnboardGps = state.manualOnboardGps,
               isWideLayout = isWideLayout,
               strings = strings,
               localizeName = state::localizeName,
@@ -322,6 +330,10 @@ fun TrainTrackerScreen(
                 viewModel.startTracking()
               },
               onStopTracking = { viewModel.stopTracking() },
+              onToggleManualOnboardGps = {
+                focusManager.clearFocus()
+                viewModel.toggleManualOnboardGps()
+              },
               onOpenNtes = {
                 try {
                   val intent = Intent(
@@ -857,6 +869,7 @@ private fun SearchAndControlPanel(
   recentTrains: List<SavedTrainEntry>,
   recentRoutes: List<SavedRoutePair>,
   running: Boolean,
+  manualOnboardGps: Boolean,
   isWideLayout: Boolean,
   strings: LocalizedStrings,
   localizeName: (String) -> String,
@@ -871,6 +884,7 @@ private fun SearchAndControlPanel(
   onRecentRouteClick: (SavedRoutePair) -> Unit,
   onStartTracking: () -> Unit,
   onStopTracking: () -> Unit,
+  onToggleManualOnboardGps: () -> Unit,
   onOpenNtes: () -> Unit,
   adSlot2Content: @Composable () -> Unit,
 ) {
@@ -1410,6 +1424,41 @@ private fun SearchAndControlPanel(
           )
         }
       }
+
+      // Manual Onboard GPS Share Toggle ("I'm on this train — Share GPS")
+      if (trainNoInput.length >= 4 || running) {
+        Button(
+          onClick = onToggleManualOnboardGps,
+          shape = RoundedCornerShape(10.dp),
+          colors = ButtonDefaults.buttonColors(
+            containerColor = if (manualOnboardGps) VerifiedEmerald else VerifiedEmeraldContainer,
+            contentColor = if (manualOnboardGps) Color.White else VerifiedEmeraldDark,
+          ),
+          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+          modifier = Modifier
+            .fillMaxWidth()
+            .minimumInteractiveComponentSize()
+            .border(
+              width = 1.dp,
+              color = if (manualOnboardGps) VerifiedEmeraldDark else VerifiedEmerald.copy(alpha = 0.45f),
+              shape = RoundedCornerShape(10.dp),
+            )
+            .testTag("manual_onboard_gps_button"),
+        ) {
+          Icon(
+            imageVector = Icons.Filled.MyLocation,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+          )
+          Spacer(Modifier.width(6.dp))
+          Text(
+            text = if (manualOnboardGps) strings.sharingLiveGpsBtn else strings.imOnTrainBtn,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            fontWeight = FontWeight.Bold,
+          )
+        }
+      }
     }
   }
 }
@@ -1525,6 +1574,7 @@ private fun AlarmBannerBox(
   }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun StationInputWithSuggestions(
   label: String,
@@ -1540,7 +1590,20 @@ private fun StationInputWithSuggestions(
   modifier: Modifier = Modifier,
   showResolvedChip: Boolean = true,
 ) {
-  Column(modifier = modifier) {
+  val bringIntoViewRequester = remember { BringIntoViewRequester() }
+  val coroutineScope = rememberCoroutineScope()
+  var isFocused by remember { mutableStateOf(false) }
+
+  LaunchedEffect(suggestions.size, isFocused) {
+    if (isFocused && suggestions.isNotEmpty()) {
+      delay(80)
+      bringIntoViewRequester.bringIntoView()
+    }
+  }
+
+  Column(
+    modifier = modifier.bringIntoViewRequester(bringIntoViewRequester),
+  ) {
     OutlinedTextField(
       value = value,
       onValueChange = onValueChange,
@@ -1557,6 +1620,15 @@ private fun StationInputWithSuggestions(
       shape = RoundedCornerShape(12.dp),
       modifier = Modifier
         .fillMaxWidth()
+        .onFocusChanged { focusState ->
+          isFocused = focusState.isFocused
+          if (focusState.isFocused) {
+            coroutineScope.launch {
+              delay(120)
+              bringIntoViewRequester.bringIntoView()
+            }
+          }
+        }
         .testTag(testTag),
     )
 
@@ -1587,13 +1659,16 @@ private fun StationInputWithSuggestions(
         shadowElevation = 4.dp,
       ) {
         Column(
-          modifier = Modifier.border(
-            1.dp,
-            MaterialTheme.colorScheme.outline,
-            RoundedCornerShape(10.dp),
-          ),
+          modifier = Modifier
+            .heightIn(max = 220.dp)
+            .verticalScroll(rememberScrollState())
+            .border(
+              1.dp,
+              MaterialTheme.colorScheme.outline,
+              RoundedCornerShape(10.dp),
+            ),
         ) {
-          val capped = suggestions.take(6)
+          val capped = suggestions.take(8)
           capped.forEachIndexed { idx, entry ->
             Row(
               modifier = Modifier

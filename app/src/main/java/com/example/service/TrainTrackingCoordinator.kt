@@ -528,7 +528,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     }
   }
 
-  fun startTracking(prefilledTrainName: String? = null) {
+  fun startTracking(prefilledTrainName: String? = null, enableManualOnboard: Boolean = false) {
     val trainNo = _uiState.value.trainNoInput.trim()
     if (!Regex("""^\d{4,5}$""").matches(trainNo)) return
 
@@ -547,9 +547,10 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     _uiState.update {
       it.copy(
         running = true,
-        insideTrain = false,
-        trainName = prefilledTrainName?.takeIf { n -> n.isNotBlank() },
-        rawSource = null,
+        insideTrain = enableManualOnboard,
+        manualOnboardGps = enableManualOnboard,
+        trainName = prefilledTrainName?.takeIf { n -> n.isNotBlank() } ?: it.trainName,
+        rawSource = if (enableManualOnboard) "gps" else null,
         route = emptyList(),
         locatedTrain = null,
         stoppageDistances = StoppageDistances(null, null),
@@ -560,7 +561,10 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         movementStats = MovementStats(0.0, 0.0),
         verification = null,
         lowAccuracyMeters = null,
-        statusBanner = StatusBanner(s.searchingLiveTrain(trainNo), BannerType.INFO),
+        statusBanner = StatusBanner(
+          if (enableManualOnboard) s.manualGpsSharingActiveMsg else s.searchingLiveTrain(trainNo),
+          if (enableManualOnboard) BannerType.OK else BannerType.INFO,
+        ),
         needsLocationPermissionPrompt = !hasLoc,
         needsNotificationPermissionPrompt = needsNotifPrompt,
       )
@@ -578,12 +582,15 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     if (hasLoc) {
       startGpsCollection()
     }
+    if (enableManualOnboard) {
+      verifyAndSync(forcePublish = true)
+    }
 
     scope.launch {
       try {
         updateTrainLive(trainNo)
         if (token != startToken || !_uiState.value.running) return@launch
-        if (!_uiState.value.insideTrain) {
+        if (!_uiState.value.insideTrain && !_uiState.value.manualOnboardGps) {
           schedulePolling(trainNo, token)
           scheduleApiAutoStop(token)
         }
@@ -591,14 +598,65 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         throw e
       } catch (_: Throwable) {
         if (token != startToken || !_uiState.value.running) return@launch
-        _uiState.update {
-          it.copy(statusBanner = StatusBanner(currentStrings().retryingSignal, BannerType.INFO))
-        }
-        if (!_uiState.value.insideTrain) {
-          schedulePolling(trainNo, token)
+        if (!_uiState.value.manualOnboardGps) {
+          _uiState.update {
+            it.copy(statusBanner = StatusBanner(currentStrings().retryingSignal, BannerType.INFO))
+          }
+          if (!_uiState.value.insideTrain) {
+            schedulePolling(trainNo, token)
+          }
         }
       }
     }
+  }
+
+  fun toggleManualOnboardGps() {
+    val state = _uiState.value
+    val trainNo = state.trainNoInput.trim()
+    if (!Regex("""^\d{4,5}$""").matches(trainNo)) return
+
+    if (state.manualOnboardGps) {
+      // Turn OFF manual GPS sharing; resume normal server/passenger polling
+      stationaryConfirmCount = 0
+      _uiState.update {
+        it.copy(
+          manualOnboardGps = false,
+          insideTrain = false,
+          rawSource = "api",
+          statusBanner = StatusBanner(currentStrings().retryingSignal, BannerType.INFO),
+        )
+      }
+      if (_uiState.value.running) {
+        schedulePolling(trainNo, startToken)
+        scheduleApiAutoStop(startToken)
+      }
+      return
+    }
+
+    if (!state.running) {
+      startTracking(prefilledTrainName = state.trainName, enableManualOnboard = true)
+      return
+    }
+
+    pollingJob?.cancel()
+    pollingJob = null
+    stopTimerJob?.cancel()
+    stopTimerJob = null
+    stationaryConfirmCount = 0
+    val hasLoc = TrainTrackingService.hasLocationPermission(appContext)
+    _uiState.update {
+      it.copy(
+        manualOnboardGps = true,
+        insideTrain = true,
+        rawSource = "gps",
+        needsLocationPermissionPrompt = !hasLoc,
+        statusBanner = StatusBanner(currentStrings().manualGpsSharingActiveMsg, BannerType.OK),
+      )
+    }
+    if (hasLoc && gpsJob == null) {
+      startGpsCollection()
+    }
+    verifyAndSync(forcePublish = true)
   }
 
   private fun cancelTrackingJobs() {
@@ -624,6 +682,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       state.copy(
         running = false,
         insideTrain = false,
+        manualOnboardGps = false,
         stoppageDistances = StoppageDistances(null, null),
         verification = null,
         lowAccuracyMeters = null,
@@ -758,8 +817,11 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   }
 
   private suspend fun updateTrainLive(trainNo: String) {
-    // When moving onboard user GPS is active, never overwrite live location with API key data
-    if (_uiState.value.insideTrain) return
+    // Allow initial route load when manualOnboardGps is ON and route is still empty,
+    // but never overwrite live location when onboard GPS is active.
+    val initialState = _uiState.value
+    if (initialState.insideTrain && !initialState.manualOnboardGps) return
+    if (initialState.manualOnboardGps && initialState.route.isNotEmpty()) return
 
     val previousTrain = _uiState.value.locatedTrain
     val payload = repository.fetchLiveTrain(
@@ -767,11 +829,28 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       cachedRoute = savedRoute,
       stationDb = stationDb,
     )
-    if (_uiState.value.insideTrain) return
-
+    val afterState = _uiState.value
     if (payload.route.isNotEmpty()) {
       savedRoute = payload.route
     }
+    if (!payload.trainName.isNullOrBlank()) {
+      preferences.addRecentTrain(SavedTrainEntry(trainNo, payload.trainName))
+    }
+
+    if (afterState.manualOnboardGps) {
+      if (payload.route.isNotEmpty() || !payload.trainName.isNullOrBlank()) {
+        _uiState.update { state ->
+          state.copy(
+            trainName = payload.trainName ?: state.trainName,
+            route = if (payload.route.isNotEmpty()) payload.route else state.route,
+          )
+        }
+        verifyAndSync()
+      }
+      return
+    }
+    if (afterState.insideTrain) return
+
     val located = GeoMath.locateTrain(
       currentLocation = payload.currentLocation,
       route = payload.route,
@@ -779,15 +858,11 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     )
     val distances = GeoMath.computeStoppageDistances(located, payload.route)
 
-    if (!payload.trainName.isNullOrBlank()) {
-      preferences.addRecentTrain(SavedTrainEntry(trainNo, payload.trainName))
-    }
-
     _uiState.update { state ->
       if (state.insideTrain) return@update state
       val shouldAutoCenter = previousTrain == null
       val nextStatus = when {
-        previousTrain != null && payload.source == "gps" ->
+        payload.source == "gps" ->
           StatusBanner(currentStrings().otherUserGpsMsg, BannerType.OK)
         state.statusBanner?.type == BannerType.INFO -> null
         else -> state.statusBanner
@@ -863,21 +938,94 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     }
   }
 
-  private fun verifyAndSync() {
+  private fun verifyAndSync(forcePublish: Boolean = false) {
     val state = _uiState.value
-    val train = state.locatedTrain ?: return
-    val latestSample = state.latestUserGps ?: return
     if (!state.running) return
-
+    val latestSample = state.latestUserGps ?: return
     val movement = state.movementStats
-    val metrics = GeoMath.computeVerification(latestSample, movement, train)
     val strings = currentStrings()
     val route = state.route
+    val trainNo = state.trainNoInput.trim()
+
+    // Manual "I'm on this train (Share GPS)" mode: shares live phone GPS even when delayed,
+    // stopped at a station, or when Google Sheet / API route is empty.
+    if (state.manualOnboardGps) {
+      pollingJob?.cancel()
+      pollingJob = null
+      stopTimerJob?.cancel()
+      stopTimerJob = null
+
+      val updatedIdx = if (route.isNotEmpty()) {
+        GeoMath.resolveProgressStationIndex(
+          latestSample.lat,
+          latestSample.lon,
+          route,
+          state.locatedTrain?.idx ?: 0,
+        )
+      } else {
+        0
+      }
+      val curStation = route.getOrNull(updatedIdx)
+      val nxtStation = route.getOrNull(updatedIdx + 1)
+      val nearestDb = if (curStation == null) {
+        GeoMath.findNearestStationDbEntry(latestSample.lat, latestSample.lon, stationDb)
+      } else {
+        null
+      }
+      val curName = curStation?.stationName?.takeIf { it.isNotBlank() }
+        ?: curStation?.stationCode?.takeIf { it.isNotBlank() }
+        ?: nearestDb?.name?.takeIf { it.isNotBlank() }
+        ?: state.locatedTrain?.name
+        ?: strings.unknownStation
+      val nxtName = nxtStation?.stationName?.takeIf { it.isNotBlank() }
+        ?: nxtStation?.stationCode
+        ?: ""
+      val gpsTrain = LocatedTrain(
+        lat = latestSample.lat,
+        lon = latestSample.lon,
+        name = curName,
+        next = nxtName,
+        speedKmh = movement.speedKmh.takeIf { it > 0.5 } ?: (state.locatedTrain?.speedKmh ?: 0.0),
+        bearingDegrees = movement.bearingDegrees.takeIf { it.isFinite() && movement.speedKmh >= 4.0 }
+          ?: (state.locatedTrain?.bearingDegrees ?: 0.0),
+        idx = updatedIdx,
+      )
+      val distances = GeoMath.computeStoppageDistances(gpsTrain, route)
+      publishGpsIfDue(trainNo, state.trainName, latestSample, force = forcePublish)
+      if (route.isNotEmpty()) {
+        reportLiveObservationIfChanged(
+          trainNo = trainNo,
+          trainName = state.trainName,
+          route = route,
+          located = gpsTrain,
+          passedKm = distances.passedFromCurrentKm,
+          timeMillis = latestSample.timeMillis,
+        )
+      }
+      val shouldRecenter = state.locatedTrain == null
+      _uiState.update {
+        it.copy(
+          insideTrain = true,
+          manualOnboardGps = true,
+          rawSource = "gps",
+          locatedTrain = gpsTrain,
+          stoppageDistances = distances,
+          statusBanner = StatusBanner(strings.manualGpsSharingActiveMsg, BannerType.OK),
+          recenterSignal = if (shouldRecenter) it.recenterSignal + 1 else it.recenterSignal,
+        )
+      }
+      return
+    }
+
+    val train = state.locatedTrain ?: return
+    val metrics = GeoMath.computeVerification(latestSample, movement, train, route)
+    val segMatch = GeoMath.findClosestRouteSegment(latestSample.lat, latestSample.lon, route)
 
     if (state.insideTrain) {
       // Already onboard: verify we haven't become stationary for an extended time or moved off-track
       val isStillMoving = movement.speedKmh >= 5.0 || movement.netDisplacementKm >= 0.015
-      val offTrackWhileMoving = movement.speedKmh >= 8.0 && metrics.crossTrackKm > 0.8 && metrics.distanceKm > 1.0
+      val trackOffset = segMatch?.distanceToTrackKm ?: metrics.crossTrackKm
+      val offTrackWhileMoving = movement.speedKmh >= 8.0 && trackOffset > 1.2 && metrics.distanceKm > 1.0
       if (!isStillMoving) {
         stationaryConfirmCount++
       } else {
@@ -887,7 +1035,6 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       if (offTrackWhileMoving || stationaryConfirmCount >= STATIONARY_EXIT_SAMPLES) {
         // User left train or stopped moving for extended duration — resume API/crowdsourced polling
         stationaryConfirmCount = 0
-        val trainNo = state.trainNoInput.trim()
         _uiState.update {
           it.copy(
             insideTrain = false,
@@ -911,7 +1058,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         latestSample.lat,
         latestSample.lon,
         route,
-        train.idx,
+        segMatch?.segmentIdx ?: train.idx,
       )
       val curStation = route.getOrNull(updatedIdx)
       val nxtStation = route.getOrNull(updatedIdx + 1)
@@ -934,9 +1081,9 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       )
       val distances = GeoMath.computeStoppageDistances(gpsTrain, route)
 
-      publishGpsIfDue(state.trainNoInput.trim(), state.trainName, latestSample)
+      publishGpsIfDue(trainNo, state.trainName, latestSample, force = forcePublish)
       reportLiveObservationIfChanged(
-        trainNo = state.trainNoInput.trim(),
+        trainNo = trainNo,
         trainName = state.trainName,
         route = route,
         located = gpsTrain,
@@ -957,7 +1104,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     }
 
     if (metrics.recognizedInside) {
-      // Moving GPS matched train timing and path! Stop API key polling and take over via phone GPS.
+      // Moving GPS matched train timing OR route polyline! Stop API key polling and take over via phone GPS.
       stationaryConfirmCount = 0
       pollingJob?.cancel()
       pollingJob = null
@@ -968,7 +1115,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         latestSample.lat,
         latestSample.lon,
         route,
-        train.idx,
+        segMatch?.segmentIdx ?: train.idx,
       )
       val curStation = route.getOrNull(updatedIdx)
       val nxtStation = route.getOrNull(updatedIdx + 1)
@@ -990,9 +1137,9 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
       )
       val distances = GeoMath.computeStoppageDistances(gpsTrain, route)
 
-      publishGpsIfDue(state.trainNoInput.trim(), state.trainName, latestSample)
+      publishGpsIfDue(trainNo, state.trainName, latestSample, force = true)
       reportLiveObservationIfChanged(
-        trainNo = state.trainNoInput.trim(),
+        trainNo = trainNo,
         trainName = state.trainName,
         route = route,
         located = gpsTrain,
@@ -1011,7 +1158,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
         )
       }
     } else {
-      // Stationary or off-path GPS: NEVER track train using this phone's GPS
+      // Stationary or off-path GPS: NEVER auto-track train using this phone's GPS
       _uiState.update { it.copy(verification = metrics) }
     }
   }
@@ -1052,9 +1199,14 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
     )
   }
 
-  private fun publishGpsIfDue(trainNo: String, trainName: String?, sample: GpsSample) {
+  private fun publishGpsIfDue(
+    trainNo: String,
+    trainName: String?,
+    sample: GpsSample,
+    force: Boolean = false,
+  ) {
     val now = System.currentTimeMillis()
-    if (now - lastPublishTimeMillis >= GPS_MS) {
+    if (force || now - lastPublishTimeMillis >= GPS_MS) {
       lastPublishTimeMillis = now
       scope.launch {
         repository.publishGps(trainNo, trainName, sample)
