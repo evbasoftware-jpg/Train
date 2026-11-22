@@ -351,31 +351,37 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
   var props = PropertiesService.getScriptProperties();
   var hasExternalApi = rrKeys.length > 0 || !!String(props.getProperty('RAPIDAPI_KEY') || '').trim();
   var cache = CacheService.getScriptCache();
-  var betweenCacheKey = 'between_v3_' + fromCode + '_' + toCode;
+  var betweenCacheKey = 'between_v4_' + fromCode + '_' + toCode;
   var betweenSyncedRecently = !!cache.get(betweenCacheKey);
 
   var sheetHasGaps = !sheetTrains.length;
   if (!sheetHasGaps) {
     for (var chk = 0; chk < sheetTrains.length; chk++) {
-      var chkKey = normTrainKey_(sheetTrains[chk].train.number);
+      var sTr = sheetTrains[chk];
+      var chkKey = normTrainKey_(sTr.train.number);
       var chkMeta = trainSheetIndex[chkKey];
-      if (!sheetTrains[chk].runDays || !chkMeta || chkMeta.stopsCount <= 2 || chkMeta.routePointsCount <= 2) {
+      var missingTimes = isEmptyOrNone_(sTr.from && sTr.from.departure) || isEmptyOrNone_(sTr.to && sTr.to.arrival);
+      if (missingTimes || !sTr.runDays || !chkMeta || chkMeta.stopsCount <= 2 || chkMeta.routePointsCount <= 2) {
         sheetHasGaps = true;
         break;
       }
     }
   }
 
-  // শিট ফাঁকা থাকলে, অথবা এখনো এই রুটের RailRadar Sync না হয়ে থাকলে/অসম্পূর্ণ থাকলে লাইভ API থেকে সব ট্রেন + runningDays নিয়ে আসি
+  // শিট ফাঁকা থাকলে, কোনো ট্রেনের সময়সূচী (--:--) বা Running_Days ফাঁকা থাকলে, অথবা সম্প্রতি Sync না হয়ে থাকলে লাইভ API কল করি
   var apiTrains = [];
   if (hasExternalApi && (!sheetTrains.length || !betweenSyncedRecently || sheetHasGaps)) {
     apiTrains = fetchBetweenFromExternalApi_(fromCode, toCode, stCoords);
-    if (apiTrains.length) {
-      cache.put(betweenCacheKey, '1', TRAIN_ENRICH_CACHE_TTL_SECONDS);
-    }
   }
 
   if (apiTrains.length) {
+    // ধাপ ১: কোনো অতিরিক্ত API কল ছাড়াই সাথে সাথে সবগুলো ট্রেনের তথ্য Train শিটে এবং From/To সময়সূচী Schedule শিটে সেভ করি
+    var baseSyncedOk = persistBetweenBaseToSheets_(ss, apiTrains, fromCode, toCode, stCoords);
+    if (baseSyncedOk) {
+      cache.put(betweenCacheKey, '1', TRAIN_ENRICH_CACHE_TTL_SECONDS);
+    }
+
+    // ধাপ ২: আলাদা try/catch-এ অসম্পূর্ণ ট্রেনগুলোর ফুল রুট (Train_Stops, Route_Points_Count, সম্পূর্ণ Schedule) এনরিচ করি
     try {
       var trainNumsToEnrich = [];
       var seedMetaByKey = {};
@@ -392,54 +398,28 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
         }
       }
 
-      var enrichedByKey = enrichTrainsAndSyncToSheets_(ss, trainNumsToEnrich, seedMetaByKey, stCoords);
-
-      // যে ট্রেনগুলোর ফুল রুট প্যারালাল লিমিটের বাইরে ছিল, তাদের মেটাডেটা + runningDays সেভ করি
-      var metaOnlyItems = [];
-      for (var j = 0; j < apiTrains.length; j++) {
-        var tr2 = apiTrains[j];
-        var tk3 = normTrainKey_(tr2.train.number);
-        var enr = enrichedByKey[tk3];
-        if (enr) {
-          if (enr.runningDays && !tr2.runDays) tr2.runDays = enr.runningDays;
-          if (enr.sourceCode) tr2.train.sourceCode = enr.sourceCode;
-          if (enr.sourceName) tr2.train.sourceName = enr.sourceName;
-          if (enr.destCode) tr2.train.destCode = enr.destCode;
-          if (enr.destName) tr2.train.destName = enr.destName;
-          if (enr.trainType) tr2.train.type = enr.trainType;
-          if (enr.zone) tr2.train.zone = enr.zone;
-        } else {
-          var m = tr2._meta || {};
-          metaOnlyItems.push({
-            trainNumber: tr2.train.number,
-            trainName: tr2.train.name,
-            trainType: m.trainType || '',
-            zone: m.zone || '',
-            fromCode: m.sourceCode || '',
-            fromName: m.sourceName || '',
-            departure: m.originDeparture || '',
-            toCode: m.destCode || '',
-            toName: m.destName || '',
-            arrival: m.destArrival || '',
-            durationHours: m.durationHours != null ? m.durationHours : '',
-            durationMinutes: m.durationMinutes != null ? m.durationMinutes : '',
-            distanceKm: m.totalDistanceKm || 0,
-            returnTrain: m.returnTrain || '',
-            firstAc: m.firstAc,
-            secondAc: m.secondAc,
-            thirdAc: m.thirdAc,
-            chairCar: m.chairCar,
-            firstClass: m.firstClass,
-            sleeper: m.sleeper,
-            runningDays: tr2.runDays || ''
-          });
+      if (trainNumsToEnrich.length) {
+        var enrichedByKey = enrichTrainsAndSyncToSheets_(ss, trainNumsToEnrich, seedMetaByKey, stCoords);
+        for (var j = 0; j < apiTrains.length; j++) {
+          var tr2 = apiTrains[j];
+          var tk3 = normTrainKey_(tr2.train.number);
+          var enr = enrichedByKey[tk3];
+          if (enr) {
+            if (enr.runningDays && !tr2.runDays) tr2.runDays = enr.runningDays;
+            if (enr.sourceCode) tr2.train.sourceCode = enr.sourceCode;
+            if (enr.sourceName) tr2.train.sourceName = enr.sourceName;
+            if (enr.destCode) tr2.train.destCode = enr.destCode;
+            if (enr.destName) tr2.train.destName = enr.destName;
+            if (enr.trainType) tr2.train.type = enr.trainType;
+            if (enr.zone) tr2.train.zone = enr.zone;
+          }
         }
-        delete tr2._meta;
-      }
-      if (metaOnlyItems.length) {
-        upsertTrainSheet_(ss.getSheetByName('Train'), metaOnlyItems, true);
       }
     } catch (_) {}
+
+    for (var cl = 0; cl < apiTrains.length; cl++) {
+      delete apiTrains[cl]._meta;
+    }
 
     // API + Sheet রেজাল্ট মার্জ করি (API-কে অগ্রাধিকার দিয়ে, এবং শিটে থাকা অতিরিক্ত ভ্যালিড ট্রেনও রেখে)
     var mergedByKey = {};
@@ -452,10 +432,16 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
       }
     }
     for (var si2 = 0; si2 < sheetTrains.length; si2++) {
-      var sk = normTrainKey_(sheetTrains[si2].train.number);
+      var sItem2 = sheetTrains[si2];
+      var sk = normTrainKey_(sItem2.train.number);
       if (!mergedByKey[sk]) {
-        mergedByKey[sk] = sheetTrains[si2];
-        mergedList.push(sheetTrains[si2]);
+        mergedByKey[sk] = sItem2;
+        mergedList.push(sItem2);
+      } else {
+        var curM = mergedByKey[sk];
+        if (isEmptyOrNone_(curM.from.departure) && !isEmptyOrNone_(sItem2.from.departure)) curM.from.departure = sItem2.from.departure;
+        if (isEmptyOrNone_(curM.to.arrival) && !isEmptyOrNone_(sItem2.to.arrival)) curM.to.arrival = sItem2.to.arrival;
+        if (!curM.runDays && sItem2.runDays) curM.runDays = sItem2.runDays;
       }
     }
     mergedList.sort(function (a, b) {
@@ -470,30 +456,43 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
 
   if (sheetTrains.length) {
     var needEnrich = [];
-    for (var si = 0; si < sheetTrains.length && needEnrich.length < 6; si++) {
+    for (var si = 0; si < sheetTrains.length && needEnrich.length < 5; si++) {
       var sItem = sheetTrains[si];
       var tKey = normTrainKey_(sItem.train.number);
       var meta = trainSheetIndex[tKey];
-      var isIncomplete = !meta || meta.stopsCount <= 2 || meta.routePointsCount <= 2 || !meta.runningDays;
+      var missingT = isEmptyOrNone_(sItem.from && sItem.from.departure) || isEmptyOrNone_(sItem.to && sItem.to.arrival);
+      var isIncomplete = missingT || !meta || meta.stopsCount <= 2 || meta.routePointsCount <= 2 || !meta.runningDays;
       if (isIncomplete && !cache.get('enriched_' + tKey)) {
         needEnrich.push(sItem.train.number);
       }
     }
     if (needEnrich.length && rrKeys.length) {
-      var enrichedMap = enrichTrainsAndSyncToSheets_(ss, needEnrich, {}, stCoords);
-      for (var sj = 0; sj < sheetTrains.length; sj++) {
-        var tk2 = normTrainKey_(sheetTrains[sj].train.number);
-        var eInfo = enrichedMap[tk2];
-        if (eInfo) {
-          if (eInfo.runningDays) sheetTrains[sj].runDays = eInfo.runningDays;
-          if (eInfo.sourceCode) sheetTrains[sj].train.sourceCode = eInfo.sourceCode;
-          if (eInfo.sourceName) sheetTrains[sj].train.sourceName = eInfo.sourceName;
-          if (eInfo.destCode) sheetTrains[sj].train.destCode = eInfo.destCode;
-          if (eInfo.destName) sheetTrains[sj].train.destName = eInfo.destName;
-          if (eInfo.trainType) sheetTrains[sj].train.type = eInfo.trainType;
-          if (eInfo.zone) sheetTrains[sj].train.zone = eInfo.zone;
+      try {
+        var enrichedMap = enrichTrainsAndSyncToSheets_(ss, needEnrich, {}, stCoords);
+        for (var sj = 0; sj < sheetTrains.length; sj++) {
+          var tk2 = normTrainKey_(sheetTrains[sj].train.number);
+          var eInfo = enrichedMap[tk2];
+          if (eInfo) {
+            if (eInfo.runningDays) sheetTrains[sj].runDays = eInfo.runningDays;
+            if (eInfo.sourceCode) sheetTrains[sj].train.sourceCode = eInfo.sourceCode;
+            if (eInfo.sourceName) sheetTrains[sj].train.sourceName = eInfo.sourceName;
+            if (eInfo.destCode) sheetTrains[sj].train.destCode = eInfo.destCode;
+            if (eInfo.destName) sheetTrains[sj].train.destName = eInfo.destName;
+            if (eInfo.trainType) sheetTrains[sj].train.type = eInfo.trainType;
+            if (eInfo.zone) sheetTrains[sj].train.zone = eInfo.zone;
+            if (eInfo.stopTimes) {
+              var ft = eInfo.stopTimes[fromCode];
+              var tt = eInfo.stopTimes[toCode];
+              if (ft && isEmptyOrNone_(sheetTrains[sj].from.departure)) {
+                sheetTrains[sj].from.departure = ft.departure || ft.arrival || sheetTrains[sj].from.departure;
+              }
+              if (tt && isEmptyOrNone_(sheetTrains[sj].to.arrival)) {
+                sheetTrains[sj].to.arrival = tt.arrival || tt.departure || sheetTrains[sj].to.arrival;
+              }
+            }
+          }
         }
-      }
+      } catch (_) {}
     }
     return {
       success: true,
@@ -508,6 +507,127 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
     apiError: LAST_RAILRADAR_ERROR_ ? (LAST_RAILRADAR_ERROR_.code + ': ' + LAST_RAILRADAR_ERROR_.message) : undefined,
     data: { trains: [] }
   };
+}
+
+function persistBetweenBaseToSheets_(ss, apiTrains, fromCode, toCode, stCoords) {
+  if (!apiTrains || !apiTrains.length) return false;
+  var lock = LockService.getScriptLock();
+  var locked = false;
+  try {
+    locked = lock.tryLock(12000);
+    var fromGeo = (stCoords && stCoords[fromCode]) || {};
+    var toGeo = (stCoords && stCoords[toCode]) || {};
+    var fromStName = fromGeo.name || fromCode;
+    var toStName = toGeo.name || toCode;
+
+    var baseStations = [];
+    var seenSt = {};
+    var pushSt = function (code, name) {
+      var c = String(code || '').trim().toUpperCase();
+      if (!c || seenSt[c]) return;
+      seenSt[c] = true;
+      baseStations.push({ stationCode: c, stationName: String(name || '').trim() || c });
+    };
+    pushSt(fromCode, fromStName);
+    pushSt(toCode, toStName);
+
+    var trainItems = [];
+    var schedItems = [];
+    for (var i = 0; i < apiTrains.length; i++) {
+      var tr = apiTrains[i];
+      var tNo = String((tr.train && tr.train.number) || '').replace(/\D/g, '');
+      if (!tNo) continue;
+      var tName = String((tr.train && tr.train.name) || '').trim();
+      var m = tr._meta || {};
+      var srcCode = String(m.sourceCode || (tr.train && tr.train.sourceCode) || '').trim().toUpperCase();
+      var srcName = String(m.sourceName || (tr.train && tr.train.sourceName) || '').trim();
+      var dstCode = String(m.destCode || (tr.train && tr.train.destCode) || '').trim().toUpperCase();
+      var dstName = String(m.destName || (tr.train && tr.train.destName) || '').trim();
+      if (srcCode) pushSt(srcCode, srcName || srcCode);
+      if (dstCode) pushSt(dstCode, dstName || dstCode);
+
+      trainItems.push({
+        trainNumber: tNo,
+        trainName: tName,
+        trainType: m.trainType || (tr.train && tr.train.type) || '',
+        zone: m.zone || (tr.train && tr.train.zone) || '',
+        fromCode: srcCode,
+        fromName: srcName,
+        departure: m.originDeparture || '',
+        toCode: dstCode,
+        toName: dstName,
+        arrival: m.destArrival || '',
+        durationHours: m.durationHours != null ? m.durationHours : '',
+        durationMinutes: m.durationMinutes != null ? m.durationMinutes : '',
+        distanceKm: m.totalDistanceKm || 0,
+        returnTrain: m.returnTrain || '',
+        firstAc: m.firstAc,
+        secondAc: m.secondAc,
+        thirdAc: m.thirdAc,
+        chairCar: m.chairCar,
+        firstClass: m.firstClass,
+        sleeper: m.sleeper,
+        runningDays: tr.runDays || m.runningDays || ''
+      });
+
+      var depTime = normHHmm_(tr.from && tr.from.departure);
+      var arrTime = normHHmm_(tr.to && tr.to.arrival);
+      var depMin = parseTimeMins_(depTime);
+      var arrMin = parseTimeMins_(arrTime);
+      var fromDay = 1;
+      var toDay = (depMin != null && arrMin != null && arrMin < depMin) ? 2 : 1;
+
+      if (depTime || arrTime) {
+        schedItems.push({
+          sequence: (srcCode && srcCode === fromCode) ? 1 : 2,
+          trainNumber: tNo,
+          trainName: tName,
+          stationCode: fromCode,
+          stationName: fromStName,
+          arrival: 'None',
+          departure: depTime || 'None',
+          day: fromDay,
+          isHalt: 'Y'
+        });
+        schedItems.push({
+          sequence: 99,
+          trainNumber: tNo,
+          trainName: tName,
+          stationCode: toCode,
+          stationName: toStName,
+          arrival: arrTime || 'None',
+          departure: 'None',
+          day: toDay,
+          isHalt: 'Y'
+        });
+      }
+    }
+
+    var wroteTrains = false;
+    var wroteSched = false;
+    if (baseStations.length) {
+      try { upsertStationsSheet_(ss.getSheetByName('Station'), baseStations); } catch (_) {}
+    }
+    if (trainItems.length) {
+      try {
+        upsertTrainSheet_(ss.getSheetByName('Train'), trainItems, true);
+        wroteTrains = true;
+      } catch (_) {}
+    }
+    if (schedItems.length) {
+      try {
+        upsertScheduleSheet_(ss.getSheetByName('Schedule'), schedItems, false);
+        wroteSched = true;
+      } catch (_) {}
+    }
+    return wroteTrains && (wroteSched || !schedItems.length);
+  } catch (_) {
+    return false;
+  } finally {
+    if (locked) {
+      try { lock.releaseLock(); } catch (_) {}
+    }
+  }
 }
 
 function handleGetSchedule_(sheetId, trainNo) {
@@ -632,11 +752,13 @@ function enrichTrainsAndSyncToSheets_(ss, trainNumbers, seedMetaByKey, stCoords)
     if (!d) continue;
 
     var trMeta = extractTrainMeta_(d, (seedMetaByKey || {})[tk]);
-    var route = normalizeExternalRoute_(Array.isArray(d.route) ? d.route : [], stCoords);
+    var route = normalizeExternalRoute_(extractRouteArray_(d), stCoords);
     if (route.length < 2) continue;
     cache.put('enriched_' + tk, '1', TRAIN_ENRICH_CACHE_TTL_SECONDS);
 
     var halts = [];
+    var stopTimes = {};
+    var seenSchedSt = {};
     var day = 1, prevMin = null;
     for (var ri = 0; ri < route.length; ri++) {
       var st = route[ri];
@@ -661,18 +783,35 @@ function enrichTrainsAndSyncToSheets_(ss, trainNumbers, seedMetaByKey, stCoords)
           arrVal = passT;
           depVal = passT;
         }
+      } else if (st.stationCode && !stopTimes[st.stationCode]) {
+        stopTimes[st.stationCode] = {
+          arrival: arrVal !== 'None' ? arrVal : '',
+          departure: depVal !== 'None' ? depVal : ''
+        };
       }
-      allSched.push({
-        sequence: ri + 1,
-        trainNumber: num,
-        trainName: trMeta.trainName || '',
-        stationCode: st.stationCode,
-        stationName: st.stationName || st.stationCode,
-        arrival: arrVal,
-        departure: depVal,
-        day: st.day || day,
-        isHalt: st.isHalt !== false ? 'Y' : 'N'
-      });
+      if (st.stationCode) {
+        var prevSchedIdx = seenSchedSt[st.stationCode];
+        var nextSchedRow = {
+          sequence: ri + 1,
+          trainNumber: num,
+          trainName: trMeta.trainName || '',
+          stationCode: st.stationCode,
+          stationName: st.stationName || st.stationCode,
+          arrival: arrVal,
+          departure: depVal,
+          day: st.day || day,
+          isHalt: st.isHalt !== false ? 'Y' : 'N'
+        };
+        if (prevSchedIdx != null) {
+          // একই স্টেশন কোড দুবার এলে হল্ট (Y) এন্ট্রিকে অগ্রাধিকার দিই
+          if (allSched[prevSchedIdx].isHalt !== 'Y' && nextSchedRow.isHalt === 'Y') {
+            allSched[prevSchedIdx] = nextSchedRow;
+          }
+        } else {
+          seenSchedSt[st.stationCode] = allSched.length;
+          allSched.push(nextSchedRow);
+        }
+      }
     }
 
     var firstHalt = route[0];
@@ -723,13 +862,29 @@ function enrichTrainsAndSyncToSheets_(ss, trainNumbers, seedMetaByKey, stCoords)
       sourceName: firstHalt.stationName || trMeta.sourceName || '',
       destCode: lastHalt.stationCode || trMeta.destCode || '',
       destName: lastHalt.stationName || trMeta.destName || '',
-      runningDays: trMeta.runningDays || ''
+      runningDays: trMeta.runningDays || '',
+      stopTimes: stopTimes
     };
   }
 
-  if (allStations.length) upsertStationsSheet_(ss.getSheetByName('Station'), allStations);
-  if (allTrainItems.length) upsertTrainSheet_(ss.getSheetByName('Train'), allTrainItems, false);
-  if (allSched.length) upsertScheduleSheet_(ss.getSheetByName('Schedule'), allSched, true);
+  var lock = LockService.getScriptLock();
+  var locked = false;
+  try {
+    locked = lock.tryLock(12000);
+    if (allStations.length) {
+      try { upsertStationsSheet_(ss.getSheetByName('Station'), allStations); } catch (_) {}
+    }
+    if (allTrainItems.length) {
+      try { upsertTrainSheet_(ss.getSheetByName('Train'), allTrainItems, false); } catch (_) {}
+    }
+    if (allSched.length) {
+      try { upsertScheduleSheet_(ss.getSheetByName('Schedule'), allSched, true); } catch (_) {}
+    }
+  } finally {
+    if (locked) {
+      try { lock.releaseLock(); } catch (_) {}
+    }
+  }
   return out;
 }
 
@@ -901,11 +1056,19 @@ function searchBetweenFromSheets_(ss, stCoords, fromCode, toCode) {
     for (var k in grouped) {
       var g = grouped[k];
       if (!g.from || !g.to) continue;
-      var fm = (g.from.day - 1) * 1440 + (parseTimeMins_(g.from.dep || g.from.arr) || 0);
-      var tm = (g.to.day - 1) * 1440 + (parseTimeMins_(g.to.arr || g.to.dep) || 0);
-      if (tm <= fm && !(g.to.id > g.from.id && g.to.day === g.from.day && fm === tm)) continue;
-      var meta2 = trainMetaByKey[k] || {};
+      var fTimeMin = parseTimeMins_(g.from.dep || g.from.arr);
+      var tTimeMin = parseTimeMins_(g.to.arr || g.to.dep);
+      var fm = (g.from.day - 1) * 1440 + (fTimeMin != null ? fTimeMin : 0);
+      var tm = (g.to.day - 1) * 1440 + (tTimeMin != null ? tTimeMin : 0);
       var exItem = byTrain[k];
+      var orderConfirmedByStops = !!exItem;
+      var overnightSameDayIdOrder = g.to.id > g.from.id && g.to.day === g.from.day &&
+        fTimeMin != null && tTimeMin != null && fTimeMin >= 1080 && tTimeMin <= 420;
+      if (tm <= fm && !orderConfirmedByStops && !overnightSameDayIdOrder &&
+          !(g.to.id > g.from.id && g.to.day === g.from.day && fm === tm)) {
+        continue;
+      }
+      var meta2 = trainMetaByKey[k] || {};
       var depOut = g.from.dep || g.from.arr || (exItem ? exItem.from.departure : '--:--') || '--:--';
       var arrOut = g.to.arr || g.to.dep || (exItem ? exItem.to.arrival : '--:--') || '--:--';
       byTrain[k] = {
@@ -1374,7 +1537,7 @@ function fetchLiveAndRouteFromExternalApi_(trainNo, stMap) {
     var meta = extractTrainMeta_(d, bestMeta);
     bestMeta = meta;
     if (meta.trainName && !bestName) bestName = meta.trainName;
-    var rawRoute = Array.isArray(d.route) ? d.route : [];
+    var rawRoute = extractRouteArray_(d);
     var route = normalizeExternalRoute_(rawRoute, stMap);
     if (route.length > bestRoute.length) bestRoute = route;
 
@@ -1387,7 +1550,7 @@ function fetchLiveAndRouteFromExternalApi_(trainNo, stMap) {
           var schedMeta = extractTrainMeta_(sd0, bestMeta);
           bestMeta = schedMeta;
           if (!bestName && schedMeta.trainName) bestName = schedMeta.trainName;
-          var sRoute = normalizeExternalRoute_(Array.isArray(sd0.route) ? sd0.route : [], stMap);
+          var sRoute = normalizeExternalRoute_(extractRouteArray_(sd0), stMap);
           if (sRoute.length > bestRoute.length) bestRoute = sRoute;
         }
       }
@@ -1535,6 +1698,31 @@ function resolveRailRadarCurrentLocation_(d, route, stMap, meta) {
   };
 }
 
+function extractRouteArray_(d) {
+  if (!d || typeof d !== 'object') return [];
+  if (Array.isArray(d.route) && d.route.length) return d.route;
+  if (Array.isArray(d.schedule) && d.schedule.length) return d.schedule;
+  if (Array.isArray(d.stations) && d.stations.length) return d.stations;
+  if (Array.isArray(d.stops) && d.stops.length) return d.stops;
+  if (d.train && typeof d.train === 'object') {
+    if (Array.isArray(d.train.route) && d.train.route.length) return d.train.route;
+    if (Array.isArray(d.train.schedule) && d.train.schedule.length) return d.train.schedule;
+    if (Array.isArray(d.train.stations) && d.train.stations.length) return d.train.stations;
+  }
+  return [];
+}
+
+function minsToHHmm_(val) {
+  if (val == null || val === '' || typeof val === 'boolean') return null;
+  if (typeof val === 'string' && val.indexOf(':') >= 0) return normHHmm_(val);
+  var n = Number(val);
+  if (!isFinite(n) || n < 0) return null;
+  var mod = Math.floor(n) % 1440;
+  var h = Math.floor(mod / 60);
+  var m = mod % 60;
+  return (h < 10 ? '0' + h : '' + h) + ':' + (m < 10 ? '0' + m : '' + m);
+}
+
 function normalizeExternalRoute_(rawRoute, stMap) {
   stMap = stMap || {};
   var out = [];
@@ -1544,8 +1732,10 @@ function normalizeExternalRoute_(rawRoute, stMap) {
   var hasDifferentArrDep = false;
   for (var p = 0; p < rawRoute.length; p++) {
     var ps = rawRoute[p] || {};
-    var pArr = normHHmm_(ps.scheduledArrival || ps.arrival || ps.std_arr || ps.actualArrival);
-    var pDep = normHHmm_(ps.scheduledDeparture || ps.departure || ps.std_dep || ps.actualDeparture);
+    var pArr = normHHmm_(ps.scheduledArrival || ps.arrival || ps.std_arr || ps.actualArrival) ||
+      minsToHHmm_(ps.scheduledArrivalMinutes != null ? ps.scheduledArrivalMinutes : ps.arrivalMinutes);
+    var pDep = normHHmm_(ps.scheduledDeparture || ps.departure || ps.std_dep || ps.actualDeparture) ||
+      minsToHHmm_(ps.scheduledDepartureMinutes != null ? ps.scheduledDepartureMinutes : ps.departureMinutes);
     if (pArr && pDep && pArr !== pDep) {
       hasDifferentArrDep = true;
       break;
@@ -1560,8 +1750,10 @@ function normalizeExternalRoute_(rawRoute, stMap) {
     var name = String(st.stationName || st.station_name || st.name || stObj.name || stObj.stationName || geo.name || code).trim();
     if (!code && !name) continue;
 
-    var arr = normHHmm_(st.scheduledArrival || st.arrival || st.std_arr || st.actualArrival || st.eta) || null;
-    var dep = normHHmm_(st.scheduledDeparture || st.departure || st.std_dep || st.actualDeparture || st.etd) || null;
+    var arr = normHHmm_(st.scheduledArrival || st.arrival || st.std_arr || st.actualArrival || st.eta) ||
+      minsToHHmm_(st.scheduledArrivalMinutes != null ? st.scheduledArrivalMinutes : st.arrivalMinutes) || null;
+    var dep = normHHmm_(st.scheduledDeparture || st.departure || st.std_dep || st.actualDeparture || st.etd) ||
+      minsToHHmm_(st.scheduledDepartureMinutes != null ? st.scheduledDepartureMinutes : st.departureMinutes) || null;
     var isTerminal = (i === 0 || i === rawRoute.length - 1);
     var isHalt = true;
     if (!isTerminal) {
@@ -1879,6 +2071,32 @@ function handleSyncSheetData_(data) {
   }
 }
 
+function flushDirtyRows_(sheet, values, dirtyMap, lastCol) {
+  var idxs = [];
+  for (var k in dirtyMap) {
+    if (dirtyMap[k]) idxs.push(Number(k));
+  }
+  if (!idxs.length) return;
+  idxs.sort(function (a, b) { return a - b; });
+  var i = 0;
+  while (i < idxs.length) {
+    var start = idxs[i];
+    var end = start;
+    while (i + 1 < idxs.length && idxs[i + 1] === end + 1) {
+      i++;
+      end = idxs[i];
+    }
+    var chunk = [];
+    for (var r = start; r <= end; r++) {
+      var row = values[r];
+      while (row.length < lastCol) row.push('');
+      chunk.push(row.slice(0, lastCol));
+    }
+    sheet.getRange(start + 1, 1, chunk.length, lastCol).setValues(chunk);
+    i++;
+  }
+}
+
 function upsertStationsSheet_(sheet, stations) {
   if (!sheet || !stations.length) return 0;
   var lastRow = sheet.getLastRow();
@@ -1902,6 +2120,8 @@ function upsertStationsSheet_(sheet, stations) {
   }
 
   var touched = 0;
+  var dirtyRows = {};
+  var pendingByCode = {};
   var toAppend = [];
   for (var i = 0; i < stations.length; i++) {
     var st = stations[i];
@@ -1913,6 +2133,7 @@ function upsertStationsSheet_(sheet, stations) {
 
     if (rowIdx != null) {
       var row = values[rowIdx];
+      while (row.length < lastCol) row.push('');
       var changed = false;
       if (st.stationName && (isEmptyOrNone_(row[cName]) || String(row[cName]).trim().toUpperCase() === codeKey)) {
         if (String(row[cName]).trim() !== st.stationName) { row[cName] = st.stationName; changed = true; }
@@ -1929,8 +2150,17 @@ function upsertStationsSheet_(sheet, stations) {
         }
       }
       if (changed) {
-        sheet.getRange(rowIdx + 1, 1, 1, lastCol).setValues([row]);
+        dirtyRows[rowIdx] = true;
         touched++;
+      }
+    } else if (pendingByCode[codeKey] != null) {
+      var pRow = toAppend[pendingByCode[codeKey]];
+      if (st.stationName && (isEmptyOrNone_(pRow[cName]) || String(pRow[cName]).trim().toUpperCase() === codeKey)) {
+        pRow[cName] = st.stationName;
+      }
+      if (hasCoords && (pRow[cLat] === '' || pRow[cLon] === '')) {
+        pRow[cLat] = Number(st.latitude);
+        pRow[cLon] = Number(st.longitude);
       }
     } else {
       var newRow = blankRow_(lastCol);
@@ -1940,11 +2170,12 @@ function upsertStationsSheet_(sheet, stations) {
         newRow[cLat] = Number(st.latitude);
         newRow[cLon] = Number(st.longitude);
       }
-      rowByCode[codeKey] = values.length + toAppend.length;
+      pendingByCode[codeKey] = toAppend.length;
       toAppend.push(newRow);
       touched++;
     }
   }
+  flushDirtyRows_(sheet, values, dirtyRows, lastCol);
   if (toAppend.length) {
     sheet.getRange(lastRow + 1, 1, toAppend.length, lastCol).setValues(toAppend);
   }
@@ -2016,7 +2247,64 @@ function upsertTrainSheet_(sheet, trainItems, onlyInsertIfMissingOrFillBlank) {
     if (k) rowByTrain[k] = r;
   }
 
+  var applyTrainFields = function (row, dRow, t, incomingStops, incomingStopsCount, normDays) {
+    while (row.length < lastCol) { row.push(''); dRow.push(''); }
+    var changed = false;
+
+    var exStops = String(dRow[cStops] || '').trim();
+    var exStopsCount = exStops ? exStops.split(',').length : 0;
+    var exPts = parseInt(dRow[cPts], 10) || 0;
+    var forceReplaceEndpoints = !onlyInsertIfMissingOrFillBlank || (exStopsCount <= 2 && exPts <= 2 && incomingStopsCount > 2);
+
+    if (t.trainName && (isEmptyOrNone_(dRow[cName]) || (forceReplaceEndpoints && String(dRow[cName]).trim() !== t.trainName))) {
+      row[cName] = t.trainName; dRow[cName] = t.trainName; changed = true;
+    }
+    if (t.trainType && (isEmptyOrNone_(dRow[cType]) || forceReplaceEndpoints)) {
+      if (String(dRow[cType]).trim() !== String(t.trainType).trim()) { row[cType] = t.trainType; dRow[cType] = t.trainType; changed = true; }
+    }
+    if (t.zone && (isEmptyOrNone_(dRow[cZone]) || forceReplaceEndpoints)) {
+      if (String(dRow[cZone]).trim() !== String(t.zone).trim()) { row[cZone] = t.zone; dRow[cZone] = t.zone; changed = true; }
+    }
+    if (forceReplaceEndpoints || isEmptyOrNone_(dRow[cFromC])) {
+      if (t.fromCode && String(dRow[cFromC]).trim().toUpperCase() !== t.fromCode) { row[cFromC] = t.fromCode; dRow[cFromC] = t.fromCode; changed = true; }
+      if (t.fromName && String(dRow[cFromN]).trim() !== t.fromName) { row[cFromN] = t.fromName; dRow[cFromN] = t.fromName; changed = true; }
+      var inDep = normHHmm_(t.departure);
+      if (inDep && normHHmm_(dRow[cDep]) !== inDep) { row[cDep] = inDep; dRow[cDep] = inDep; changed = true; }
+      if (t.toCode && String(dRow[cToC]).trim().toUpperCase() !== t.toCode) { row[cToC] = t.toCode; dRow[cToC] = t.toCode; changed = true; }
+      if (t.toName && String(dRow[cToN]).trim() !== t.toName) { row[cToN] = t.toName; dRow[cToN] = t.toName; changed = true; }
+      var inArr = normHHmm_(t.arrival);
+      if (inArr && normHHmm_(dRow[cArr]) !== inArr) { row[cArr] = inArr; dRow[cArr] = inArr; changed = true; }
+    }
+    if (t.durationHours !== '' && t.durationHours != null && isEmptyOrNone_(dRow[cDurH])) {
+      row[cDurH] = Number(t.durationHours); dRow[cDurH] = String(row[cDurH]); changed = true;
+    }
+    if (t.durationMinutes !== '' && t.durationMinutes != null && isEmptyOrNone_(dRow[cDurM])) {
+      row[cDurM] = Number(t.durationMinutes); dRow[cDurM] = String(row[cDurM]); changed = true;
+    }
+    if (t.distanceKm > 0 && !(Number(row[cDist]) > 0)) { row[cDist] = Number(t.distanceKm); dRow[cDist] = String(row[cDist]); changed = true; }
+    if (t.returnTrain && isEmptyOrNone_(dRow[cRet])) { row[cRet] = t.returnTrain; dRow[cRet] = t.returnTrain; changed = true; }
+    if (t.firstAc !== '' && t.firstAc != null && isEmptyOrNone_(dRow[c1A])) { row[c1A] = t.firstAc; dRow[c1A] = String(t.firstAc); changed = true; }
+    if (t.secondAc !== '' && t.secondAc != null && isEmptyOrNone_(dRow[c2A])) { row[c2A] = t.secondAc; dRow[c2A] = String(t.secondAc); changed = true; }
+    if (t.thirdAc !== '' && t.thirdAc != null && isEmptyOrNone_(dRow[c3A])) { row[c3A] = t.thirdAc; dRow[c3A] = String(t.thirdAc); changed = true; }
+    if (t.chairCar !== '' && t.chairCar != null && isEmptyOrNone_(dRow[cCC])) { row[cCC] = t.chairCar; dRow[cCC] = String(t.chairCar); changed = true; }
+    if (t.firstClass !== '' && t.firstClass != null && isEmptyOrNone_(dRow[cFC])) { row[cFC] = t.firstClass; dRow[cFC] = String(t.firstClass); changed = true; }
+    if (t.sleeper !== '' && t.sleeper != null && isEmptyOrNone_(dRow[cSL])) { row[cSL] = t.sleeper; dRow[cSL] = String(t.sleeper); changed = true; }
+
+    if (t.routePointsCount > 0 && (t.routePointsCount > exPts || forceReplaceEndpoints) && t.routePointsCount !== exPts) {
+      row[cPts] = Number(t.routePointsCount); dRow[cPts] = String(row[cPts]); changed = true;
+    }
+    if (incomingStops && (isEmptyOrNone_(exStops) || incomingStopsCount > exStopsCount || (forceReplaceEndpoints && incomingStopsCount >= exStopsCount && exStops !== incomingStops))) {
+      row[cStops] = incomingStops; dRow[cStops] = incomingStops; changed = true;
+    }
+    if (normDays && (isEmptyOrNone_(dRow[cDays]) || (!onlyInsertIfMissingOrFillBlank && String(dRow[cDays]).trim() !== normDays))) {
+      row[cDays] = normDays; dRow[cDays] = normDays; changed = true;
+    }
+    return changed;
+  };
+
   var updated = 0, added = 0;
+  var dirtyRows = {};
+  var pendingByTrain = {};
   var toAppend = [];
   for (var i = 0; i < trainItems.length; i++) {
     var t = trainItems[i];
@@ -2030,66 +2318,13 @@ function upsertTrainSheet_(sheet, trainItems, onlyInsertIfMissingOrFillBlank) {
     var rowIdx = rowByTrain[k];
 
     if (rowIdx != null) {
-      var row = values[rowIdx];
-      var dRow = disp[rowIdx];
-      while (row.length < lastCol) { row.push(''); dRow.push(''); }
-      var changed = false;
-
-      var exStops = String(dRow[cStops] || '').trim();
-      var exStopsCount = exStops ? exStops.split(',').length : 0;
-      var exPts = parseInt(dRow[cPts], 10) || 0;
-      // পুরানো সার্চ-সেশন থেকে শুধু ২টি স্টপ ("BWN, AMP") সেভ হয়ে থাকলে সেটিকে অসম্পূর্ণ ধরে আপডেট allow করি
-      var forceReplaceEndpoints = !onlyInsertIfMissingOrFillBlank || (exStopsCount <= 2 && exPts <= 2 && incomingStopsCount > 2);
-
-      if (t.trainName && (isEmptyOrNone_(dRow[cName]) || (forceReplaceEndpoints && String(dRow[cName]).trim() !== t.trainName))) {
-        row[cName] = t.trainName; changed = true;
-      }
-      if (t.trainType && (isEmptyOrNone_(dRow[cType]) || forceReplaceEndpoints)) {
-        if (String(dRow[cType]).trim() !== String(t.trainType).trim()) { row[cType] = t.trainType; changed = true; }
-      }
-      if (t.zone && (isEmptyOrNone_(dRow[cZone]) || forceReplaceEndpoints)) {
-        if (String(dRow[cZone]).trim() !== String(t.zone).trim()) { row[cZone] = t.zone; changed = true; }
-      }
-      if (forceReplaceEndpoints || isEmptyOrNone_(dRow[cFromC])) {
-        if (t.fromCode && String(dRow[cFromC]).trim().toUpperCase() !== t.fromCode) { row[cFromC] = t.fromCode; changed = true; }
-        if (t.fromName && String(dRow[cFromN]).trim() !== t.fromName) { row[cFromN] = t.fromName; changed = true; }
-        var inDep = normHHmm_(t.departure);
-        if (inDep && normHHmm_(dRow[cDep]) !== inDep) { row[cDep] = inDep; changed = true; }
-        if (t.toCode && String(dRow[cToC]).trim().toUpperCase() !== t.toCode) { row[cToC] = t.toCode; changed = true; }
-        if (t.toName && String(dRow[cToN]).trim() !== t.toName) { row[cToN] = t.toName; changed = true; }
-        var inArr = normHHmm_(t.arrival);
-        if (inArr && normHHmm_(dRow[cArr]) !== inArr) { row[cArr] = inArr; changed = true; }
-      }
-      if (t.durationHours !== '' && t.durationHours != null && isEmptyOrNone_(dRow[cDurH])) {
-        row[cDurH] = Number(t.durationHours); changed = true;
-      }
-      if (t.durationMinutes !== '' && t.durationMinutes != null && isEmptyOrNone_(dRow[cDurM])) {
-        row[cDurM] = Number(t.durationMinutes); changed = true;
-      }
-      if (t.distanceKm > 0 && !(Number(row[cDist]) > 0)) { row[cDist] = Number(t.distanceKm); changed = true; }
-      if (t.returnTrain && isEmptyOrNone_(dRow[cRet])) { row[cRet] = t.returnTrain; changed = true; }
-      if (t.firstAc !== '' && t.firstAc != null && isEmptyOrNone_(dRow[c1A])) { row[c1A] = t.firstAc; changed = true; }
-      if (t.secondAc !== '' && t.secondAc != null && isEmptyOrNone_(dRow[c2A])) { row[c2A] = t.secondAc; changed = true; }
-      if (t.thirdAc !== '' && t.thirdAc != null && isEmptyOrNone_(dRow[c3A])) { row[c3A] = t.thirdAc; changed = true; }
-      if (t.chairCar !== '' && t.chairCar != null && isEmptyOrNone_(dRow[cCC])) { row[cCC] = t.chairCar; changed = true; }
-      if (t.firstClass !== '' && t.firstClass != null && isEmptyOrNone_(dRow[cFC])) { row[cFC] = t.firstClass; changed = true; }
-      if (t.sleeper !== '' && t.sleeper != null && isEmptyOrNone_(dRow[cSL])) { row[cSL] = t.sleeper; changed = true; }
-
-      if (t.routePointsCount > 0 && (t.routePointsCount > exPts || forceReplaceEndpoints) && t.routePointsCount !== exPts) {
-        row[cPts] = Number(t.routePointsCount); changed = true;
-      }
-      if (incomingStops && (isEmptyOrNone_(exStops) || incomingStopsCount > exStopsCount || (forceReplaceEndpoints && incomingStopsCount >= exStopsCount && exStops !== incomingStops))) {
-        row[cStops] = incomingStops;
-        changed = true;
-      }
-      if (normDays && (isEmptyOrNone_(dRow[cDays]) || (!onlyInsertIfMissingOrFillBlank && String(dRow[cDays]).trim() !== normDays))) {
-        row[cDays] = normDays;
-        changed = true;
-      }
-      if (changed) {
-        sheet.getRange(rowIdx + 1, 1, 1, lastCol).setValues([row]);
+      if (applyTrainFields(values[rowIdx], disp[rowIdx], t, incomingStops, incomingStopsCount, normDays)) {
+        dirtyRows[rowIdx] = true;
         updated++;
       }
+    } else if (pendingByTrain[k] != null) {
+      var pRow = toAppend[pendingByTrain[k]];
+      applyTrainFields(pRow, pRow.slice(), t, incomingStops, incomingStopsCount, normDays);
     } else {
       var newRow = blankRow_(lastCol);
       newRow[cNum] = cleanNo;
@@ -2115,11 +2350,12 @@ function upsertTrainSheet_(sheet, trainItems, onlyInsertIfMissingOrFillBlank) {
       if (t.routePointsCount > 0) newRow[cPts] = Number(t.routePointsCount);
       newRow[cStops] = incomingStops;
       newRow[cDays] = normDays || '';
-      rowByTrain[k] = values.length + toAppend.length;
+      pendingByTrain[k] = toAppend.length;
       toAppend.push(newRow);
       added++;
     }
   }
+  flushDirtyRows_(sheet, values, dirtyRows, lastCol);
   if (toAppend.length) {
     sheet.getRange(lastRow + 1, 1, toAppend.length, lastCol).setValues(toAppend);
   }
@@ -2173,7 +2409,36 @@ function upsertScheduleSheet_(sheet, schedItems, forceTimeSync) {
     if (isFinite(sid) && sid > maxSchedId) maxSchedId = sid;
   }
 
+  var applySchedFields = function (row, dRow, s, inArr, inDep, explicitNoneArr, explicitNoneDep, inHalt) {
+    while (row.length < lastCol) { row.push(''); dRow.push(''); }
+    var changed = false;
+    if (s.trainName && String(dRow[cTrainName]).trim() !== s.trainName) {
+      row[cTrainName] = s.trainName; dRow[cTrainName] = s.trainName; changed = true;
+    }
+    if (s.stationName && String(dRow[cStName]).trim() !== s.stationName) {
+      row[cStName] = s.stationName; dRow[cStName] = s.stationName; changed = true;
+    }
+
+    if (forceTimeSync) {
+      if (explicitNoneArr && !isEmptyOrNone_(dRow[cArr])) { row[cArr] = 'None'; dRow[cArr] = 'None'; changed = true; }
+      else if (inArr && normHHmm_(dRow[cArr]) !== inArr) { row[cArr] = inArr; dRow[cArr] = inArr; changed = true; }
+      if (explicitNoneDep && !isEmptyOrNone_(dRow[cDep])) { row[cDep] = 'None'; dRow[cDep] = 'None'; changed = true; }
+      else if (inDep && normHHmm_(dRow[cDep]) !== inDep) { row[cDep] = inDep; dRow[cDep] = inDep; changed = true; }
+      if (s.day && Number(row[cDay]) !== Number(s.day)) { row[cDay] = Number(s.day); dRow[cDay] = String(row[cDay]); changed = true; }
+    } else {
+      if (inArr && isEmptyOrNone_(dRow[cArr]) && Number(s.sequence) !== 1) { row[cArr] = inArr; dRow[cArr] = inArr; changed = true; }
+      if (inDep && isEmptyOrNone_(dRow[cDep])) { row[cDep] = inDep; dRow[cDep] = inDep; changed = true; }
+      if (s.day && isEmptyOrNone_(dRow[cDay])) { row[cDay] = Number(s.day); dRow[cDay] = String(row[cDay]); changed = true; }
+    }
+    if (inHalt && String(dRow[cHalt] || '').trim().toUpperCase() !== inHalt) {
+      row[cHalt] = inHalt; dRow[cHalt] = inHalt; changed = true;
+    }
+    return changed;
+  };
+
   var touched = 0;
+  var dirtyRows = {};
+  var pendingByKey = {};
   var toAppend = [];
   for (var i = 0; i < schedItems.length; i++) {
     var s = schedItems[i];
@@ -2193,31 +2458,14 @@ function upsertScheduleSheet_(sheet, schedItems, forceTimeSync) {
       : (s.isHalt === true || String(s.isHalt).toUpperCase() === 'Y' ? 'Y' : '');
 
     if (rowIdx != null) {
-      var row = values[rowIdx];
-      var dRow = disp[rowIdx];
-      while (row.length < lastCol) { row.push(''); dRow.push(''); }
-      var changed = false;
-      if (s.trainName && String(dRow[cTrainName]).trim() !== s.trainName) { row[cTrainName] = s.trainName; changed = true; }
-      if (s.stationName && String(dRow[cStName]).trim() !== s.stationName) { row[cStName] = s.stationName; changed = true; }
-
-      if (forceTimeSync) {
-        if (explicitNoneArr && !isEmptyOrNone_(dRow[cArr])) { row[cArr] = 'None'; changed = true; }
-        else if (inArr && normHHmm_(dRow[cArr]) !== inArr) { row[cArr] = inArr; changed = true; }
-        if (explicitNoneDep && !isEmptyOrNone_(dRow[cDep])) { row[cDep] = 'None'; changed = true; }
-        else if (inDep && normHHmm_(dRow[cDep]) !== inDep) { row[cDep] = inDep; changed = true; }
-        if (s.day && Number(row[cDay]) !== Number(s.day)) { row[cDay] = Number(s.day); changed = true; }
-      } else {
-        if (inArr && isEmptyOrNone_(dRow[cArr]) && Number(s.sequence) > 1) { row[cArr] = inArr; changed = true; }
-        if (inDep && isEmptyOrNone_(dRow[cDep])) { row[cDep] = inDep; changed = true; }
-        if (s.day && isEmptyOrNone_(dRow[cDay])) { row[cDay] = Number(s.day); changed = true; }
-      }
-      if (inHalt && String(dRow[cHalt] || '').trim().toUpperCase() !== inHalt) {
-        row[cHalt] = inHalt;
-        changed = true;
-      }
-      if (changed) {
-        sheet.getRange(rowIdx + 1, 1, 1, lastCol).setValues([row]);
+      if (applySchedFields(values[rowIdx], disp[rowIdx], s, inArr, inDep, explicitNoneArr, explicitNoneDep, inHalt)) {
+        dirtyRows[rowIdx] = true;
         touched++;
+      }
+    } else if (pendingByKey[key] != null) {
+      var pRow = toAppend[pendingByKey[key]];
+      if (!(String(pRow[cHalt] || '').toUpperCase() === 'Y' && inHalt === 'N')) {
+        applySchedFields(pRow, pRow.slice(), s, inArr, inDep, explicitNoneArr, explicitNoneDep, inHalt);
       }
     } else {
       maxSchedId++;
@@ -2231,11 +2479,12 @@ function upsertScheduleSheet_(sheet, schedItems, forceTimeSync) {
       newRow[cDep] = inDep || 'None';
       newRow[cDay] = s.day ? Number(s.day) : 1;
       newRow[cHalt] = inHalt;
-      rowByKey[key] = values.length + toAppend.length;
+      pendingByKey[key] = toAppend.length;
       toAppend.push(newRow);
       touched++;
     }
   }
+  flushDirtyRows_(sheet, values, dirtyRows, lastCol);
   if (toAppend.length) {
     sheet.getRange(lastRow + 1, 1, toAppend.length, lastCol).setValues(toAppend);
   }

@@ -2513,11 +2513,19 @@
       }
 
       function isScheduleRowBefore(fromRow, toRow) {
-        const fm = (fromRow.day ? (fromRow.day - 1) * 1440 : 0) +
-          (parseTimeToMins(fromRow.departureRaw) ?? parseTimeToMins(fromRow.arrivalRaw) ?? -1);
-        const tm = (toRow.day ? (toRow.day - 1) * 1440 : 0) +
-          (parseTimeToMins(toRow.arrivalRaw) ?? parseTimeToMins(toRow.departureRaw) ?? -1);
-        if (fm >= 0 && tm >= 0 && fm !== tm) return tm > fm;
+        const fClock = parseTimeToMins(fromRow.departureRaw) ?? parseTimeToMins(fromRow.arrivalRaw);
+        const tClock = parseTimeToMins(toRow.arrivalRaw) ?? parseTimeToMins(toRow.departureRaw);
+        const fm = (fromRow.day ? (fromRow.day - 1) * 1440 : 0) + (fClock ?? -1);
+        const tm = (toRow.day ? (toRow.day - 1) * 1440 : 0) + (tClock ?? -1);
+        if (fm >= 0 && tm >= 0 && fm !== tm) {
+          if (tm > fm) return true;
+          const sameDay = (fromRow.day || 1) === (toRow.day || 1);
+          const idOrdered = fromRow.scheduleId != null && toRow.scheduleId != null && toRow.scheduleId > fromRow.scheduleId;
+          if (sameDay && idOrdered && fClock != null && tClock != null && fClock >= 1080 && tClock <= 420) {
+            return true;
+          }
+          return false;
+        }
         if (fromRow.scheduleId != null && toRow.scheduleId != null && fromRow.scheduleId !== toRow.scheduleId) {
           return toRow.scheduleId > fromRow.scheduleId;
         }
@@ -3312,11 +3320,12 @@
           if (reqSeq !== betweenRequestSeq) return;
 
           const pairKey = `${f.toUpperCase()}->${t.toUpperCase()}`;
-          const needsEnrichment = !sheetList.length || sheetList.some(it => !it.runningDaysRaw);
+          const needsEnrichment = !sheetList.length ||
+            sheetList.some(it => !it.runningDaysRaw || !hasValidSheetTime(it.departure) || !hasValidSheetTime(it.arrival));
           let list = sheetList;
           let apiErrMsg = '';
 
-          // 2) Call action=between when sheet has gaps / lacks Running_Days / hasn't synced this session
+          // 2) Call action=between when sheet has gaps / missing times / lacks Running_Days / hasn't synced this session
           if (!enrichedBetweenPairs.has(pairKey) && (needsEnrichment || sheetList.length < 3)) {
             try {
               const r = await fetch(`${API_URL}?action=between&from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`);
@@ -3334,15 +3343,29 @@
                 destCode: obj.train?.destCode || ''
               })).filter(it => it.trainNumber);
               if (apiList.length) {
-                enrichedBetweenPairs.add(pairKey);
-                const mergedMap = new Map();
-                for (const item of apiList) {
-                  const k = normalizeTrainKey(item.trainNumber);
-                  if (!mergedMap.has(k)) mergedMap.set(k, item);
+                const hasCompleteTimes = apiList.every(it => hasValidSheetTime(it.departure) && hasValidSheetTime(it.arrival));
+                if (String(json?.source || '').toLowerCase() === 'api' || hasCompleteTimes) {
+                  enrichedBetweenPairs.add(pairKey);
                 }
+                const mergedMap = new Map();
                 for (const sItem of sheetList) {
                   const k = normalizeTrainKey(sItem.trainNumber);
-                  if (!mergedMap.has(k)) mergedMap.set(k, sItem);
+                  if (k) mergedMap.set(k, sItem);
+                }
+                for (const item of apiList) {
+                  const k = normalizeTrainKey(item.trainNumber);
+                  if (!k) continue;
+                  const ex = mergedMap.get(k);
+                  mergedMap.set(k, ex ? {
+                    trainNumber: item.trainNumber || ex.trainNumber,
+                    trainName: item.trainName || ex.trainName,
+                    departure: hasValidSheetTime(item.departure) ? item.departure : ex.departure,
+                    arrival: hasValidSheetTime(item.arrival) ? item.arrival : ex.arrival,
+                    distanceKm: item.distanceKm > 0 ? item.distanceKm : ex.distanceKm,
+                    runningDaysRaw: item.runningDaysRaw || ex.runningDaysRaw,
+                    sourceCode: item.sourceCode || ex.sourceCode,
+                    destCode: item.destCode || ex.destCode
+                  } : item);
                 }
                 list = Array.from(mergedMap.values()).sort((a, b) => {
                   const ma = parseTimeToMins(a.departure) ?? 9999;

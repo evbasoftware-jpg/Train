@@ -237,15 +237,18 @@ class TrainRepository(private val cacheDir: File? = null) {
       } catch (_: Exception) {
         emptyList()
       }
-      val needsSheetEnrichment = sheetMatches.isEmpty() || sheetMatches.any { it.runningDaysRaw.isBlank() }
+      val needsSheetEnrichment = sheetMatches.isEmpty() ||
+        sheetMatches.any { it.runningDaysRaw.isBlank() || it.departure == "--:--" || it.arrival == "--:--" }
       val pairKey = "${fromCode.uppercase(Locale.US)}->${toCode.uppercase(Locale.US)}"
       if (sheetMatches.isNotEmpty() && ((!needsSheetEnrichment && sheetMatches.size >= 3) || pairKey in enrichedBetweenPairs)) {
         return@withContext sheetMatches
       }
 
       // 2) Fallback to backend API key search (also backfills incomplete sheet rows once per session)
+      var apiSource = ""
       val apiList = try {
         val root = getApi(mapOf("action" to "between", "from" to fromCode, "to" to toCode))
+        apiSource = root.optString("source", "")
         val trainsArr = root.optJSONObject("data")?.optJSONArray("trains") ?: JSONArray()
         val result = ArrayList<TrainBetweenItem>(trainsArr.length())
         for (i in 0 until trainsArr.length()) {
@@ -279,7 +282,8 @@ class TrainRepository(private val cacheDir: File? = null) {
         emptyList()
       }
 
-      if (apiList.isNotEmpty()) {
+      val hasCompleteTimes = apiList.isNotEmpty() && apiList.none { it.departure == "--:--" || it.arrival == "--:--" }
+      if (apiList.isNotEmpty() && (apiSource.equals("api", ignoreCase = true) || hasCompleteTimes)) {
         enrichedBetweenPairs.add(pairKey)
       }
       val mergedMap = LinkedHashMap<String, TrainBetweenItem>()

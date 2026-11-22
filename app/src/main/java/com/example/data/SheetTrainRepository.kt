@@ -737,11 +737,19 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
     )
 
   private fun isChronologicallyBefore(from: SheetScheduleRow, to: SheetScheduleRow): Boolean {
-    val fMin = (from.day?.let { (it - 1) * 1440 } ?: 0) +
-      (parseSheetTimeMinutes(from.departureRaw) ?: parseSheetTimeMinutes(from.arrivalRaw) ?: -1)
-    val tMin = (to.day?.let { (it - 1) * 1440 } ?: 0) +
-      (parseSheetTimeMinutes(to.arrivalRaw) ?: parseSheetTimeMinutes(to.departureRaw) ?: -1)
-    if (fMin >= 0 && tMin >= 0 && fMin != tMin) return tMin > fMin
+    val fClock = parseSheetTimeMinutes(from.departureRaw) ?: parseSheetTimeMinutes(from.arrivalRaw)
+    val tClock = parseSheetTimeMinutes(to.arrivalRaw) ?: parseSheetTimeMinutes(to.departureRaw)
+    val fMin = (from.day?.let { (it - 1) * 1440 } ?: 0) + (fClock ?: -1)
+    val tMin = (to.day?.let { (it - 1) * 1440 } ?: 0) + (tClock ?: -1)
+    if (fMin >= 0 && tMin >= 0 && fMin != tMin) {
+      if (tMin > fMin) return true
+      val sameDay = (from.day ?: 1) == (to.day ?: 1)
+      val idOrdered = from.scheduleId != null && to.scheduleId != null && to.scheduleId > from.scheduleId
+      if (sameDay && idOrdered && fClock != null && tClock != null && fClock >= 1080 && tClock <= 420) {
+        return true
+      }
+      return false
+    }
     if (from.scheduleId != null && to.scheduleId != null && from.scheduleId != to.scheduleId) {
       return to.scheduleId > from.scheduleId
     }
