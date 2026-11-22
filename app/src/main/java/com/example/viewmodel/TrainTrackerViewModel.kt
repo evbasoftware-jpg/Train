@@ -21,6 +21,8 @@ class TrainTrackerViewModel(application: Application) : AndroidViewModel(applica
 
   fun setLanguage(languageCode: String) = coordinator.setLanguage(languageCode)
 
+  fun toggleVoiceAnnouncement() = coordinator.toggleVoiceAnnouncement()
+
   fun setLocationPermissionState(granted: Boolean) =
     coordinator.setLocationPermissionState(granted)
 

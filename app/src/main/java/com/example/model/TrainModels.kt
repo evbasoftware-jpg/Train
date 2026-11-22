@@ -140,6 +140,8 @@ data class LocalizedStrings(
   val imOnTrainBtn: String = "আমি এই ট্রেনে আছি (GPS শেয়ার করুন)",
   val sharingLiveGpsBtn: String = "লাইভ GPS শেয়ার চলছে — বন্ধ করুন",
   val manualGpsSharingActiveMsg: String = "📡 আপনার ফোনের লাইভ GPS এই ট্রেনের জন্য শেয়ার হচ্ছে — অন্য যাত্রীরা দেখতে পাচ্ছেন।",
+  val announceOnBtn: String = "ঘোষণা চালু",
+  val announceOffBtn: String = "ঘোষণা বন্ধ",
 ) {
   fun dayShortNames(): List<String> =
     listOf(daySunShort, dayMonShort, dayTueShort, dayWedShort, dayThuShort, dayFriShort, daySatShort)
@@ -235,8 +237,8 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     notifCurrentLabel = "বর্তমান",
     notifNextLabel = "পরবর্তী",
     notifDestinationLabel = "গন্তব্য",
-    announceCurrentNextTemplate = "অনুগ্রহ করে শুনুন। বর্তমান স্টপেজ {CUR}। পরবর্তী স্টপেজ {NXT}।",
-    announceCurrentOnlyTemplate = "অনুগ্রহ করে শুনুন। বর্তমান স্টপেজ {CUR}।",
+    announceCurrentNextTemplate = "অনুগ্রহ করে শুনুন। বর্তমান স্টেশন {CUR}। পরবর্তী স্টেশন {NXT}।",
+    announceCurrentOnlyTemplate = "অনুগ্রহ করে শুনুন। বর্তমান স্টেশন {CUR}।",
     passedDistanceTemplate = "{DIST} পেরিয়ে গেছে",
     labelPassedCurrent = "বর্তমান স্টেশন থেকে",
     labelRemainingNext = "পরবর্তী স্টেশনের দূরত্ব",
@@ -297,6 +299,8 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     imOnTrainBtn = "আমি এই ট্রেনে আছি (GPS শেয়ার করুন)",
     sharingLiveGpsBtn = "লাইভ GPS শেয়ার চলছে — বন্ধ করুন",
     manualGpsSharingActiveMsg = "📡 আপনার ফোনের লাইভ GPS এই ট্রেনের জন্য শেয়ার হচ্ছে — অন্য যাত্রীরা দেখতে পাচ্ছেন।",
+    announceOnBtn = "ঘোষণা চালু",
+    announceOffBtn = "ঘোষণা বন্ধ",
   )
 
   "hi" -> LocalizedStrings(
@@ -344,8 +348,8 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     notifCurrentLabel = "वर्तमान",
     notifNextLabel = "अगला",
     notifDestinationLabel = "गंतव्य",
-    announceCurrentNextTemplate = "कृपया ध्यान दें। वर्तमान स्टॉपेज {CUR}। अगला स्टॉपेज {NXT}।",
-    announceCurrentOnlyTemplate = "कृपया ध्यान दें। वर्तमान स्टॉपेज {CUR}।",
+    announceCurrentNextTemplate = "कृपया ध्यान दें। वर्तमान स्टेशन {CUR}। अगला स्टेशन {NXT}।",
+    announceCurrentOnlyTemplate = "कृपया ध्यान दें। वर्तमान स्टेशन {CUR}।",
     passedDistanceTemplate = "{DIST} पार कर चुकी है",
     labelPassedCurrent = "वर्तमान स्टेशन से",
     labelRemainingNext = "अगले स्टेशन की दूरी",
@@ -406,6 +410,8 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     imOnTrainBtn = "मैं इस ट्रेन में हूँ (GPS शेयर करें)",
     sharingLiveGpsBtn = "लाइव GPS शेयर चालू — बंद करें",
     manualGpsSharingActiveMsg = "📡 आपके फ़ोन का लाइव GPS इस ट्रेन के लिए शेयर हो रहा है — अन्य यात्री देख सकते हैं।",
+    announceOnBtn = "घोषणा चालू",
+    announceOffBtn = "घोषणा बंद",
   )
 
   else -> LocalizedStrings(
@@ -453,8 +459,8 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     notifCurrentLabel = "Current",
     notifNextLabel = "Next",
     notifDestinationLabel = "Destination",
-    announceCurrentNextTemplate = "May I have your attention please. Current stoppage is {CUR}. Next stoppage is {NXT}.",
-    announceCurrentOnlyTemplate = "May I have your attention please. Current stoppage is {CUR}.",
+    announceCurrentNextTemplate = "May I have your attention please. Current station is {CUR}. Next station is {NXT}.",
+    announceCurrentOnlyTemplate = "May I have your attention please. Current station is {CUR}.",
     passedDistanceTemplate = "{DIST} passed",
     labelPassedCurrent = "From Current Station",
     labelRemainingNext = "Distance to Next Station",
@@ -515,6 +521,8 @@ fun stringsForCode(langCode: String): LocalizedStrings = when (langCode) {
     imOnTrainBtn = "I'm on this train (Share GPS)",
     sharingLiveGpsBtn = "Sharing Live GPS — Stop",
     manualGpsSharingActiveMsg = "📡 Sharing your live phone GPS for this train — other passengers can see it.",
+    announceOnBtn = "Voice On",
+    announceOffBtn = "Voice Off",
   )
 }
 
@@ -717,6 +725,7 @@ enum class MapSizePreset(val heightDp: Int) {
 
 data class TrackerUiState(
   val languageCode: String = "bn",
+  val voiceAnnouncementEnabled: Boolean = true,
   val isTranslatingLanguage: Boolean = false,
   val strings: LocalizedStrings = stringsForCode("bn"),
   val translatedNames: Map<String, String> = emptyMap(),

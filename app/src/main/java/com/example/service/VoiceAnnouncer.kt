@@ -94,20 +94,40 @@ class VoiceAnnouncer(context: Context) {
     val engine = tts ?: return
     if (configuredForLang == langCode) return
     try {
-      val preferredLocale = when {
-        langCode.equals("bn", ignoreCase = true) -> Locale("bn", "IN")
-        langCode.equals("hi", ignoreCase = true) -> Locale("hi", "IN")
-        langCode.equals("en", ignoreCase = true) -> Locale("en", "IN")
+      val lower = langCode.trim().lowercase(Locale.US)
+      val preferredLocale = when (lower) {
+        "bn" -> Locale("bn", "IN")
+        "hi" -> Locale("hi", "IN")
+        "en" -> Locale("en", "IN")
+        "ta" -> Locale("ta", "IN")
+        "te" -> Locale("te", "IN")
+        "mr" -> Locale("mr", "IN")
+        "gu" -> Locale("gu", "IN")
+        "kn" -> Locale("kn", "IN")
+        "ml" -> Locale("ml", "IN")
+        "pa" -> Locale("pa", "IN")
+        "or" -> Locale("or", "IN")
+        "as" -> Locale("as", "IN")
+        "ur" -> Locale("ur", "IN")
+        "ne" -> Locale("ne", "NP")
+        "si" -> Locale("si", "LK")
         else -> Locale.forLanguageTag(langCode)
       }
 
-      val candidates = listOf(
-        preferredLocale,
-        Locale("bn", "BD"),
-        Locale("bn", "IN"),
-        Locale("en", "IN"),
-        Locale.ENGLISH,
-      )
+      val candidates = buildList {
+        add(preferredLocale)
+        if (preferredLocale.country.isNotEmpty()) {
+          add(Locale(preferredLocale.language))
+        }
+        if (lower == "bn") {
+          add(Locale("bn", "BD"))
+          add(Locale("bn", "IN"))
+        } else if (lower == "ur") {
+          add(Locale("ur", "PK"))
+        }
+        add(Locale("en", "IN"))
+        add(Locale.ENGLISH)
+      }.distinct()
 
       var chosenLocale: Locale? = null
       for (loc in candidates) {

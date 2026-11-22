@@ -46,6 +46,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
@@ -245,8 +247,10 @@ fun TrainTrackerScreen(
           TrackerHeader(
             languageCode = state.languageCode,
             isTranslating = state.isTranslatingLanguage,
+            voiceAnnouncementEnabled = state.voiceAnnouncementEnabled,
             strings = strings,
             onOpenLanguagePicker = { languageDialogOpen = true },
+            onToggleVoiceAnnouncement = viewModel::toggleVoiceAnnouncement,
           )
 
           Column(
@@ -556,8 +560,10 @@ fun TrainTrackerScreen(
 private fun TrackerHeader(
   languageCode: String,
   isTranslating: Boolean,
+  voiceAnnouncementEnabled: Boolean,
   strings: LocalizedStrings,
   onOpenLanguagePicker: () -> Unit,
+  onToggleVoiceAnnouncement: () -> Unit,
 ) {
   val isDark = isSystemInDarkTheme()
   val currentLang = remember(languageCode) { GoogleLanguages.findByCode(languageCode) }
@@ -571,31 +577,63 @@ private fun TrackerHeader(
       Row(
         modifier = Modifier
           .fillMaxWidth()
-          .padding(horizontal = 16.dp, vertical = 8.dp),
+          .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
       ) {
-        Row(
-          verticalAlignment = Alignment.CenterVertically,
-          horizontalArrangement = Arrangement.spacedBy(6.dp),
-          modifier = Modifier.weight(1f),
+        Surface(
+          onClick = onToggleVoiceAnnouncement,
+          shape = RoundedCornerShape(10.dp),
+          color = when {
+            voiceAnnouncementEnabled && isDark -> Color(0xFF0E3A2B)
+            voiceAnnouncementEnabled -> VerifiedEmeraldContainer
+            isDark -> Color(0xFF3B1F24)
+            else -> StopCrimsonContainer
+          },
+          modifier = Modifier
+            .minimumInteractiveComponentSize()
+            .testTag("announcement_toggle_button"),
         ) {
-          Icon(
-            imageVector = Icons.Filled.Language,
-            contentDescription = strings.languageLabel,
-            tint = if (isDark) Color(0xFF93C5FD) else CobaltPrimary,
-            modifier = Modifier.size(20.dp),
-          )
-          Text(
-            text = "${strings.languageLabel}:",
-            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold),
-            color = if (isDark) Color.White else Color(0xFF1E293B),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-          )
+          Row(
+            modifier = Modifier
+              .border(
+                width = 1.5.dp,
+                color = if (voiceAnnouncementEnabled) VerifiedEmerald else StopCrimson,
+                shape = RoundedCornerShape(10.dp),
+              )
+              .padding(horizontal = 10.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+          ) {
+            Icon(
+              imageVector = if (voiceAnnouncementEnabled) {
+                Icons.AutoMirrored.Filled.VolumeUp
+              } else {
+                Icons.AutoMirrored.Filled.VolumeOff
+              },
+              contentDescription = if (voiceAnnouncementEnabled) {
+                strings.announceOnBtn
+              } else {
+                strings.announceOffBtn
+              },
+              tint = if (voiceAnnouncementEnabled) VerifiedEmerald else StopCrimson,
+              modifier = Modifier.size(18.dp),
+            )
+            Text(
+              text = if (voiceAnnouncementEnabled) strings.announceOnBtn else strings.announceOffBtn,
+              style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+              color = if (voiceAnnouncementEnabled) {
+                if (isDark) Color(0xFF6EE7B7) else VerifiedEmeraldDark
+              } else {
+                if (isDark) Color(0xFFFCA5A5) else StopCrimson
+              },
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+            )
+          }
         }
 
-        Spacer(modifier = Modifier.width(8.dp))
+        Spacer(modifier = Modifier.weight(1f))
 
         Surface(
           onClick = onOpenLanguagePicker,
@@ -612,10 +650,16 @@ private fun TrackerHeader(
                 color = if (isDark) Color(0xFF60A5FA) else CobaltPrimary,
                 shape = RoundedCornerShape(10.dp),
               )
-              .padding(horizontal = 12.dp, vertical = 8.dp),
+              .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
           ) {
+            Icon(
+              imageVector = Icons.Filled.Language,
+              contentDescription = strings.languageLabel,
+              tint = if (isDark) Color(0xFF93C5FD) else CobaltPrimary,
+              modifier = Modifier.size(18.dp),
+            )
             Text(
               text = if (currentLang.nativeName.equals(currentLang.englishName, ignoreCase = true)) {
                 currentLang.nativeName
@@ -626,6 +670,7 @@ private fun TrackerHeader(
               color = if (isDark) Color.White else Color(0xFF0F172A),
               maxLines = 1,
               overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.widthIn(max = 170.dp),
             )
             if (isTranslating) {
               CircularProgressIndicator(

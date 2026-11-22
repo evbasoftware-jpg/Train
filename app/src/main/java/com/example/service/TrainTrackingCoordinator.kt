@@ -83,6 +83,7 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
   private var stopTimerJob: Job? = null
   private var languageJob: Job? = null
   private var dynamicTranslationJob: Job? = null
+  private var announceTranslateJob: Job? = null
 
   private var lastAutoStartedTrainNo = ""
   private var lastBetweenPair: Pair<String, String>? = null
@@ -107,7 +108,12 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
             favoriteTrains = saved.favoriteTrains,
             recentTrains = saved.recentTrains,
             recentRoutes = saved.recentRoutes,
+            voiceAnnouncementEnabled = saved.voiceAnnouncementEnabled,
           )
+        }
+        if (!saved.voiceAnnouncementEnabled) {
+          announceTranslateJob?.cancel()
+          voiceAnnouncer.stop()
         }
         if (saved.languageCode != loadedLanguageCode) {
           applyLanguage(saved.languageCode, persist = false)
@@ -195,6 +201,24 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
 
   fun setLanguage(languageCode: String) {
     applyLanguage(languageCode, persist = true)
+  }
+
+  fun toggleVoiceAnnouncement() {
+    val nextEnabled = !_uiState.value.voiceAnnouncementEnabled
+    _uiState.update { it.copy(voiceAnnouncementEnabled = nextEnabled) }
+    scope.launch {
+      preferences.saveVoiceAnnouncementEnabled(nextEnabled)
+    }
+    if (!nextEnabled) {
+      announceTranslateJob?.cancel()
+      lastAnnouncedStopKey = ""
+      voiceAnnouncer.stop()
+    } else {
+      lastAnnouncedStopKey = ""
+      if (_uiState.value.running && _uiState.value.locatedTrain != null) {
+        announceStoppageIfChanged(force = true)
+      }
+    }
   }
 
   private fun collectTranslatableNames(state: TrackerUiState): Set<String> {
@@ -670,6 +694,8 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
 
   fun stopTracking() {
     cancelTrackingJobs()
+    announceTranslateJob?.cancel()
+    announceTranslateJob = null
     gpsHistory.clear()
     lastAutoStartedTrainNo = ""
     lastAnnouncedStopKey = ""
@@ -846,6 +872,8 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
           )
         }
         verifyAndSync()
+        scheduleDynamicTranslations()
+        announceStoppageIfChanged()
       }
       return
     }
@@ -1216,19 +1244,48 @@ class TrainTrackingCoordinator private constructor(private val appContext: Conte
 
   private fun announceStoppageIfChanged(force: Boolean = false) {
     val state = _uiState.value
-    if (!state.running) return
+    if (!state.running || !state.voiceAnnouncementEnabled) return
     val loc = state.locatedTrain ?: return
     val rawCurStation = loc.name.trim()
     if (rawCurStation.isBlank() || rawCurStation == currentStrings().unknownStation) return
     val rawNxtStation = loc.next.trim()
-    val stopKey = "${state.trainNoInput}|${state.languageCode}|$rawCurStation|$rawNxtStation"
+    val langCode = state.languageCode
+    val stopKey = "${state.trainNoInput}|$langCode|$rawCurStation|$rawNxtStation"
     if (!force && stopKey == lastAnnouncedStopKey) return
     lastAnnouncedStopKey = stopKey
 
+    val missingNames = if (langCode != "en") {
+      buildSet {
+        if (!state.translatedNames.containsKey(rawCurStation)) add(rawCurStation)
+        if (rawNxtStation.isNotBlank() && !state.translatedNames.containsKey(rawNxtStation)) {
+          add(rawNxtStation)
+        }
+      }
+    } else {
+      emptySet()
+    }
+
+    if (missingNames.isNotEmpty()) {
+      announceTranslateJob?.cancel()
+      announceTranslateJob = scope.launch {
+        val translated = translationRepository.translateDynamicNames(langCode, missingNames)
+        if (translated.isNotEmpty() && _uiState.value.languageCode == langCode) {
+          _uiState.update { cur -> cur.copy(translatedNames = cur.translatedNames + translated) }
+        }
+        val latest = _uiState.value
+        if (!latest.running || !latest.voiceAnnouncementEnabled || latest.languageCode != langCode) return@launch
+        val spokenCurrent = latest.localizeName(rawCurStation)
+        val spokenNext = if (rawNxtStation.isNotBlank()) latest.localizeName(rawNxtStation) else ""
+        val spokenText = latest.strings.announceStop(spokenCurrent, spokenNext)
+        voiceAnnouncer.announce(spokenText, langCode)
+      }
+      return
+    }
+
     val spokenCurrent = state.localizeName(rawCurStation)
     val spokenNext = if (rawNxtStation.isNotBlank()) state.localizeName(rawNxtStation) else ""
-    val spokenText = currentStrings().announceStop(spokenCurrent, spokenNext)
-    voiceAnnouncer.announce(spokenText, state.languageCode)
+    val spokenText = state.strings.announceStop(spokenCurrent, spokenNext)
+    voiceAnnouncer.announce(spokenText, langCode)
   }
 
   private fun updateTrackingNotification() {

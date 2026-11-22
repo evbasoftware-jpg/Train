@@ -187,6 +187,8 @@ class TranslationRepository(private val cacheDir: File?) {
       "imOnTrainBtn" to en.imOnTrainBtn,
       "sharingLiveGpsBtn" to en.sharingLiveGpsBtn,
       "manualGpsSharingActiveMsg" to en.manualGpsSharingActiveMsg,
+      "announceOnBtn" to en.announceOnBtn,
+      "announceOffBtn" to en.announceOffBtn,
     )
 
   private fun applyTranslatedMap(
@@ -299,6 +301,8 @@ class TranslationRepository(private val cacheDir: File?) {
     imOnTrainBtn = m["imOnTrainBtn"] ?: base.imOnTrainBtn,
     sharingLiveGpsBtn = m["sharingLiveGpsBtn"] ?: base.sharingLiveGpsBtn,
     manualGpsSharingActiveMsg = m["manualGpsSharingActiveMsg"] ?: base.manualGpsSharingActiveMsg,
+    announceOnBtn = m["announceOnBtn"] ?: base.announceOnBtn,
+    announceOffBtn = m["announceOffBtn"] ?: base.announceOffBtn,
   )
 
   private fun translateBatchWithGoogle(

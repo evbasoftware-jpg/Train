@@ -82,26 +82,44 @@
     .top-header-inner {
       max-width: 1040px;
       margin: 0 auto;
-      padding: 8px 16px;
+      padding: 8px 12px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 10px;
+      gap: 8px;
     }
 
-    .lang-title-wrap {
-      display: flex;
+    .announce-btn {
+      display: inline-flex;
       align-items: center;
-      gap: 7px;
+      gap: 5px;
+      padding: 7px 10px;
+      border-radius: 10px;
       font-weight: 700;
-      font-size: 14px;
+      font-size: 12px;
+      cursor: pointer;
+      min-height: 40px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .announce-btn.on {
+      border: 1.5px solid var(--emerald);
+      background: var(--emerald-container);
+      color: var(--emerald-dark);
+    }
+
+    .announce-btn.off {
+      border: 1.5px solid var(--crimson);
+      background: var(--crimson-container);
+      color: var(--crimson);
     }
 
     .lang-btn {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 7px 12px;
+      gap: 5px;
+      padding: 7px 10px;
       border-radius: 10px;
       border: 1.5px solid var(--cobalt);
       background: var(--surface);
@@ -110,6 +128,14 @@
       font-size: 12px;
       cursor: pointer;
       min-height: 40px;
+      max-width: 58%;
+      overflow: hidden;
+    }
+
+    .lang-btn #lblCurrentLang {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .page-container {
@@ -1086,17 +1112,18 @@
   </style>
 </head>
 <body>
-  <!-- Sticky Top Language Header -->
+  <!-- Sticky Top Language & Announcement Header -->
   <header class="top-header">
     <div class="top-header-inner">
-      <div class="lang-title-wrap">
-        <span style="color:var(--cobalt);font-size:18px;">🌐</span>
-        <span id="lblLanguage">ভাষা:</span>
-      </div>
+      <button id="btnToggleAnnounce" class="announce-btn on" type="button" aria-pressed="true">
+        <span id="icoAnnounce">🔊</span>
+        <span id="lblAnnounceBtn">ঘোষণা চালু</span>
+      </button>
       <button id="btnOpenLangModal" class="lang-btn" type="button">
+        <span style="color:var(--cobalt);font-size:15px;flex-shrink:0;">🌐</span>
         <span id="lblCurrentLang">বাংলা (BENGALI)</span>
         <span id="langSpinner" class="hidden">⏳</span>
-        <span>▾</span>
+        <span style="flex-shrink:0;">▾</span>
       </button>
     </div>
   </header>
@@ -1508,8 +1535,8 @@
           notifCurrentLabel: 'বর্তমান',
           notifNextLabel: 'পরবর্তী',
           notifDestinationLabel: 'গন্তব্য',
-          announceCurrentNextTemplate: 'অনুগ্রহ করে শুনুন। বর্তমান স্টপেজ {CUR}। পরবর্তী স্টপেজ {NXT}।',
-          announceCurrentOnlyTemplate: 'অনুগ্রহ করে শুনুন। বর্তমান স্টপেজ {CUR}।',
+          announceCurrentNextTemplate: 'অনুগ্রহ করে শুনুন। বর্তমান স্টেশন {CUR}। পরবর্তী স্টেশন {NXT}।',
+          announceCurrentOnlyTemplate: 'অনুগ্রহ করে শুনুন। বর্তমান স্টেশন {CUR}।',
           passedDistanceTemplate: '{DIST} পেরিয়ে গেছে',
           labelPassedCurrent: 'বর্তমান স্টেশন থেকে',
           labelRemainingNext: 'পরবর্তী স্টেশনের দূরত্ব',
@@ -1560,7 +1587,9 @@
           daySatShort: 'শনি',
           imOnTrainBtn: 'আমি এই ট্রেনে আছি (GPS শেয়ার করুন)',
           sharingLiveGpsBtn: 'লাইভ GPS শেয়ার হচ্ছে — বন্ধ করতে ট্যাপ করুন',
-          manualGpsSharingActiveMsg: '📡 আপনার ফোনের লাইভ GPS শেয়ার হচ্ছে — অন্যান্য যাত্রী এখন এই ট্রেনের লোকেশন দেখতে পাবেন।'
+          manualGpsSharingActiveMsg: '📡 আপনার ফোনের লাইভ GPS শেয়ার হচ্ছে — অন্যান্য যাত্রী এখন এই ট্রেনের লোকেশন দেখতে পাবেন।',
+          announceOnBtn: 'ঘোষণা চালু',
+          announceOffBtn: 'ঘোষণা বন্ধ'
         },
         hi: {
           appTitle: 'Train Live Location',
@@ -1603,8 +1632,8 @@
           notifCurrentLabel: 'वर्तमान',
           notifNextLabel: 'अगला',
           notifDestinationLabel: 'गंतव्य',
-          announceCurrentNextTemplate: 'कृपया ध्यान दें। वर्तमान स्टॉपेज {CUR}। अगला स्टॉपेज {NXT}।',
-          announceCurrentOnlyTemplate: 'कृपया ध्यान दें। वर्तमान स्टॉपेज {CUR}।',
+          announceCurrentNextTemplate: 'कृपया ध्यान दें। वर्तमान स्टेशन {CUR}। अगला स्टेशन {NXT}।',
+          announceCurrentOnlyTemplate: 'कृपया ध्यान दें। वर्तमान स्टेशन {CUR}।',
           passedDistanceTemplate: '{DIST} पार कर चुकी है',
           labelPassedCurrent: 'वर्तमान स्टेशन से',
           labelRemainingNext: 'अगले स्टेशन की दूरी',
@@ -1655,7 +1684,9 @@
           daySatShort: 'शनि',
           imOnTrainBtn: 'मैं इस ट्रेन में हूँ (GPS शेयर करें)',
           sharingLiveGpsBtn: 'लाइव GPS शेयर हो रहा है — बंद करने के लिए टैप करें',
-          manualGpsSharingActiveMsg: '📡 आपका लाइव GPS शेयर हो रहा है — अन्य यात्री अब इस ट्रेन की लोकेशन देख सकते हैं।'
+          manualGpsSharingActiveMsg: '📡 आपका लाइव GPS शेयर हो रहा है — अन्य यात्री अब इस ट्रेन की लोकेशन देख सकते हैं।',
+          announceOnBtn: 'घोषणा चालू',
+          announceOffBtn: 'घोषणा बंद'
         },
         en: {
           appTitle: 'Train Live Location',
@@ -1698,8 +1729,8 @@
           notifCurrentLabel: 'Current',
           notifNextLabel: 'Next',
           notifDestinationLabel: 'Destination',
-          announceCurrentNextTemplate: 'May I have your attention please. Current stoppage is {CUR}. Next stoppage is {NXT}.',
-          announceCurrentOnlyTemplate: 'May I have your attention please. Current stoppage is {CUR}.',
+          announceCurrentNextTemplate: 'May I have your attention please. Current station is {CUR}. Next station is {NXT}.',
+          announceCurrentOnlyTemplate: 'May I have your attention please. Current station is {CUR}.',
           passedDistanceTemplate: '{DIST} passed',
           labelPassedCurrent: 'From Current Station',
           labelRemainingNext: 'Distance to Next Station',
@@ -1750,12 +1781,15 @@
           daySatShort: 'Sat',
           imOnTrainBtn: "I'm on this Train (Share Live GPS)",
           sharingLiveGpsBtn: 'Sharing Live GPS — Tap to Stop',
-          manualGpsSharingActiveMsg: '📡 Sharing your live GPS — other passengers can now see this train\'s live location.'
+          manualGpsSharingActiveMsg: '📡 Sharing your live GPS — other passengers can now see this train\'s live location.',
+          announceOnBtn: 'Voice On',
+          announceOffBtn: 'Voice Off'
         }
       };
 
       const state = {
         lang: localStorage.getItem('tll_lang') || 'bn',
+        announceEnabled: localStorage.getItem('tll_announce_enabled') !== 'false',
         strings: { ...BASE_STRINGS.bn },
         translatedNames: {},
         stationDb: [...CORE_STATIONS],
@@ -2083,8 +2117,48 @@
         return best || { voice: matches[0], female: false, male: false };
       }
 
+      let speechUnlocked = false;
+      function unlockSpeechSynthesis() {
+        if (speechUnlocked || !('speechSynthesis' in window)) return;
+        speechUnlocked = true;
+        try {
+          window.speechSynthesis.getVoices();
+          const silent = new SpeechSynthesisUtterance('');
+          silent.volume = 0;
+          window.speechSynthesis.speak(silent);
+        } catch (_) {}
+      }
+
+      function toggleAnnouncement() {
+        state.announceEnabled = !state.announceEnabled;
+        try { localStorage.setItem('tll_announce_enabled', String(state.announceEnabled)); } catch (_) {}
+        if (!state.announceEnabled) {
+          state.lastAnnouncedKey = '';
+          if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+        } else {
+          unlockSpeechSynthesis();
+          state.lastAnnouncedKey = '';
+          if (state.running && state.locatedTrain) {
+            announceStoppage(true);
+          }
+        }
+        renderAnnouncementBtn();
+      }
+
+      function renderAnnouncementBtn() {
+        const btn = el('btnToggleAnnounce');
+        if (!btn) return;
+        btn.classList.toggle('on', state.announceEnabled);
+        btn.classList.toggle('off', !state.announceEnabled);
+        btn.setAttribute('aria-pressed', String(state.announceEnabled));
+        const ico = el('icoAnnounce');
+        const lbl = el('lblAnnounceBtn');
+        if (ico) ico.textContent = state.announceEnabled ? '🔊' : '🔇';
+        if (lbl) lbl.textContent = state.announceEnabled ? state.strings.announceOnBtn : state.strings.announceOffBtn;
+      }
+
       function announceStoppage(force = false) {
-        if (!state.running || !state.locatedTrain || !('speechSynthesis' in window)) return;
+        if (!state.announceEnabled || !state.running || !state.locatedTrain || !('speechSynthesis' in window)) return;
         const curRaw = (state.locatedTrain.name || '').trim();
         if (!curRaw || curRaw === state.strings.unknownStation) return;
         const nxtRaw = (state.locatedTrain.next || '').trim();
@@ -2119,7 +2193,7 @@
       if ('speechSynthesis' in window) {
         window.speechSynthesis.getVoices();
         window.speechSynthesis.onvoiceschanged = () => {
-          if (state.running && state.locatedTrain && !state.lastAnnouncedKey) {
+          if (state.announceEnabled && state.running && state.locatedTrain && !state.lastAnnouncedKey) {
             announceStoppage(true);
           }
         };
@@ -3416,6 +3490,7 @@
         startGpsWatch();
         if (state.latestUserGps) {
           verifyAndSync(true);
+          announceStoppage();
           centerMap();
         }
         renderAllUi();
@@ -3549,6 +3624,7 @@
           // Keep user's live GPS as primary position; only refresh route/name and snap GPS onto route
           await refreshDynamicTranslations();
           verifyAndSync(true);
+          announceStoppage();
           renderAllUi();
           if (!prevTrain && state.locatedTrain) centerMap();
           return;
@@ -4625,7 +4701,8 @@
       // UI Rendering
       function renderAllUi() {
         const s = state.strings;
-        el('lblLanguage').textContent = `${s.languageLabel}:`;
+        if (el('lblLanguage')) el('lblLanguage').textContent = `${s.languageLabel}:`;
+        renderAnnouncementBtn();
         el('lblAppTitle').textContent = s.appTitle;
         el('lblFromStation').textContent = s.fromStationLabel;
         el('lblToStation').textContent = s.toStationLabel;
@@ -4711,7 +4788,7 @@
         const container = inputEl.closest('.station-field-col') || inputEl;
         requestAnimationFrame(() => {
           try {
-            const topBar = document.querySelector('.topbar');
+            const topBar = document.querySelector('.top-header');
             const offset = (topBar ? topBar.getBoundingClientRect().height : 56) + 10;
             const rect = container.getBoundingClientRect();
             if (rect.top < offset || rect.top > offset + 60) {
@@ -4891,6 +4968,7 @@
       function selectTrain(trainNumber, trainName) {
         const clean = String(trainNumber || '').replace(/\D/g, '').slice(0, 5);
         if (!clean) return;
+        unlockSpeechSynthesis();
         state.trainNo = clean;
         state.lastAutoTrainNo = clean;
         el('trainNoInput').value = clean;
@@ -5330,10 +5408,11 @@
           renderTrainNoActions();
         };
 
+        el('btnToggleAnnounce').onclick = toggleAnnouncement;
         el('btnToggleFavorite').onclick = toggleFavoriteTrain;
-        el('btnStartTracking').onclick = () => startTracking();
+        el('btnStartTracking').onclick = () => { unlockSpeechSynthesis(); startTracking(); };
         el('btnStopTracking').onclick = stopTracking;
-        el('btnOnboardGps').onclick = toggleManualOnboardGps;
+        el('btnOnboardGps').onclick = () => { unlockSpeechSynthesis(); toggleManualOnboardGps(); };
         el('btnOpenNtes').onclick = () => window.open('https://enquiry.indianrail.gov.in/mntes/', '_blank', 'noopener,noreferrer');
 
         el('btnViewStationMap').onclick = () => {

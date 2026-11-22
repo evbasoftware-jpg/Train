@@ -24,6 +24,7 @@ data class PersistedPrefs(
   val recentTrains: List<SavedTrainEntry> = emptyList(),
   val recentRoutes: List<SavedRoutePair> = emptyList(),
   val backgroundTrackingEnabled: Boolean = false,
+  val voiceAnnouncementEnabled: Boolean = true,
 )
 
 class TrackerPreferences(private val context: Context) {
@@ -33,6 +34,7 @@ class TrackerPreferences(private val context: Context) {
     private val KEY_RECENTS = stringPreferencesKey("recent_trains_json")
     private val KEY_RECENT_ROUTES = stringPreferencesKey("recent_routes_json")
     private val KEY_BG_TRACKING = booleanPreferencesKey("background_tracking_enabled")
+    private val KEY_VOICE_ANNOUNCE = booleanPreferencesKey("voice_announcement_enabled")
   }
 
   val prefsFlow: Flow<PersistedPrefs> = context.trackerDataStore.data.map { prefs ->
@@ -42,6 +44,7 @@ class TrackerPreferences(private val context: Context) {
       recentTrains = decodeTrainList(prefs[KEY_RECENTS]),
       recentRoutes = decodeRouteList(prefs[KEY_RECENT_ROUTES]),
       backgroundTrackingEnabled = prefs[KEY_BG_TRACKING] ?: false,
+      voiceAnnouncementEnabled = prefs[KEY_VOICE_ANNOUNCE] ?: true,
     )
   }
 
@@ -51,6 +54,10 @@ class TrackerPreferences(private val context: Context) {
 
   suspend fun saveBackgroundTracking(enabled: Boolean) {
     context.trackerDataStore.edit { it[KEY_BG_TRACKING] = enabled }
+  }
+
+  suspend fun saveVoiceAnnouncementEnabled(enabled: Boolean) {
+    context.trackerDataStore.edit { it[KEY_VOICE_ANNOUNCE] = enabled }
   }
 
   suspend fun toggleFavoriteTrain(entry: SavedTrainEntry) {
