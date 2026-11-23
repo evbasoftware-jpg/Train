@@ -2743,6 +2743,38 @@
         return !!s && s !== '--:--' && !/^none$/i.test(s);
       }
 
+      async function isRouteSyncedWithin90Days(fromCode, toCode) {
+        const cleanFrom = sanitizeTqIdent(String(fromCode || '').trim().toUpperCase());
+        const cleanTo = sanitizeTqIdent(String(toCode || '').trim().toUpperCase());
+        if (cleanFrom.length < 2 || cleanTo.length < 2 || cleanFrom === cleanTo) return false;
+        const targetKey = `${cleanFrom}->${cleanTo}`;
+        const csv = await downloadGvizQuery('Route_Sync', `select * where A = '${targetKey}'`);
+        if (!csv || isHtmlOrInvalidAds(csv)) return false;
+        const rows = parseCsv(csv);
+        if (rows.length < 2) return false;
+        const headers = {};
+        rows[0].forEach((c, idx) => {
+          const k = normalizeSheetCol(c);
+          if (k && headers[k] == null) headers[k] = idx;
+        });
+        // Guard against GViz returning Tab 1 when Route_Sync sheet does not exist yet
+        if (headers.routekey == null) return false;
+        const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
+        const nowMs = Date.now();
+        for (let i = 1; i < rows.length; i++) {
+          const r = rows[i];
+          const k = String(r[headers.routekey] || '').trim().toUpperCase();
+          if (k !== targetKey) continue;
+          const verStr = headers.lastverifiedat != null ? String(r[headers.lastverifiedat] || '').trim() : '';
+          const synStr = headers.lastsyncedat != null ? String(r[headers.lastsyncedat] || '').trim() : '';
+          const verMs = verStr ? Date.parse(verStr) : NaN;
+          const synMs = synStr ? Date.parse(synStr) : NaN;
+          const effMs = Number.isFinite(verMs) ? verMs : (Number.isFinite(synMs) ? synMs : 0);
+          return effMs > 0 && (nowMs - effMs) < ninetyDaysMs;
+        }
+        return false;
+      }
+
       async function searchTrainsBetweenFromSheet(fromQ, toQ) {
         await fetchSheetStations().then(st => { if (st.length) mergeStations(null); });
         const fromRes = resolveStation(fromQ);
@@ -3312,26 +3344,37 @@
         state.betweenError = null;
         renderBetween();
         try {
-          // 1) Search Train, Station & Schedule Google Sheets first
-          let sheetList = [];
-          try {
-            sheetList = await searchTrainsBetweenFromSheet(state.fromInput || f, state.toInput || t);
-          } catch (_) { sheetList = []; }
+          // 1) Search Train, Station & Schedule Google Sheets + Route_Sync 90-day status in parallel
+          const [sheetList, routeSyncedFresh] = await Promise.all([
+            searchTrainsBetweenFromSheet(state.fromInput || f, state.toInput || t).catch(() => []),
+            isRouteSyncedWithin90Days(f, t).catch(() => false)
+          ]);
           if (reqSeq !== betweenRequestSeq) return;
 
           const pairKey = `${f.toUpperCase()}->${t.toUpperCase()}`;
           const needsEnrichment = !sheetList.length ||
+            !routeSyncedFresh ||
             sheetList.some(it => !it.runningDaysRaw || !hasValidSheetTime(it.departure) || !hasValidSheetTime(it.arrival));
           let list = sheetList;
           let apiErrMsg = '';
 
-          // 2) Call action=between when sheet has gaps / missing times / lacks Running_Days / hasn't synced this session
-          if (!enrichedBetweenPairs.has(pairKey) && (needsEnrichment || sheetList.length < 3)) {
+          // 2) Call action=between when route has never been synced, is >= 90 days old, or has gaps
+          if (!enrichedBetweenPairs.has(pairKey) && needsEnrichment) {
             try {
               const r = await fetch(`${API_URL}?action=between&from=${encodeURIComponent(f)}&to=${encodeURIComponent(t)}`);
               const json = await r.json();
               if (reqSeq !== betweenRequestSeq) return;
               if (json?.apiError) apiErrMsg = String(json.apiError).trim();
+              const removedKeys = new Set();
+              const addRemoved = (arr) => {
+                if (!Array.isArray(arr)) return;
+                for (const num of arr) {
+                  const nk = normalizeTrainKey(num);
+                  if (nk) removedKeys.add(nk);
+                }
+              };
+              addRemoved(json?.removedTrains);
+              addRemoved(json?.deletedTrains);
               const apiList = (json?.data?.trains || []).map(obj => ({
                 trainNumber: obj.train?.number || '',
                 trainName: obj.train?.name || '',
@@ -3350,11 +3393,11 @@
                 const mergedMap = new Map();
                 for (const sItem of sheetList) {
                   const k = normalizeTrainKey(sItem.trainNumber);
-                  if (k) mergedMap.set(k, sItem);
+                  if (k && !removedKeys.has(k)) mergedMap.set(k, sItem);
                 }
                 for (const item of apiList) {
                   const k = normalizeTrainKey(item.trainNumber);
-                  if (!k) continue;
+                  if (!k || removedKeys.has(k)) continue;
                   const ex = mergedMap.get(k);
                   mergedMap.set(k, ex ? {
                     trainNumber: item.trainNumber || ex.trainNumber,

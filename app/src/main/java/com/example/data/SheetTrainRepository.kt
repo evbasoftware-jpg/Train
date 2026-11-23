@@ -162,6 +162,58 @@ class SheetTrainRepository(private val cacheDir: File? = null) {
     )
   }
 
+  suspend fun isRouteSyncedWithin90Days(
+    fromCode: String,
+    toCode: String,
+    nowMs: Long = System.currentTimeMillis(),
+  ): Boolean = withContext(Dispatchers.IO) {
+    val cleanFrom = sanitizeTqIdent(fromCode.trim().uppercase(Locale.US))
+    val cleanTo = sanitizeTqIdent(toCode.trim().uppercase(Locale.US))
+    if (cleanFrom.length < 2 || cleanTo.length < 2 || cleanFrom == cleanTo) return@withContext false
+    val targetKey = "$cleanFrom->$cleanTo"
+    val csv = downloadGvizQuery("Route_Sync", "select * where A = '$targetKey'") ?: return@withContext false
+    val rows = parseRfc4180Csv(csv)
+    if (rows.size < 2) return@withContext false
+    val hdr = headerIndexMap(rows.first())
+    // Guard against GViz returning Tab 1 when Route_Sync sheet does not exist yet
+    if (!hdr.containsKey("routekey")) return@withContext false
+
+    val ninetyDaysMs = 90L * 24L * 60L * 60L * 1000L
+    for (i in 1 until rows.size) {
+      val r = rows[i]
+      val key = colVal(r, hdr, "routekey").uppercase(Locale.US)
+      if (key != targetKey) continue
+      val verifiedMs = parseIsoTimestampMs(colVal(r, hdr, "lastverifiedat"))
+      val syncedMs = parseIsoTimestampMs(colVal(r, hdr, "lastsyncedat"))
+      val effectiveMs = if (verifiedMs > 0L) verifiedMs else syncedMs
+      return@withContext effectiveMs > 0L && (nowMs - effectiveMs) < ninetyDaysMs
+    }
+    false
+  }
+
+  private fun parseIsoTimestampMs(raw: String): Long {
+    val s = raw.trim()
+    if (s.isEmpty()) return 0L
+    val cleaned = s.replace(Regex("""\.\d+"""), "")
+    val patterns = listOf(
+      "yyyy-MM-dd'T'HH:mm:ss'Z'",
+      "yyyy-MM-dd'T'HH:mm:ssXXX",
+      "yyyy-MM-dd HH:mm:ss",
+      "yyyy-MM-dd",
+    )
+    for (pattern in patterns) {
+      try {
+        val sdf = java.text.SimpleDateFormat(pattern, Locale.US).apply {
+          timeZone = java.util.TimeZone.getTimeZone("UTC")
+        }
+        val d = sdf.parse(cleaned)
+        if (d != null) return d.time
+      } catch (_: Exception) {
+      }
+    }
+    return 0L
+  }
+
   suspend fun findTrainRouteFromSheet(
     trainNo: String,
     stationDb: List<StationDbEntry>,

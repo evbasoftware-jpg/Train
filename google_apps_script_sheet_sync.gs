@@ -12,8 +12,11 @@
  */
 
 var DEFAULT_TRAIN_SPREADSHEET_ID = '137CjMlGjFv--aTDfo6V8yftNb6gVc5G-E3opwb84gfA';
+var ROUTE_SYNC_SHEET_NAME = 'Route_Sync';
 var GPS_CACHE_TTL_SECONDS = 900; // 15 মিনিট
 var TRAIN_ENRICH_CACHE_TTL_SECONDS = 21600; // 6 ঘণ্টা cooldown
+var QUARTERLY_RECHECK_DAYS = 90; // প্রতি ৩ মাসে একবার যাচাই
+var QUARTERLY_RECHECK_MS = QUARTERLY_RECHECK_DAYS * 24 * 60 * 60 * 1000;
 var DAY_CODES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 /* ==================== WEB APP ENTRY POINTS ==================== */
@@ -30,7 +33,8 @@ function doGet(e) {
     if (action === 'between') {
       var fromCode = String(p.from || '').trim().toUpperCase();
       var toCode = String(p.to || '').trim().toUpperCase();
-      return jsonResponse_(handleGetBetween_(sheetId, fromCode, toCode));
+      var forceAudit = String(p.forceAudit || '').trim() === '1';
+      return jsonResponse_(handleGetBetween_(sheetId, fromCode, toCode, { forceAudit: forceAudit }));
     }
     if (action === 'live') {
       var trainNo = String(p.trainNo || p.trainNumber || '').replace(/\D/g, '');
@@ -39,6 +43,9 @@ function doGet(e) {
     if (action === 'schedule' || action === 'route') {
       var schedTrainNo = String(p.trainNo || p.trainNumber || '').replace(/\D/g, '');
       return jsonResponse_(handleGetSchedule_(sheetId, schedTrainNo));
+    }
+    if (action === 'audit') {
+      return jsonResponse_(runQuarterlyTrainAudit(sheetId));
     }
     if (action === 'testapi' || action === 'diag') {
       var testFrom = String(p.from || 'BWN').trim().toUpperCase();
@@ -338,21 +345,26 @@ function handleGetAds_(sheetId) {
   return { success: true, ads: ads };
 }
 
-function handleGetBetween_(sheetId, fromCode, toCode) {
+function handleGetBetween_(sheetId, fromCode, toCode, options) {
   if (!fromCode || !toCode || fromCode === toCode) {
     return { success: true, data: { trains: [] } };
   }
+  options = options || {};
   var ss = SpreadsheetApp.openById(sheetId);
   var stCoords = readStationMap_(ss.getSheetByName('Station'));
   var trainSheetIndex = readTrainSheetCompleteness_(ss.getSheetByName('Train'));
   var sheetTrains = searchBetweenFromSheets_(ss, stCoords, fromCode, toCode);
+  var routeSync = readRouteSyncEntry_(ss, fromCode, toCode);
 
   var rrKeys = getRailRadarApiKeys_();
   var props = PropertiesService.getScriptProperties();
   var hasExternalApi = rrKeys.length > 0 || !!String(props.getProperty('RAPIDAPI_KEY') || '').trim();
   var cache = CacheService.getScriptCache();
-  var betweenCacheKey = 'between_v4_' + fromCode + '_' + toCode;
-  var betweenSyncedRecently = !!cache.get(betweenCacheKey);
+
+  var nowMs = Date.now();
+  var neverSynced = !routeSync || !routeSync.syncedAtMs;
+  var lastCheckMs = routeSync ? (routeSync.verifiedAtMs || routeSync.syncedAtMs || 0) : 0;
+  var isQuarterlyDue = (!neverSynced && lastCheckMs > 0 && (nowMs - lastCheckMs >= QUARTERLY_RECHECK_MS)) || !!options.forceAudit;
 
   var sheetHasGaps = !sheetTrains.length;
   if (!sheetHasGaps) {
@@ -368,22 +380,61 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
     }
   }
 
-  // শিট ফাঁকা থাকলে, কোনো ট্রেনের সময়সূচী (--:--) বা Running_Days ফাঁকা থাকলে, অথবা সম্প্রতি Sync না হয়ে থাকলে লাইভ API কল করি
+  // প্রতিটি নতুন From->To রুট অন্তত ১ বার API থেকে সম্পূর্ণ সিঙ্ক হবে, এবং ৩ মাস (৯০ দিন) পরপর পুনরায় যাচাই হবে
   var apiTrains = [];
-  if (hasExternalApi && (!sheetTrains.length || !betweenSyncedRecently || sheetHasGaps)) {
-    apiTrains = fetchBetweenFromExternalApi_(fromCode, toCode, stCoords);
+  if (hasExternalApi && (neverSynced || isQuarterlyDue || !sheetTrains.length || sheetHasGaps)) {
+    apiTrains = fetchBetweenFromExternalApi_(fromCode, toCode, stCoords, isQuarterlyDue);
   }
 
   if (apiTrains.length) {
     // ধাপ ১: কোনো অতিরিক্ত API কল ছাড়াই সাথে সাথে সবগুলো ট্রেনের তথ্য Train শিটে এবং From/To সময়সূচী Schedule শিটে সেভ করি
     var baseSyncedOk = persistBetweenBaseToSheets_(ss, apiTrains, fromCode, toCode, stCoords);
-    if (baseSyncedOk) {
-      cache.put(betweenCacheKey, '1', TRAIN_ENRICH_CACHE_TTL_SECONDS);
+
+    // ধাপ ২: ৩ মাস (৯০ দিন) পরপর বন্ধ হয়ে যাওয়া ট্রেনগুলো যাচাই করে Train ও Schedule শিট থেকে ডিলিট করি
+    var auditRes = { completed: !isQuarterlyDue, deletedTrains: [], removedFromRoute: [] };
+    if (isQuarterlyDue) {
+      auditRes = auditRouteDiscontinuedTrains_(ss, fromCode, toCode, apiTrains, sheetTrains, routeSync, stCoords);
     }
 
-    // ধাপ ২: আলাদা try/catch-এ অসম্পূর্ণ ট্রেনগুলোর ফুল রুট (Train_Stops, Route_Points_Count, সম্পূর্ণ Schedule) এনরিচ করি
+    // আগে থেকে জানা ট্রেন সেট তৈরি করি যাতে নতুন চালু হওয়া ট্রেনগুলো শনাক্ত করা যায়
+    var prevKnownKeys = {};
+    if (routeSync && Array.isArray(routeSync.trainNumbers)) {
+      for (var pk = 0; pk < routeSync.trainNumbers.length; pk++) {
+        var pKey = normTrainKey_(routeSync.trainNumbers[pk]);
+        if (pKey) prevKnownKeys[pKey] = true;
+      }
+    }
+    for (var sk0 = 0; sk0 < sheetTrains.length; sk0++) {
+      var sKey0 = normTrainKey_(sheetTrains[sk0].train && sheetTrains[sk0].train.number);
+      if (sKey0) prevKnownKeys[sKey0] = true;
+    }
+    var addedTrains = [];
+    var addedKeySet = {};
+    for (var at = 0; at < apiTrains.length; at++) {
+      var aNo = String((apiTrains[at].train && apiTrains[at].train.number) || '').replace(/\D/g, '');
+      var aKey = normTrainKey_(aNo);
+      if (aKey && !prevKnownKeys[aKey] && !addedKeySet[aKey]) {
+        addedKeySet[aKey] = true;
+        addedTrains.push(aNo);
+      }
+    }
+
+    // ধাপ ৩: Route_Sync শিটে এই রুটের সিঙ্ক/যাচাইয়ের তারিখ, ট্রেন তালিকা, নতুন ও বন্ধ ট্রেন সংরক্ষণ করি
+    if (baseSyncedOk) {
+      var apiTrainNums = [];
+      for (var tn = 0; tn < apiTrains.length; tn++) {
+        if (apiTrains[tn].train && apiTrains[tn].train.number) {
+          apiTrainNums.push(String(apiTrains[tn].train.number));
+        }
+      }
+      var markVerified = !isQuarterlyDue || auditRes.completed;
+      upsertRouteSyncEntry_(ss, fromCode, toCode, apiTrainNums, auditRes.deletedTrains, addedTrains, markVerified, routeSync);
+    }
+
+    // ধাপ ৪: আলাদা try/catch-এ নতুন চালু হওয়া ও অসম্পূর্ণ ট্রেনগুলোর ফুল রুট (Train_Stops, Route_Points_Count, সম্পূর্ণ Schedule) এনরিচ করি
     try {
-      var trainNumsToEnrich = [];
+      var newTrainsToEnrich = [];
+      var incompleteTrainsToEnrich = [];
       var seedMetaByKey = {};
       for (var i = 0; i < apiTrains.length; i++) {
         var tr = apiTrains[i];
@@ -391,12 +442,13 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
         var tk = normTrainKey_(tNo);
         seedMetaByKey[tk] = tr._meta || {};
         var exMeta = trainSheetIndex[tk];
-        if (!exMeta || exMeta.stopsCount <= 2 || exMeta.routePointsCount <= 2 || !exMeta.runningDays) {
-          if (trainNumsToEnrich.length < 5 && !cache.get('enriched_' + tk)) {
-            trainNumsToEnrich.push(tNo);
-          }
+        if (addedKeySet[tk] || !exMeta) {
+          if (!cache.get('enriched_' + tk)) newTrainsToEnrich.push(tNo);
+        } else if (exMeta.stopsCount <= 2 || exMeta.routePointsCount <= 2 || !exMeta.runningDays) {
+          if (!cache.get('enriched_' + tk)) incompleteTrainsToEnrich.push(tNo);
         }
       }
+      var trainNumsToEnrich = newTrainsToEnrich.concat(incompleteTrainsToEnrich).slice(0, 5);
 
       if (trainNumsToEnrich.length) {
         var enrichedByKey = enrichTrainsAndSyncToSheets_(ss, trainNumsToEnrich, seedMetaByKey, stCoords);
@@ -421,7 +473,19 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
       delete apiTrains[cl]._meta;
     }
 
-    // API + Sheet রেজাল্ট মার্জ করি (API-কে অগ্রাধিকার দিয়ে, এবং শিটে থাকা অতিরিক্ত ভ্যালিড ট্রেনও রেখে)
+    // বাদ পড়া / বন্ধ হয়ে যাওয়া ট্রেনের সেট তৈরি করি যাতে রেজাল্ট লিস্ট থেকেও সাথে সাথে বাদ যায়
+    var removedSet = {};
+    var removedAll = [];
+    for (var rd = 0; rd < auditRes.deletedTrains.length; rd++) {
+      var dk = normTrainKey_(auditRes.deletedTrains[rd]);
+      if (dk && !removedSet[dk]) { removedSet[dk] = true; removedAll.push(auditRes.deletedTrains[rd]); }
+    }
+    for (var rr = 0; rr < auditRes.removedFromRoute.length; rr++) {
+      var rk = normTrainKey_(auditRes.removedFromRoute[rr]);
+      if (rk && !removedSet[rk]) { removedSet[rk] = true; removedAll.push(auditRes.removedFromRoute[rr]); }
+    }
+
+    // API + Sheet রেজাল্ট মার্জ করি (বন্ধ/বাদ পড়া ট্রেন বাদ দিয়ে)
     var mergedByKey = {};
     var mergedList = [];
     for (var ai = 0; ai < apiTrains.length; ai++) {
@@ -434,6 +498,7 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
     for (var si2 = 0; si2 < sheetTrains.length; si2++) {
       var sItem2 = sheetTrains[si2];
       var sk = normTrainKey_(sItem2.train.number);
+      if (removedSet[sk]) continue;
       if (!mergedByKey[sk]) {
         mergedByKey[sk] = sItem2;
         mergedList.push(sItem2);
@@ -451,7 +516,16 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
       if (mb == null) mb = 9999;
       return ma !== mb ? ma - mb : String(a.train.number).localeCompare(String(b.train.number));
     });
-    return { success: true, source: 'api', data: { trains: mergedList } };
+    return {
+      success: true,
+      source: 'api',
+      routeSynced: baseSyncedOk,
+      quarterlyVerified: isQuarterlyDue && auditRes.completed,
+      addedTrains: addedTrains,
+      deletedTrains: auditRes.deletedTrains,
+      removedTrains: removedAll,
+      data: { trains: mergedList }
+    };
   }
 
   if (sheetTrains.length) {
@@ -507,6 +581,445 @@ function handleGetBetween_(sheetId, fromCode, toCode) {
     apiError: LAST_RAILRADAR_ERROR_ ? (LAST_RAILRADAR_ERROR_.code + ': ' + LAST_RAILRADAR_ERROR_.message) : undefined,
     data: { trains: [] }
   };
+}
+
+/* ==================== ROUTE SYNC TRACKING & QUARTERLY AUDIT (90 DAYS) ==================== */
+
+function getOrCreateRouteSyncSheet_(ss) {
+  var sheet = ss.getSheetByName(ROUTE_SYNC_SHEET_NAME);
+  if (!sheet) {
+    sheet = ss.insertSheet(ROUTE_SYNC_SHEET_NAME);
+  }
+  if (sheet.getLastRow() < 1) {
+    sheet.getRange(1, 1, 1, 9).setValues([[
+      'Route_Key', 'From_Code', 'To_Code', 'Last_Synced_At',
+      'Last_Verified_At', 'Train_Count', 'Train_Numbers',
+      'Last_Removed_Trains', 'Last_Added_Trains'
+    ]]);
+  }
+  return sheet;
+}
+
+function parseIsoMs_(raw) {
+  if (raw instanceof Date) return isNaN(raw.getTime()) ? 0 : raw.getTime();
+  var s = String(raw || '').trim();
+  if (!s) return 0;
+  var ms = Date.parse(s);
+  return isFinite(ms) ? ms : 0;
+}
+
+function readRouteSyncEntry_(ss, fromCode, toCode) {
+  var sheet = ss.getSheetByName(ROUTE_SYNC_SHEET_NAME);
+  if (!sheet || sheet.getLastRow() < 2) return null;
+  var disp = sheet.getDataRange().getDisplayValues();
+  var hm = headerMap_(disp[0]);
+  if (hm.routekey == null) return null;
+  var cKey = hm.routekey;
+  var cSynced = hm.lastsyncedat != null ? hm.lastsyncedat : 3;
+  var cVerified = hm.lastverifiedat != null ? hm.lastverifiedat : 4;
+  var cNums = hm.trainnumbers != null ? hm.trainnumbers : 6;
+  var targetKey = fromCode + '->' + toCode;
+
+  for (var r = 1; r < disp.length; r++) {
+    var k = String(disp[r][cKey] || '').trim().toUpperCase();
+    if (k === targetKey) {
+      var rawNums = String(disp[r][cNums] || '').trim();
+      var nums = rawNums ? rawNums.split(/[,;\s]+/).map(function (x) { return x.replace(/\D/g, ''); }).filter(Boolean) : [];
+      return {
+        rowIdx: r,
+        routeKey: targetKey,
+        syncedAtMs: parseIsoMs_(disp[r][cSynced]),
+        verifiedAtMs: parseIsoMs_(disp[r][cVerified]),
+        trainNumbers: nums
+      };
+    }
+  }
+  return null;
+}
+
+function upsertRouteSyncEntry_(ss, fromCode, toCode, trainNumbers, deletedTrains, addedTrains, markVerified, prevEntry) {
+  var lock = LockService.getScriptLock();
+  var locked = false;
+  try {
+    locked = lock.tryLock(12000);
+    var sheet = getOrCreateRouteSyncSheet_(ss);
+    var lastRow = sheet.getLastRow();
+    var lastCol = Math.max(sheet.getLastColumn(), 9);
+    var disp = lastRow >= 1 ? sheet.getRange(1, 1, lastRow, lastCol).getDisplayValues() : [];
+    var hm = headerMap_(disp[0] || []);
+    // পুরানো ৮-কলাম Route_Sync শিটে ৯ম কলাম (Last_Added_Trains) না থাকলে স্বয়ংক্রিয়ভাবে যোগ করি
+    if (lastRow >= 1 && hm.lastaddedtrains == null) {
+      sheet.getRange(1, 9).setValue('Last_Added_Trains');
+      if (disp[0]) disp[0][8] = 'Last_Added_Trains';
+      hm.lastaddedtrains = 8;
+    }
+    var cKey = hm.routekey != null ? hm.routekey : 0;
+    var cFrom = hm.fromcode != null ? hm.fromcode : 1;
+    var cTo = hm.tocode != null ? hm.tocode : 2;
+    var cSynced = hm.lastsyncedat != null ? hm.lastsyncedat : 3;
+    var cVerified = hm.lastverifiedat != null ? hm.lastverifiedat : 4;
+    var cCount = hm.traincount != null ? hm.traincount : 5;
+    var cNums = hm.trainnumbers != null ? hm.trainnumbers : 6;
+    var cRem = hm.lastremovedtrains != null ? hm.lastremovedtrains : 7;
+    var cAdd = hm.lastaddedtrains != null ? hm.lastaddedtrains : 8;
+
+    var routeKey = fromCode + '->' + toCode;
+    var existingRowIdx = -1;
+    for (var r = 1; r < disp.length; r++) {
+      if (String(disp[r][cKey] || '').trim().toUpperCase() === routeKey) {
+        existingRowIdx = r;
+        break;
+      }
+    }
+
+    var nowIso = new Date().toISOString();
+    var uniqNums = [];
+    var seenN = {};
+    for (var i = 0; i < (trainNumbers || []).length; i++) {
+      var n = String(trainNumbers[i] || '').replace(/\D/g, '');
+      var nk = normTrainKey_(n);
+      if (nk && !seenN[nk]) { seenN[nk] = true; uniqNums.push(n); }
+    }
+    var prevVerifiedVal = (existingRowIdx >= 1) ? String(disp[existingRowIdx][cVerified] || '').trim() : '';
+    var verifiedVal = markVerified ? nowIso : (prevVerifiedVal || (prevEntry && prevEntry.verifiedAtMs ? new Date(prevEntry.verifiedAtMs).toISOString() : nowIso));
+    var removedStr = (deletedTrains && deletedTrains.length) ? deletedTrains.join(', ') : ((existingRowIdx >= 1) ? String(disp[existingRowIdx][cRem] || '').trim() : '');
+    var addedStr = (addedTrains && addedTrains.length) ? addedTrains.join(', ') : ((existingRowIdx >= 1) ? String(disp[existingRowIdx][cAdd] || '').trim() : '');
+
+    var row = blankRow_(lastCol);
+    row[cKey] = routeKey;
+    row[cFrom] = fromCode;
+    row[cTo] = toCode;
+    row[cSynced] = nowIso;
+    row[cVerified] = verifiedVal;
+    row[cCount] = uniqNums.length;
+    row[cNums] = uniqNums.join(', ');
+    row[cRem] = removedStr;
+    row[cAdd] = addedStr;
+
+    if (existingRowIdx >= 1) {
+      sheet.getRange(existingRowIdx + 1, 1, 1, lastCol).setValues([row]);
+    } else {
+      sheet.getRange(lastRow + 1, 1, 1, lastCol).setValues([row]);
+    }
+    return true;
+  } catch (_) {
+    return false;
+  } finally {
+    if (locked) {
+      try { lock.releaseLock(); } catch (_) {}
+    }
+  }
+}
+
+function inspectTrainStatusOnRailRadar_(trainNo, stCoords) {
+  var keys = getRailRadarApiKeys_();
+  if (!keys.length) return { status: 'unknown' };
+  var cleanNo = String(trainNo || '').replace(/\D/g, '');
+  if (!cleanNo) return { status: 'unknown' };
+  var url = 'https://api.railradar.in/v1/trains/' + encodeURIComponent(cleanNo);
+
+  for (var i = 0; i < keys.length; i++) {
+    var key = keys[i];
+    if (FAILED_RR_KEYS_[key]) continue;
+    try {
+      var resp = UrlFetchApp.fetch(url, {
+        headers: { 'X-Api-Key': key, 'Accept': 'application/json' },
+        muteHttpExceptions: true
+      });
+      var code = resp.getResponseCode();
+      var txt = resp.getContentText() || '{}';
+
+      if (code === 404) {
+        return { status: 'discontinued', reason: 'HTTP_404' };
+      }
+      if (code >= 200 && code < 300) {
+        var json = {};
+        try { json = JSON.parse(txt); } catch (_) { return { status: 'unknown' }; }
+        if (json.success === false) {
+          var errObj = parseRailRadarErr_(code, txt);
+          if (/NOT_FOUND|INVALID_TRAIN|DISCONTINUED|PERMANENTLY_CANCELLED/i.test(errObj.code + ' ' + errObj.message)) {
+            return { status: 'discontinued', reason: errObj.code || errObj.message };
+          }
+          return { status: 'unknown' };
+        }
+        var d = json.data || json;
+        var tr = (d && d.train && typeof d.train === 'object') ? d.train : (d || {});
+        var route = normalizeExternalRoute_(extractRouteArray_(d), stCoords);
+        var trStatus = String(tr.status || d.status || '').toLowerCase();
+        var explicitlyStopped = tr.isActive === false || tr.active === false ||
+          tr.discontinued === true || tr.isDiscontinued === true ||
+          tr.permanentlyCancelled === true ||
+          /discontinu|permanently[\s_-]*cancel|terminated|abolished/i.test(trStatus);
+        if (explicitlyStopped && route.length < 2) {
+          return { status: 'discontinued', reason: trStatus || 'inactive' };
+        }
+        if (route.length >= 2) {
+          return {
+            status: 'active',
+            trainName: String(tr.trainName || tr.name || '').trim(),
+            meta: extractTrainMeta_(d),
+            route: route
+          };
+        }
+        if (!tr.trainNumber && !tr.number && !tr.trainName && !tr.name) {
+          return { status: 'discontinued', reason: 'EMPTY_TRAIN_RECORD' };
+        }
+        return { status: 'unknown' };
+      }
+
+      LAST_RAILRADAR_ERROR_ = parseRailRadarErr_(code, txt);
+      if (code === 401 || code === 403 || code === 429) {
+        FAILED_RR_KEYS_[key] = code;
+      }
+    } catch (_) {
+      return { status: 'unknown' };
+    }
+  }
+  return { status: 'unknown' };
+}
+
+function auditRouteDiscontinuedTrains_(ss, fromCode, toCode, apiTrains, sheetTrains, routeSync, stCoords) {
+  var result = { completed: true, deletedTrains: [], removedFromRoute: [] };
+  if (!apiTrains || !apiTrains.length) {
+    result.completed = false;
+    return result;
+  }
+
+  var apiKeySet = {};
+  for (var i = 0; i < apiTrains.length; i++) {
+    var ak = normTrainKey_(apiTrains[i].train && apiTrains[i].train.number);
+    if (ak) apiKeySet[ak] = true;
+  }
+
+  var candidates = [];
+  var seenCand = {};
+  var addCand = function (num) {
+    var clean = String(num || '').replace(/\D/g, '');
+    var k = normTrainKey_(clean);
+    if (k && !apiKeySet[k] && !seenCand[k]) {
+      seenCand[k] = true;
+      candidates.push(clean);
+    }
+  };
+
+  if (routeSync && Array.isArray(routeSync.trainNumbers)) {
+    for (var p = 0; p < routeSync.trainNumbers.length; p++) addCand(routeSync.trainNumbers[p]);
+  }
+  for (var s = 0; s < (sheetTrains || []).length; s++) {
+    addCand(sheetTrains[s].train && sheetTrains[s].train.number);
+  }
+
+  if (!candidates.length) return result;
+
+  var maxChecks = Math.min(candidates.length, 10);
+  if (candidates.length > maxChecks) result.completed = false;
+
+  for (var c = 0; c < maxChecks; c++) {
+    var tNo = candidates[c];
+    var info = inspectTrainStatusOnRailRadar_(tNo, stCoords);
+    if (info.status === 'discontinued') {
+      result.deletedTrains.push(tNo);
+      result.removedFromRoute.push(tNo);
+    } else if (info.status === 'active' && info.route && info.route.length >= 2) {
+      // ট্রেনটি অন্য রুটে এখনো চালু আছে: নতুন রুট আপডেট করি ও পুরানো বাতিল স্টপ Schedule থেকে সরাই
+      syncExternalTrainToSheets_(ss, tNo, info.trainName, info.route, info.meta, true);
+      var activeCodeSet = {};
+      var haltCodes = {};
+      for (var ri = 0; ri < info.route.length; ri++) {
+        var sc = info.route[ri].stationCode;
+        if (sc) {
+          activeCodeSet[sc] = true;
+          if (info.route[ri].isHalt !== false) haltCodes[sc] = true;
+        }
+      }
+      pruneObsoleteScheduleStops_(ss, tNo, activeCodeSet);
+      if (!haltCodes[fromCode] || !haltCodes[toCode]) {
+        result.removedFromRoute.push(tNo);
+      }
+    } else {
+      // API কোটা শেষ বা নেটওয়ার্ক এরর: কখনোই অন্ধভাবে ডিলিট করব না
+      result.completed = false;
+      break;
+    }
+  }
+
+  if (result.deletedTrains.length) {
+    deleteTrainsFromSheets_(ss, result.deletedTrains);
+  }
+  return result;
+}
+
+function deleteRowsDescending_(sheet, rowIndicesZeroBased) {
+  if (!sheet || !rowIndicesZeroBased || !rowIndicesZeroBased.length) return 0;
+  var uniq = [];
+  var seen = {};
+  for (var i = 0; i < rowIndicesZeroBased.length; i++) {
+    var idx = Number(rowIndicesZeroBased[i]);
+    if (idx >= 1 && !seen[idx]) { seen[idx] = true; uniq.push(idx); }
+  }
+  if (!uniq.length) return 0;
+  uniq.sort(function (a, b) { return b - a; });
+  var deleted = 0;
+  var pos = 0;
+  while (pos < uniq.length) {
+    var endIdx = uniq[pos];
+    var startIdx = endIdx;
+    while (pos + 1 < uniq.length && uniq[pos + 1] === startIdx - 1) {
+      pos++;
+      startIdx = uniq[pos];
+    }
+    var count = endIdx - startIdx + 1;
+    sheet.deleteRows(startIdx + 1, count);
+    deleted += count;
+    pos++;
+  }
+  return deleted;
+}
+
+function deleteTrainsFromSheets_(ss, trainNumbers) {
+  if (!trainNumbers || !trainNumbers.length) return { trainRowsDeleted: 0, schedRowsDeleted: 0 };
+  var delSet = {};
+  for (var i = 0; i < trainNumbers.length; i++) {
+    var k = normTrainKey_(trainNumbers[i]);
+    if (k) delSet[k] = true;
+  }
+  var lock = LockService.getScriptLock();
+  var locked = false;
+  var stats = { trainRowsDeleted: 0, schedRowsDeleted: 0 };
+  try {
+    locked = lock.tryLock(12000);
+    var trainSheet = ss.getSheetByName('Train');
+    if (trainSheet && trainSheet.getLastRow() >= 2) {
+      var tDisp = trainSheet.getDataRange().getDisplayValues();
+      var thm = headerMap_(tDisp[0]);
+      var tcNum = thm.trainnumber != null ? thm.trainnumber : 0;
+      var tRows = [];
+      for (var r = 1; r < tDisp.length; r++) {
+        if (delSet[normTrainKey_(tDisp[r][tcNum])]) tRows.push(r);
+      }
+      stats.trainRowsDeleted = deleteRowsDescending_(trainSheet, tRows);
+    }
+    var schedSheet = ss.getSheetByName('Schedule');
+    if (schedSheet && schedSheet.getLastRow() >= 2) {
+      var sDisp = schedSheet.getDataRange().getDisplayValues();
+      var shm = headerMap_(sDisp[0]);
+      var scNum = shm.trainnumber != null ? shm.trainnumber : 1;
+      var sRows = [];
+      for (var r2 = 1; r2 < sDisp.length; r2++) {
+        if (delSet[normTrainKey_(sDisp[r2][scNum])]) sRows.push(r2);
+      }
+      stats.schedRowsDeleted = deleteRowsDescending_(schedSheet, sRows);
+    }
+  } catch (_) {
+  } finally {
+    if (locked) {
+      try { lock.releaseLock(); } catch (_) {}
+    }
+  }
+  return stats;
+}
+
+function pruneObsoleteScheduleStops_(ss, trainNo, activeCodeSet) {
+  var tk = normTrainKey_(trainNo);
+  if (!tk || !activeCodeSet) return 0;
+  var lock = LockService.getScriptLock();
+  var locked = false;
+  try {
+    locked = lock.tryLock(12000);
+    var schedSheet = ss.getSheetByName('Schedule');
+    if (!schedSheet || schedSheet.getLastRow() < 2) return 0;
+    var sDisp = schedSheet.getDataRange().getDisplayValues();
+    var shm = headerMap_(sDisp[0]);
+    var scNum = shm.trainnumber != null ? shm.trainnumber : 1;
+    var scSt = shm.stationcode != null ? shm.stationcode : 3;
+    var rowsToDelete = [];
+    for (var r = 1; r < sDisp.length; r++) {
+      if (normTrainKey_(sDisp[r][scNum]) !== tk) continue;
+      var code = String(sDisp[r][scSt] || '').trim().toUpperCase();
+      if (code && !activeCodeSet[code]) rowsToDelete.push(r);
+    }
+    return deleteRowsDescending_(schedSheet, rowsToDelete);
+  } catch (_) {
+    return 0;
+  } finally {
+    if (locked) {
+      try { lock.releaseLock(); } catch (_) {}
+    }
+  }
+}
+
+/**
+ * ৩ মাস (৯০ দিন) পূর্ণ হওয়া সব Route_Sync রুট স্বয়ংক্রিয়ভাবে যাচাই করে
+ * এবং সম্পূর্ণভাবে বন্ধ হয়ে যাওয়া ট্রেন Train ও Schedule শিট থেকে ডিলিট করে।
+ */
+function runQuarterlyTrainAudit(sheetId) {
+  var targetSheetId = sheetId || DEFAULT_TRAIN_SPREADSHEET_ID;
+  var ss = SpreadsheetApp.openById(targetSheetId);
+  var rsSheet = ss.getSheetByName(ROUTE_SYNC_SHEET_NAME);
+  if (!rsSheet || rsSheet.getLastRow() < 2) {
+    return { success: true, checkedRoutes: 0, deletedTrains: [], message: 'No synced routes yet' };
+  }
+  var disp = rsSheet.getDataRange().getDisplayValues();
+  var hm = headerMap_(disp[0]);
+  var cFrom = hm.fromcode != null ? hm.fromcode : 1;
+  var cTo = hm.tocode != null ? hm.tocode : 2;
+  var cSynced = hm.lastsyncedat != null ? hm.lastsyncedat : 3;
+  var cVerified = hm.lastverifiedat != null ? hm.lastverifiedat : 4;
+
+  var nowMs = Date.now();
+  var checkedRoutes = 0;
+  var allAdded = [];
+  var allDeleted = [];
+  var maxRoutesPerRun = 5;
+
+  for (var r = 1; r < disp.length && checkedRoutes < maxRoutesPerRun; r++) {
+    var fromC = String(disp[r][cFrom] || '').trim().toUpperCase();
+    var toC = String(disp[r][cTo] || '').trim().toUpperCase();
+    if (!fromC || !toC || fromC === toC) continue;
+    var lastMs = parseIsoMs_(disp[r][cVerified]) || parseIsoMs_(disp[r][cSynced]);
+    if (lastMs > 0 && (nowMs - lastMs < QUARTERLY_RECHECK_MS)) continue;
+
+    var res = handleGetBetween_(targetSheetId, fromC, toC, { forceAudit: true });
+    checkedRoutes++;
+    if (res && Array.isArray(res.addedTrains) && res.addedTrains.length) {
+      for (var a = 0; a < res.addedTrains.length; a++) {
+        allAdded.push(res.addedTrains[a]);
+      }
+    }
+    if (res && Array.isArray(res.deletedTrains) && res.deletedTrains.length) {
+      for (var d = 0; d < res.deletedTrains.length; d++) {
+        allDeleted.push(res.deletedTrains[d]);
+      }
+    }
+    if (LAST_RAILRADAR_ERROR_ && LAST_RAILRADAR_ERROR_.httpStatus === 429) {
+      break;
+    }
+  }
+  return {
+    success: true,
+    checkedRoutes: checkedRoutes,
+    addedTrains: allAdded,
+    deletedTrains: allDeleted,
+    apiError: LAST_RAILRADAR_ERROR_ ? (LAST_RAILRADAR_ERROR_.code + ': ' + LAST_RAILRADAR_ERROR_.message) : undefined
+  };
+}
+
+/**
+ * ঐচ্ছিক: Apps Script এডিটরে এই ফাংশনটি একবার Run করলে প্রতি মাসের ১ তারিখ ব্যাকগ্রাউন্ডে
+ * runQuarterlyTrainAudit চলবে এবং ৯০ দিন পূর্ণ হওয়া রুটগুলো স্বয়ংক্রিয়ভাবে যাচাই করবে।
+ */
+function setupQuarterlyAuditTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'runQuarterlyTrainAudit') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('runQuarterlyTrainAudit')
+    .timeBased()
+    .onMonthDay(1)
+    .atHour(3)
+    .create();
 }
 
 function persistBetweenBaseToSheets_(ss, apiTrains, fromCode, toCode, stCoords) {
@@ -1388,7 +1901,7 @@ function computeRouteDistKm_(route, stCoords) {
   return total > 0 ? Math.round(total * 10) / 10 : 0;
 }
 
-function fetchBetweenFromExternalApi_(fromCode, toCode, stCoords) {
+function fetchBetweenFromExternalApi_(fromCode, toCode, stCoords, bypassCache) {
   var fGeo = stCoords[fromCode];
   var tGeo = stCoords[toCode];
   var approxDist = (fGeo && tGeo && fGeo.lat != null && tGeo.lat != null)
@@ -1398,7 +1911,7 @@ function fetchBetweenFromExternalApi_(fromCode, toCode, stCoords) {
   var out = [];
   var cache = CacheService.getScriptCache();
   var apiCacheKey = 'rr_between_v1_' + fromCode + '_' + toCode;
-  var cachedRaw = cache.get(apiCacheKey);
+  var cachedRaw = bypassCache ? null : cache.get(apiCacheKey);
   if (cachedRaw) {
     try {
       var parsedCached = JSON.parse(cachedRaw);

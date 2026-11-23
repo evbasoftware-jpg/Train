@@ -14,6 +14,8 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.CacheControl
@@ -231,24 +233,52 @@ class TrainRepository(private val cacheDir: File? = null) {
     stationDb: List<StationDbEntry> = CORE_STATIONS,
   ): List<TrainBetweenItem> =
     withContext(Dispatchers.IO) {
-      // 1) Search Train, Station & Schedule Google Sheets first (avoids API key usage when found)
-      val sheetMatches = try {
-        sheetRepository.searchTrainsBetweenFromSheet(fromCode, toCode, stationDb)
-      } catch (_: Exception) {
-        emptyList()
+      // 1) Search Train, Station & Schedule Google Sheets + Route_Sync 90-day status in parallel
+      val (sheetMatches, routeSyncedFresh) = coroutineScope {
+        val matchesDef = async {
+          try {
+            sheetRepository.searchTrainsBetweenFromSheet(fromCode, toCode, stationDb)
+          } catch (_: Exception) {
+            emptyList()
+          }
+        }
+        val syncDef = async {
+          try {
+            sheetRepository.isRouteSyncedWithin90Days(fromCode, toCode)
+          } catch (_: Exception) {
+            false
+          }
+        }
+        Pair(matchesDef.await(), syncDef.await())
       }
       val needsSheetEnrichment = sheetMatches.isEmpty() ||
+        !routeSyncedFresh ||
         sheetMatches.any { it.runningDaysRaw.isBlank() || it.departure == "--:--" || it.arrival == "--:--" }
       val pairKey = "${fromCode.uppercase(Locale.US)}->${toCode.uppercase(Locale.US)}"
-      if (sheetMatches.isNotEmpty() && ((!needsSheetEnrichment && sheetMatches.size >= 3) || pairKey in enrichedBetweenPairs)) {
+      if (sheetMatches.isNotEmpty() && (!needsSheetEnrichment || pairKey in enrichedBetweenPairs)) {
         return@withContext sheetMatches
       }
 
-      // 2) Fallback to backend API key search (also backfills incomplete sheet rows once per session)
+      // 2) Call backend API when route has never been synced, is >= 90 days old, or has gaps
       var apiSource = ""
+      val removedKeys = HashSet<String>()
       val apiList = try {
         val root = getApi(mapOf("action" to "between", "from" to fromCode, "to" to toCode))
         apiSource = root.optString("source", "")
+        val remArr = root.optJSONArray("removedTrains")
+        if (remArr != null) {
+          for (ri in 0 until remArr.length()) {
+            val rk = remArr.optString(ri, "").filter(Char::isDigit).trimStart('0')
+            if (rk.isNotEmpty()) removedKeys.add(rk)
+          }
+        }
+        val delArr = root.optJSONArray("deletedTrains")
+        if (delArr != null) {
+          for (di in 0 until delArr.length()) {
+            val dk = delArr.optString(di, "").filter(Char::isDigit).trimStart('0')
+            if (dk.isNotEmpty()) removedKeys.add(dk)
+          }
+        }
         val trainsArr = root.optJSONObject("data")?.optJSONArray("trains") ?: JSONArray()
         val result = ArrayList<TrainBetweenItem>(trainsArr.length())
         for (i in 0 until trainsArr.length()) {
@@ -289,11 +319,11 @@ class TrainRepository(private val cacheDir: File? = null) {
       val mergedMap = LinkedHashMap<String, TrainBetweenItem>()
       sheetMatches.forEach { item ->
         val k = item.trainNumber.filter(Char::isDigit).trimStart('0').ifEmpty { item.trainNumber }
-        if (k.isNotEmpty()) mergedMap[k] = item
+        if (k.isNotEmpty() && k !in removedKeys) mergedMap[k] = item
       }
       apiList.forEach { item ->
         val k = item.trainNumber.filter(Char::isDigit).trimStart('0').ifEmpty { item.trainNumber }
-        if (k.isNotEmpty()) {
+        if (k.isNotEmpty() && k !in removedKeys) {
           val ex = mergedMap[k]
           mergedMap[k] = if (ex == null) {
             item
