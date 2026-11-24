@@ -147,6 +147,10 @@
       gap: 12px;
     }
 
+    body.has-sticky-gps .page-container {
+      padding-bottom: calc(92px + env(safe-area-inset-bottom, 0px));
+    }
+
     /* Brand Banner Card */
     .brand-banner {
       background: linear-gradient(180deg, #005AE8 0%, #0045C4 100%);
@@ -616,25 +620,57 @@
     .btn-orange { background: var(--ntes-orange); }
     .btn-emerald { background: var(--emerald); }
     .btn-blue { background: #0057E7; }
+    .sticky-gps-bar {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      z-index: 900;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      box-shadow: 0 -4px 16px rgba(15, 23, 42, 0.14);
+      padding: 8px 14px calc(10px + env(safe-area-inset-bottom, 0px));
+    }
+    .sticky-gps-bar-inner {
+      max-width: 1040px;
+      margin: 0 auto;
+    }
+    .sticky-gps-train-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.3px;
+      background: rgba(0, 137, 123, 0.16);
+      flex-shrink: 0;
+    }
+    .btn-onboard-on .sticky-gps-train-badge {
+      background: rgba(255, 255, 255, 0.22);
+      color: #FFFFFF;
+    }
     .btn-onboard-off {
       width: 100%;
-      margin-top: 8px;
+      min-height: 48px;
+      border-radius: 12px;
       background: var(--emerald-container);
       color: var(--emerald-dark);
       border: 1.5px solid var(--emerald);
       white-space: normal;
       line-height: 1.25;
-      padding: 10px 12px;
+      padding: 10px 14px;
     }
     .btn-onboard-on {
       width: 100%;
-      margin-top: 8px;
+      min-height: 48px;
+      border-radius: 12px;
       background: var(--emerald);
       color: #FFFFFF;
       border: 1.5px solid var(--emerald-dark);
       white-space: normal;
       line-height: 1.25;
-      padding: 10px 12px;
+      padding: 10px 14px;
     }
 
     /* Banners */
@@ -1229,7 +1265,6 @@
         <button id="btnStopTracking" class="btn btn-crimson" type="button" disabled>■ <span id="lblStopBtn">ট্র্যাকিং বন্ধ করুন</span></button>
         <button id="btnOpenNtes" class="btn btn-orange" type="button">↗ <span id="lblNtesBtn">অফিসিয়াল NTES</span></button>
       </div>
-      <button id="btnOnboardGps" class="btn btn-onboard-off hidden" type="button">📍 <span id="lblOnboardGpsBtn">আমি এই ট্রেনে আছি (GPS শেয়ার করুন)</span></button>
     </section>
 
     <!-- Alarm Banner -->
@@ -1336,6 +1371,17 @@
     <!-- ads5: Right below "ম্যাপ" -->
     <div id="adSlot_ads5" class="ad-slot-container hidden"></div>
   </main>
+
+  <!-- Always-Visible Sticky Bottom Onboard GPS Share Bar -->
+  <div id="stickyOnboardGpsBar" class="sticky-gps-bar hidden">
+    <div class="sticky-gps-bar-inner">
+      <button id="btnOnboardGps" class="btn btn-onboard-off" type="button">
+        <span>📍</span>
+        <span id="lblOnboardTrainNo" class="sticky-gps-train-badge mono hidden"></span>
+        <span id="lblOnboardGpsBtn">আমি এই ট্রেনে আছি (GPS শেয়ার করুন)</span>
+      </button>
+    </div>
+  </div>
 
   <!-- Language Picker Modal -->
   <div id="languageModal" class="modal-backdrop">
@@ -5053,12 +5099,22 @@
         el('btnStartTracking').classList.toggle('hidden', len < 4 || state.running);
         el('btnStopTracking').disabled = !state.running;
 
+        const stickyBar = el('stickyOnboardGpsBar');
         const onboardBtn = el('btnOnboardGps');
         const onboardLbl = el('lblOnboardGpsBtn');
+        const onboardTrainBadge = el('lblOnboardTrainNo');
+        const cleanTrainNo = state.trainNo.trim();
         const showOnboard = len >= 4 || state.running;
-        onboardBtn.classList.toggle('hidden', !showOnboard);
-        onboardBtn.classList.toggle('btn-onboard-on', state.manualOnboardGps);
-        onboardBtn.classList.toggle('btn-onboard-off', !state.manualOnboardGps);
+        if (stickyBar) stickyBar.classList.toggle('hidden', !showOnboard);
+        document.body.classList.toggle('has-sticky-gps', showOnboard);
+        if (onboardBtn) {
+          onboardBtn.classList.toggle('btn-onboard-on', state.manualOnboardGps);
+          onboardBtn.classList.toggle('btn-onboard-off', !state.manualOnboardGps);
+        }
+        if (onboardTrainBadge) {
+          onboardTrainBadge.textContent = cleanTrainNo;
+          onboardTrainBadge.classList.toggle('hidden', cleanTrainNo.length < 4);
+        }
         if (onboardLbl) {
           onboardLbl.textContent = state.manualOnboardGps
             ? state.strings.sharingLiveGpsBtn

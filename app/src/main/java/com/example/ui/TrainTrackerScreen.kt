@@ -8,6 +8,10 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -227,11 +231,24 @@ fun TrainTrackerScreen(
 
   BoxWithConstraints(modifier = modifier.fillMaxSize()) {
     val isWideLayout = maxWidth >= 680.dp
+    val showStickyOnboardGps = state.trainNoInput.trim().length >= 4 || state.running
 
     Scaffold(
       modifier = Modifier.fillMaxSize(),
       containerColor = MaterialTheme.colorScheme.background,
       contentWindowInsets = WindowInsets(0, 0, 0, 0),
+      bottomBar = {
+        StickyOnboardGpsBar(
+          visible = showStickyOnboardGps,
+          trainNo = state.trainNoInput.trim(),
+          manualOnboardGps = state.manualOnboardGps,
+          strings = strings,
+          onToggleManualOnboardGps = {
+            focusManager.clearFocus()
+            viewModel.toggleManualOnboardGps()
+          },
+        )
+      },
     ) { innerPadding ->
       Box(
         modifier = Modifier
@@ -257,7 +274,7 @@ fun TrainTrackerScreen(
             modifier = Modifier
               .fillMaxSize()
               .verticalScroll(mainScrollState)
-              .navigationBarsPadding()
+              .then(if (showStickyOnboardGps) Modifier else Modifier.navigationBarsPadding())
               .padding(horizontal = 14.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
           ) {
@@ -304,7 +321,6 @@ fun TrainTrackerScreen(
               recentTrains = state.recentTrains,
               recentRoutes = state.recentRoutes,
               running = state.running,
-              manualOnboardGps = state.manualOnboardGps,
               isWideLayout = isWideLayout,
               strings = strings,
               localizeName = state::localizeName,
@@ -334,10 +350,6 @@ fun TrainTrackerScreen(
                 viewModel.startTracking()
               },
               onStopTracking = { viewModel.stopTracking() },
-              onToggleManualOnboardGps = {
-                focusManager.clearFocus()
-                viewModel.toggleManualOnboardGps()
-              },
               onOpenNtes = {
                 try {
                   val intent = Intent(
@@ -914,7 +926,6 @@ private fun SearchAndControlPanel(
   recentTrains: List<SavedTrainEntry>,
   recentRoutes: List<SavedRoutePair>,
   running: Boolean,
-  manualOnboardGps: Boolean,
   isWideLayout: Boolean,
   strings: LocalizedStrings,
   localizeName: (String) -> String,
@@ -929,7 +940,6 @@ private fun SearchAndControlPanel(
   onRecentRouteClick: (SavedRoutePair) -> Unit,
   onStartTracking: () -> Unit,
   onStopTracking: () -> Unit,
-  onToggleManualOnboardGps: () -> Unit,
   onOpenNtes: () -> Unit,
   adSlot2Content: @Composable () -> Unit,
 ) {
@@ -1469,39 +1479,103 @@ private fun SearchAndControlPanel(
           )
         }
       }
+    }
+  }
+}
 
-      // Manual Onboard GPS Share Toggle ("I'm on this train — Share GPS")
-      if (trainNoInput.length >= 4 || running) {
-        Button(
-          onClick = onToggleManualOnboardGps,
-          shape = RoundedCornerShape(10.dp),
-          colors = ButtonDefaults.buttonColors(
-            containerColor = if (manualOnboardGps) VerifiedEmerald else VerifiedEmeraldContainer,
-            contentColor = if (manualOnboardGps) Color.White else VerifiedEmeraldDark,
-          ),
-          contentPadding = PaddingValues(horizontal = 12.dp, vertical = 12.dp),
+@Composable
+private fun StickyOnboardGpsBar(
+  visible: Boolean,
+  trainNo: String,
+  manualOnboardGps: Boolean,
+  strings: LocalizedStrings,
+  onToggleManualOnboardGps: () -> Unit,
+) {
+  val isDark = isSystemInDarkTheme()
+  AnimatedVisibility(
+    visible = visible,
+    enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+    exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+  ) {
+    Surface(
+      color = if (isDark) CobaltDark.copy(alpha = 0.97f) else MaterialTheme.colorScheme.surface.copy(alpha = 0.98f),
+      tonalElevation = 6.dp,
+      shadowElevation = 10.dp,
+      modifier = Modifier
+        .fillMaxWidth()
+        .testTag("sticky_onboard_gps_bar"),
+    ) {
+      Column(
+        modifier = Modifier
+          .fillMaxWidth()
+          .navigationBarsPadding(),
+        horizontalAlignment = Alignment.CenterHorizontally,
+      ) {
+        HorizontalDivider(
+          thickness = 1.dp,
+          color = if (manualOnboardGps) {
+            VerifiedEmerald.copy(alpha = 0.45f)
+          } else {
+            MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.7f)
+          },
+        )
+        Box(
           modifier = Modifier
+            .widthIn(max = 1040.dp)
             .fillMaxWidth()
-            .minimumInteractiveComponentSize()
-            .border(
-              width = 1.dp,
-              color = if (manualOnboardGps) VerifiedEmeraldDark else VerifiedEmerald.copy(alpha = 0.45f),
-              shape = RoundedCornerShape(10.dp),
-            )
-            .testTag("manual_onboard_gps_button"),
+            .padding(horizontal = 14.dp, vertical = 8.dp),
         ) {
-          Icon(
-            imageVector = Icons.Filled.MyLocation,
-            contentDescription = null,
-            modifier = Modifier.size(18.dp),
-          )
-          Spacer(Modifier.width(6.dp))
-          Text(
-            text = if (manualOnboardGps) strings.sharingLiveGpsBtn else strings.imOnTrainBtn,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            fontWeight = FontWeight.Bold,
-          )
+          Button(
+            onClick = onToggleManualOnboardGps,
+            shape = RoundedCornerShape(12.dp),
+            colors = ButtonDefaults.buttonColors(
+              containerColor = if (manualOnboardGps) VerifiedEmerald else VerifiedEmeraldContainer,
+              contentColor = if (manualOnboardGps) Color.White else VerifiedEmeraldDark,
+            ),
+            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 12.dp),
+            modifier = Modifier
+              .fillMaxWidth()
+              .minimumInteractiveComponentSize()
+              .border(
+                width = 1.5.dp,
+                color = if (manualOnboardGps) VerifiedEmeraldDark else VerifiedEmerald.copy(alpha = 0.6f),
+                shape = RoundedCornerShape(12.dp),
+              )
+              .testTag("manual_onboard_gps_button"),
+          ) {
+            Icon(
+              imageVector = Icons.Filled.MyLocation,
+              contentDescription = null,
+              modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.width(6.dp))
+            if (trainNo.length >= 4) {
+              Surface(
+                shape = RoundedCornerShape(6.dp),
+                color = if (manualOnboardGps) {
+                  Color.White.copy(alpha = 0.22f)
+                } else {
+                  VerifiedEmerald.copy(alpha = 0.16f)
+                },
+              ) {
+                Text(
+                  text = trainNo,
+                  fontFamily = JetBrainsMonoFontFamily,
+                  fontWeight = FontWeight.ExtraBold,
+                  fontSize = 12.sp,
+                  modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+              }
+              Spacer(Modifier.width(6.dp))
+            }
+            Text(
+              text = if (manualOnboardGps) strings.sharingLiveGpsBtn else strings.imOnTrainBtn,
+              maxLines = 2,
+              overflow = TextOverflow.Ellipsis,
+              fontWeight = FontWeight.Bold,
+              fontSize = 13.sp,
+            )
+          }
         }
       }
     }
